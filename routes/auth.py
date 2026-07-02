@@ -1,0 +1,140 @@
+import datetime
+import json
+import sqlite3
+import re
+from flask import Blueprint, request, jsonify, session
+from werkzeug.security import generate_password_hash, check_password_hash
+from config import DB_FILE
+from utils import log_audit, login_required, FirewallCache
+
+auth_bp = Blueprint('auth', __name__)
+
+def is_strong_password(password):
+    """Vojni standard: Min 10 karaktera, 1 veliko slovo, 1 broj."""
+    if len(password) < 10: return False
+    if not re.search(r"[A-Z]", password): return False
+    if not re.search(r"[0-9]", password): return False
+    return True
+
+@auth_bp.route('/api/auth/login', methods=['POST'])
+def login():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "MALFORMED_REQUEST"}), 400
+        
+    username = data.get('username')
+    password = data.get('password')
+    location = data.get('location', '')
+    device_info = data.get('device', 'UNKNOWN_DEVICE')
+    
+    # 1. STRIKTNA KONTROLA LOKACIJE
+    if not location or ',' not in location:
+        log_audit('SECURITY', 'system', f'Failed login, missing or empty GPS location. User: {username}', is_suspicious=True, location='DENIED')
+        return jsonify({"error": "LOCATION_REQUIRED"}), 403
+    
+    # 2. Provera da li je IP blokiran
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if client_ip and ',' in client_ip: 
+        client_ip = client_ip.split(',')[0].strip()
+        
+    if client_ip in FirewallCache.blacklist:
+        log_audit('SECURITY', 'system', f'Blocked Blacklisted IP Attempt: {client_ip}. Device: {device_info}', is_suspicious=True, location=location)
+        return jsonify({"error": "AUTH_ERROR"}), 401
+    
+    # 3. Konekcija na bazu i provera korisnika
+    user = None
+    try:
+        with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            c = conn.cursor()
+            c.execute('SELECT id, username, password, role, permissions FROM users WHERE LOWER(username)=LOWER(?)', (username,))
+            user = c.fetchone()
+    except Exception:
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
+    
+    # 4. Uspešna prijava
+    if user and check_password_hash(user[2], password):
+        session.permanent = True
+        session['user_id'] = user[0]
+        session['username'] = user[1]
+        session['role'] = user[3]
+        session['login_time'] = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        
+        session['login_ip'] = client_ip
+        session['login_ua'] = request.user_agent.string if request.user_agent else "Unknown"
+        
+        if client_ip in FirewallCache.login_attempts:
+            del FirewallCache.login_attempts[client_ip]
+            
+        full_details = f"Successful login. Device: {device_info}"
+        log_audit('LOGIN', 'system', full_details, location=location)
+        return jsonify({"status": "success", "user": {"id": user[0], "username": user[1], "role": user[3], "permissions": json.loads(user[4]) if user[4] else {}}})
+    
+    # 5. Neuspešna prijava - beleženje pokušaja
+    if client_ip not in FirewallCache.login_attempts:
+        FirewallCache.login_attempts[client_ip] = []
+    FirewallCache.login_attempts[client_ip].append(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    FirewallCache.login_attempts[client_ip] = [t for t in FirewallCache.login_attempts[client_ip] if now - t < 300]
+    
+    if len(FirewallCache.login_attempts[client_ip]) >= FirewallCache.settings.get('max_login', 10):
+        FirewallCache.blacklist.add(client_ip)
+        log_audit('SECURITY', 'firewall', f"Auto-blacklisted IP {client_ip} due to brutal force attempts.", is_suspicious=True, location=location)
+
+    log_audit('SECURITY', 'system', f'Failed login attempt: {username}. Device: {device_info}', is_suspicious=True, location=location)
+    return jsonify({"error": "AUTH_ERROR"}), 401
+
+@auth_bp.route('/api/auth/logout', methods=['POST'])
+def logout():
+    if 'login_time' in session:
+        duration_seconds = int(datetime.datetime.now(datetime.timezone.utc).timestamp() - session['login_time'])
+        h, remainder = divmod(duration_seconds, 3600)
+        m, s = divmod(remainder, 60)
+        log_audit('LOGOUT', 'system', f'Logout successful. Session duration: {h}h {m}m {s}s | Total seconds: {duration_seconds}')
+    session.clear()
+    return jsonify({"status": "success"})
+
+@auth_bp.route('/api/auth/me', methods=['GET'])
+def me():
+    if 'user_id' in session:
+        row = None
+        try:
+            with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
+                conn.execute('PRAGMA journal_mode=WAL;')
+                c = conn.cursor()
+                c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+                row = c.fetchone()
+        except Exception:
+            pass
+            
+        return jsonify({"user": {"id": session['user_id'], "username": session['username'], "role": session['role'], "permissions": json.loads(row[0]) if row and row[0] else {}}})
+    return jsonify({"error": "UNAUTHORIZED"}), 401
+
+@auth_bp.route('/api/auth/change_password', methods=['POST'])
+@login_required
+def change_password():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "MALFORMED_REQUEST"}), 400
+        
+    new_password = data.get('new_password')
+    if not new_password: 
+        return jsonify({"error": "EMPTY_PASSWORD"}), 400
+    
+    if not is_strong_password(new_password):
+        return jsonify({"error": "WEAK_PASSWORD"}), 400
+    
+    try:
+        with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            conn.execute('PRAGMA busy_timeout=30000;')
+            c = conn.cursor()
+            pw_hash = generate_password_hash(new_password, method='scrypt:32768:8:1')
+            c.execute('UPDATE users SET password=? WHERE id=?', (pw_hash, session['user_id']))
+            conn.commit()
+    except Exception:
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
+    
+    log_audit('EDIT', 'users', 'User successfully changed their own password.')
+    return jsonify({"status": "success"})

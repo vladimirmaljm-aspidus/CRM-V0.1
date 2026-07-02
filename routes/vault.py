@@ -1,0 +1,60 @@
+import sqlite3
+import json
+import uuid
+from datetime import datetime, timezone
+from flask import Blueprint, request, jsonify
+from config import DB_FILE
+from utils import login_required, log_audit, safe_parse
+
+vault_bp = Blueprint('vault', __name__)
+
+@vault_bp.route('/api/vault/save', methods=['POST'])
+@login_required
+def save_document_to_vault():
+    payload = request.json
+    doc_id = f"doc_{uuid.uuid4().hex[:12]}"
+    
+    doc_data = {
+        "id": doc_id,
+        "partnerId": payload.get('partnerId'),
+        "productId": payload.get('productId'),
+        "docType": payload.get('docType', 'Document'),
+        "fileName": payload.get('fileName', 'Document.pdf'),
+        "fileUrl": payload.get('fileUrl'),
+        "createdAt": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    }
+    
+    if not doc_data['partnerId'] or not doc_data['fileUrl']:
+        return jsonify({"error": "Partner ID and File URL are mandatory."}), 400
+
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    c = conn.cursor()
+    c.execute("INSERT INTO shared_documents (id, data) VALUES (?, ?)", (doc_id, json.dumps(doc_data)))
+    conn.commit()
+    conn.close()
+    
+    log_audit('CREATE', 'vault', f"Saved {doc_data['docType']} for partner {doc_data['partnerId']}", is_suspicious=False)
+    return jsonify({"status": "success", "message": "Document secured in vault.", "document": doc_data}), 200
+
+@vault_bp.route('/api/vault/documents', methods=['GET'])
+@login_required
+def get_vault_documents():
+    partner_id = request.args.get('partnerId')
+    product_id = request.args.get('productId')
+    
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    c = conn.cursor()
+    c.execute("SELECT id, data FROM shared_documents")
+    
+    docs = []
+    for row in c.fetchall():
+        d = safe_parse(row[1])
+        if partner_id and d.get('partnerId') != partner_id:
+            continue
+        if product_id and d.get('productId') != product_id:
+            continue
+        docs.append(d)
+        
+    conn.close()
+    docs.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
+    return jsonify(docs)

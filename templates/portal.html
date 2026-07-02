@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Aspidus B2B Client Tracking Portal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
+        .glass-panel { background: rgba(255, 255, 255, 1); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0; }
+        .tab-btn.active, .ptab-btn.active { border-bottom: 4px solid #2563eb; color: #1e40af; font-weight: 900; }
+        .tab-btn, .ptab-btn { border-bottom: 4px solid transparent; color: #64748b; font-weight: 700; transition: all 0.2s; }
+        .tab-btn:hover, .ptab-btn:hover { color: #3b82f6; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+    </style>
+</head>
+<body class="text-slate-800 antialiased selection:bg-blue-500 selection:text-white pb-10">
+    <div id="app" class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+        
+        <div class="text-center p-20" id="loading-state">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+            <p class="mt-4 text-slate-500 font-bold tracking-widest uppercase text-xs" id="lbl-loading">Loading Secure Vault...</p>
+        </div>
+
+        <div id="otp-screen" class="max-w-md mx-auto mt-20 glass-panel p-8 rounded-2xl shadow-xl hidden">
+            <div class="text-center mb-8">
+                <span class="text-5xl">🔐</span>
+                <h2 class="text-2xl font-black text-slate-900 mt-4" id="lbl-otp-title">Secure Portal Access</h2>
+                <p class="text-sm text-slate-500 mt-2 font-medium" id="lbl-otp-desc">We have sent a 6-digit One-Time Password to your registered email.</p>
+            </div>
+            <div class="space-y-4">
+                <p id="otp-status-msg" class="text-xs font-bold text-center text-blue-700 bg-blue-50 py-3 rounded-lg border border-blue-200 hidden"></p>
+                <div id="otp-input-area" class="hidden space-y-4 pt-4 border-t border-slate-100">
+                    <div>
+                        <label class="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-enter-code">Enter 6-digit Code</label>
+                        <input type="text" id="otp-code" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 font-mono text-center text-3xl tracking-[0.5em] outline-none focus:border-blue-500 shadow-inner" maxlength="6" autocomplete="off">
+                    </div>
+                    <button id="btn-verify-otp" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-xl shadow-lg tracking-wider uppercase text-sm mt-2" onclick="verifyOTP()">VERIFY & LOGIN</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="portal-content" class="hidden">
+            <header class="glass-panel shadow-sm rounded-2xl p-6 mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
+                <div class="flex items-center gap-4">
+                    <img id="comp-logo" src="" alt="Logo" class="h-12 hidden">
+                    <div>
+                        <h1 class="text-2xl font-black text-slate-900 tracking-tight" id="comp-name">Aspidus CRM</h1>
+                        <p class="text-[10px] font-black text-blue-600 uppercase tracking-widest" id="lbl-b2b">B2B SECURE PORTAL</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-6">
+                    <div class="text-right hidden md:block">
+                        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest" id="lbl-welcome">Welcome</p>
+                        <p class="text-sm font-black text-slate-800" id="partner-name">Client Name</p>
+                    </div>
+                    <button class="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-xs font-bold shadow-sm" onclick="logoutPortal()">🚪 Logout</button>
+                </div>
+            </header>
+
+            <div id="update-request-banner" class="hidden bg-red-50 border-l-8 border-red-500 p-6 rounded-r-2xl shadow-sm mb-6">
+                <h3 class="text-red-700 font-black text-lg uppercase tracking-wider flex items-center gap-2">⚠️ <span id="lbl-update-req">ACTION REQUIRED: KYC EXPIRED</span></h3>
+                <p class="text-red-600 font-medium mt-1 text-sm" id="lbl-update-req-desc">Your documentation has expired or requires renewal.</p>
+            </div>
+
+            <div class="flex gap-6 mb-6 border-b border-slate-200 px-4 overflow-x-auto custom-scrollbar">
+                <button class="tab-btn active pb-3 px-2 text-[11px] font-black uppercase tracking-widest whitespace-nowrap" onclick="switchTab('shipments')" id="tab-btn-shipments">🚢 Shipments</button>
+                <button class="tab-btn pb-3 px-2 text-[11px] font-black uppercase tracking-widest whitespace-nowrap" onclick="switchTab('offers')" id="tab-btn-offers">💎 Firm Offers</button>
+                <button class="tab-btn pb-3 px-2 text-[11px] font-black uppercase tracking-widest whitespace-nowrap" onclick="switchTab('rfq')" id="tab-btn-rfq">📝 My RFQs</button>
+                <button class="tab-btn pb-3 px-2 text-[11px] font-black uppercase tracking-widest whitespace-nowrap" onclick="switchTab('kyc')" id="tab-btn-kyc">🛡️ KYC Vault</button>
+                <button class="tab-btn pb-3 px-2 text-[11px] font-black uppercase tracking-widest whitespace-nowrap" onclick="switchTab('goods')" id="tab-btn-goods">📦 Our Goods</button>
+                <button class="tab-btn pb-3 px-2 text-[11px] font-black uppercase tracking-widest whitespace-nowrap" onclick="switchTab('documents')" id="tab-btn-docs">📁 My Documents</button>
+                <button class="tab-btn pb-3 px-2 text-[11px] font-black uppercase tracking-widest whitespace-nowrap" onclick="switchTab('profile')" id="tab-btn-profile">⚙️ Profile Settings</button>
+            </div>
+
+            <div id="tab-shipments" class="tab-content block space-y-6"><div id="deals-container" class="space-y-6"></div></div>
+            <div id="tab-offers" class="tab-content hidden space-y-6"><div id="offers-container" class="space-y-6"></div></div>
+            
+            <div id="tab-rfq" class="tab-content hidden space-y-6">
+                <div class="glass-panel p-6 rounded-2xl shadow-sm bg-white border border-slate-200">
+                    <div class="flex justify-between items-center border-b border-slate-100 pb-4 mb-6">
+                        <div>
+                            <h2 class="text-2xl font-black text-slate-900" id="lbl-rfq-main-title">Requests for Quotation</h2>
+                            <p class="text-sm text-slate-500" id="lbl-rfq-main-desc">Submit and track your purchasing demands.</p>
+                        </div>
+                        <button class="bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase px-4 py-3 rounded-xl shadow-sm" onclick="openRFQModal()" id="btn-new-rfq">+ New RFQ</button>
+                    </div>
+                    <div id="rfq-container" class="space-y-4"></div>
+                </div>
+            </div>
+
+            <div id="tab-documents" class="tab-content hidden space-y-6">
+                <div class="glass-panel p-6 rounded-2xl shadow-sm bg-white border border-slate-200">
+                    <div class="border-b border-slate-100 pb-4 mb-6">
+                        <h2 class="text-2xl font-black text-slate-900" id="lbl-docs-title">Document Vault</h2>
+                        <p class="text-sm text-slate-500" id="lbl-docs-desc">Access and download your official invoices, contracts, and offers.</p>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm border-collapse">
+                            <thead>
+                                <tr class="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                    <th class="p-4" id="th-doc-date">Date</th>
+                                    <th class="p-4" id="th-doc-type">Document Type</th>
+                                    <th class="p-4" id="th-doc-name">File Name</th>
+                                    <th class="p-4 text-right" id="th-doc-action">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="documents-table-body" class="font-medium text-slate-700"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-kyc" class="tab-content hidden">
+                <div class="glass-panel p-8 rounded-2xl shadow-sm">
+                    <div class="mb-8 border-b border-slate-100 pb-4">
+                        <h2 class="text-3xl font-black text-slate-900 tracking-tight" id="lbl-kyc-title">Compliance & KYC Form</h2>
+                        <p class="text-sm text-slate-500 font-medium mt-2" id="lbl-kyc-desc">Securely submit your corporate data. Stored in an air-gapped vault.</p>
+                    </div>
+                    
+                    <form id="kyc-form" class="space-y-8">
+                        <div class="space-y-6 pb-8 border-b border-slate-100">
+                            <h3 class="font-black text-blue-800 uppercase text-xs tracking-widest mb-4 bg-blue-50 inline-block px-3 py-1 rounded">1. Company Details</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-reg-name">Registered Company Name</label><input type="text" id="kyc-comp-name" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 font-bold text-slate-900 shadow-sm outline-none" required></div>
+                                <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-reg-no">Registration / License No.</label><input type="text" id="kyc-reg-no" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 font-mono text-slate-900 shadow-sm outline-none" required></div>
+                                <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-tax-id">Tax ID / VAT Number</label><input type="text" id="kyc-tax-id" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 font-mono text-slate-900 shadow-sm outline-none" required></div>
+                                <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-website">Company Website</label><input type="text" id="kyc-website" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 shadow-sm outline-none"></div>
+                                <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-industry">Industry Sector / Business Activity</label><input type="text" id="kyc-industry" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 shadow-sm outline-none" required></div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                                <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-reg-addr">Registered Address</label><input type="text" id="kyc-reg-addr" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 shadow-sm outline-none" required></div>
+                                <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-op-addr">Operational Address (If different)</label><input type="text" id="kyc-op-addr" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 shadow-sm outline-none"></div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-6 pb-8 border-b border-slate-100">
+                            <h3 class="font-black text-blue-800 uppercase text-xs tracking-widest mb-4 bg-blue-50 inline-block px-3 py-1 rounded">2. Banking & Financial Profile</h3>
+                            <div class="bg-slate-50 p-6 rounded-xl border border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-5 shadow-inner">
+                                <div class="md:col-span-3 mb-1"><h4 class="font-black text-slate-800 uppercase text-[10px] tracking-widest" id="lbl-bank-title">Primary Bank Account</h4></div>
+                                <div><input type="text" id="kyc-bank-name" placeholder="Bank Name" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none shadow-sm" required></div>
+                                <div><input type="text" id="kyc-bank-iban" placeholder="Account No. / IBAN" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-mono text-slate-900 outline-none shadow-sm" required></div>
+                                <div><input type="text" id="kyc-bank-swift" placeholder="SWIFT / BIC" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-mono text-slate-900 outline-none shadow-sm" required></div>
+                                <div class="md:col-span-2"><input type="text" id="kyc-bank-addr" placeholder="Bank Branch Address" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 outline-none shadow-sm" required></div>
+                                <div><input type="text" id="kyc-corr-bank" placeholder="Correspondent Bank (Optional)" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 outline-none shadow-sm"></div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                                <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-turnover">Expected Annual Volume (USD)</label><input type="text" id="kyc-turnover" placeholder="e.g. 5,000,000" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 font-mono text-slate-900 shadow-sm outline-none" required></div>
+                                <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-sof">Main Source of Funds / Wealth</label><input type="text" id="kyc-sof" placeholder="e.g. Trading Revenue, Investments" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm text-slate-900 shadow-sm outline-none" required></div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-6 pb-8 border-b border-slate-100">
+                            <h3 class="font-black text-blue-800 uppercase text-xs tracking-widest mb-4 bg-blue-50 inline-block px-3 py-1 rounded">3. Corporate Management & UBOs</h3>
+                            <div class="bg-white border border-slate-200 p-6 rounded-xl shadow-sm mb-4">
+                                <div class="flex justify-between items-center border-b border-slate-100 pb-3 mb-4">
+                                    <h4 class="font-black text-slate-800 uppercase text-[10px] tracking-widest" id="lbl-dir-title">Company Directors / Managers</h4>
+                                    <button type="button" class="text-[10px] bg-blue-50 text-blue-700 hover:bg-blue-100 font-black uppercase tracking-widest px-3 py-1.5 rounded" onclick="addDirector()" id="btn-add-dir">+ Add Director</button>
+                                </div>
+                                <div id="directors-container" class="space-y-3"></div>
+                            </div>
+                            <div class="bg-white border border-slate-200 p-6 rounded-xl shadow-sm">
+                                <div class="flex justify-between items-center border-b border-slate-100 pb-3 mb-4">
+                                    <h4 class="font-black text-slate-800 uppercase text-[10px] tracking-widest" id="lbl-ubo-title">Ultimate Beneficial Owners (UBO > 25%)</h4>
+                                    <button type="button" class="text-[10px] bg-blue-50 text-blue-700 hover:bg-blue-100 font-black uppercase tracking-widest px-3 py-1.5 rounded" onclick="addUBO()" id="btn-add-ubo">+ Add UBO</button>
+                                </div>
+                                <div id="ubos-container" class="space-y-3"></div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-6 pb-8 border-b border-slate-100">
+                            <h3 class="font-black text-blue-800 uppercase text-xs tracking-widest mb-4 bg-blue-50 inline-block px-3 py-1 rounded">4. AML / CFT Compliance</h3>
+                            <div class="bg-slate-50 p-6 rounded-xl border border-slate-200 shadow-inner space-y-5">
+                                <label class="flex items-start gap-4 cursor-pointer text-sm font-bold text-slate-800 hover:text-blue-700"><input type="checkbox" id="kyc-pep" class="mt-1 w-5 h-5 text-blue-600 rounded border-slate-300"><span id="lbl-pep">Is any owner or director a Politically Exposed Person (PEP)?</span></label>
+                                <label class="flex items-start gap-4 cursor-pointer text-sm font-bold text-slate-800 hover:text-blue-700"><input type="checkbox" id="kyc-sanctions" class="mt-1 w-5 h-5 text-blue-600 rounded border-slate-300"><span id="lbl-sanctions">Is the company subject to any UN/OFAC international sanctions?</span></label>
+                                <label class="flex items-start gap-4 cursor-pointer text-sm font-bold text-slate-800 hover:text-blue-700"><input type="checkbox" id="kyc-litigation" class="mt-1 w-5 h-5 text-blue-600 rounded border-slate-300"><span id="lbl-litigation">Has the company been involved in any AML/CFT litigation?</span></label>
+                                <label class="flex items-start gap-4 cursor-pointer text-sm font-bold text-slate-800 hover:text-blue-700"><input type="checkbox" id="kyc-dualuse" class="mt-1 w-5 h-5 text-blue-600 rounded border-slate-300"><span id="lbl-dualuse">Do you trade in Dual-Use goods or military equipment?</span></label>
+                            </div>
+                        </div>
+
+                        <div class="space-y-6 pb-8 border-b border-slate-100">
+                            <div class="flex justify-between items-center mb-4">
+                                <h3 class="font-black text-blue-800 uppercase text-xs tracking-widest bg-blue-50 inline-block px-3 py-1 rounded">5. Corporate Documents</h3>
+                                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest" id="lbl-upload-multi">You can select multiple files per category</p>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                <div class="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center bg-white hover:bg-slate-50 shadow-sm">
+                                    <div class="text-3xl mb-3">📄</div>
+                                    <h4 class="font-black text-xs text-slate-800 mb-3 uppercase tracking-wider" id="lbl-up-license">Trade License(s)</h4>
+                                    <input type="file" id="file-license" class="text-[10px] font-bold text-slate-500 w-full file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700" accept=".pdf,.jpg,.png" multiple>
+                                </div>
+                                <div class="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center bg-white hover:bg-slate-50 shadow-sm">
+                                    <div class="text-3xl mb-3">🛂</div>
+                                    <h4 class="font-black text-xs text-slate-800 mb-3 uppercase tracking-wider" id="lbl-up-pass">Passports (Directors & UBOs)</h4>
+                                    <input type="file" id="file-passport" class="text-[10px] font-bold text-slate-500 w-full file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700" accept=".pdf,.jpg,.png" multiple>
+                                </div>
+                                <div class="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center bg-white hover:bg-slate-50 shadow-sm">
+                                    <div class="text-3xl mb-3">📜</div>
+                                    <h4 class="font-black text-xs text-slate-800 mb-3 uppercase tracking-wider" id="lbl-up-inc">Cert. of Incorporation / MoA</h4>
+                                    <input type="file" id="file-inc" class="text-[10px] font-bold text-slate-500 w-full file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-blue-50 file:text-blue-700" accept=".pdf,.jpg,.png" multiple>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-blue-50 border border-blue-200 p-6 rounded-xl mt-8 shadow-sm">
+                            <h3 class="font-black text-blue-900 uppercase text-xs mb-4 tracking-widest" id="lbl-decl-title">Declaration & Consent</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                                <div><input type="text" id="kyc-sub-name" placeholder="Submitter Full Name" class="w-full bg-white border border-blue-200 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none shadow-sm" required></div>
+                                <div><input type="text" id="kyc-sub-title" placeholder="Designation / Job Title" class="w-full bg-white border border-blue-200 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none shadow-sm" required></div>
+                            </div>
+                            <label class="flex items-start gap-4 cursor-pointer text-xs font-bold text-blue-900 leading-relaxed">
+                                <input type="checkbox" id="kyc-consent" class="mt-1 w-5 h-5 text-blue-600 rounded border-blue-300" required>
+                                <span id="lbl-consent">I declare that the information provided is true and accurate. I explicitly consent to the secure storage and processing of this data by Aspidus CRM.</span>
+                            </label>
+                        </div>
+
+                        <div class="flex justify-end pt-8">
+                            <button type="submit" id="btn-kyc-submit" class="bg-blue-600 hover:bg-blue-700 text-white font-black px-12 py-4 rounded-xl shadow-lg text-sm tracking-widest uppercase">SECURE SUBMIT</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <div id="tab-goods" class="tab-content hidden space-y-6">
+                <div class="glass-panel p-6 rounded-2xl shadow-sm bg-white">
+                    <div class="flex justify-between items-center border-b pb-4 mb-6">
+                        <div>
+                            <h2 class="text-2xl font-black text-slate-900" id="lbl-goods-title">Manage Our Goods</h2>
+                            <p class="text-sm text-slate-500" id="lbl-goods-desc">Add, view, and modify specifications or pricing profiles for items supplied.</p>
+                        </div>
+                        <button class="bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase px-4 py-3 rounded-xl shadow-sm" onclick="openProductModal()" id="btn-new-product">+ Add New Product</button>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-sm border-collapse">
+                            <thead>
+                                <tr class="bg-slate-50 border-b border-slate-200 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                    <th class="p-4" id="th-prod-name">Product Name</th>
+                                    <th class="p-4" id="th-prod-price">Price Profile</th>
+                                    <th class="p-4" id="th-prod-specs">Specification Details</th>
+                                    <th class="p-4" id="th-prod-status">Status</th>
+                                    <th class="p-4 text-right" id="th-prod-actions">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="goods-table-body" class="font-medium text-slate-700"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-profile" class="tab-content hidden">
+                <div class="glass-panel p-8 rounded-2xl shadow-sm bg-white max-w-xl mx-auto">
+                    <h2 class="text-2xl font-black text-slate-900 mb-2" id="lbl-profile-title">Profile Configuration</h2>
+                    <div class="space-y-4">
+                        <div><label class="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2" id="lbl-profile-email">Contact Email Address</label><input type="email" id="profile-email" class="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none"></div>
+                        <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-black py-4 rounded-xl shadow-md uppercase text-xs" onclick="updateProfileSettings()" id="btn-save-profile">Save Configuration</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="rfq-modal" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-2xl border border-slate-300 max-w-md w-full overflow-hidden flex flex-col">
+                <div class="flex justify-between items-center border-b border-slate-200 px-6 py-4">
+                    <h3 class="text-xl font-black text-slate-900" id="lbl-rfq-modal-title">Submit New RFQ</h3>
+                    <button class="text-slate-400 hover:text-slate-600 text-xl font-bold" onclick="closeRFQModal()">✕</button>
+                </div>
+                <div class="p-6 space-y-4">
+                    <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2" id="lbl-rfq-prod">Product Name / Commodity</label><input type="text" id="rfq-product" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none" required></div>
+                    <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2" id="lbl-rfq-qty">Target Quantity</label><input type="number" id="rfq-qty" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none" required></div>
+                    <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2" id="lbl-rfq-price">Target Price (Optional)</label><input type="number" step="0.01" id="rfq-price" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none"></div>
+                    <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2" id="lbl-rfq-notes">Notes / Specifications</label><textarea id="rfq-notes" rows="3" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm outline-none"></textarea></div>
+                </div>
+                <div class="bg-slate-50 p-4 border-t border-slate-200 flex justify-end gap-3">
+                    <button type="button" class="bg-white text-slate-600 font-bold px-6 py-3 rounded-xl text-sm border" onclick="closeRFQModal()">Cancel</button>
+                    <button type="button" class="bg-blue-600 hover:bg-blue-700 text-white font-black px-8 py-3 rounded-xl text-sm uppercase tracking-widest shadow-lg" onclick="submitRFQ()" id="btn-rfq-send">Send Request</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="product-modal" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+            <div class="bg-slate-50 rounded-2xl shadow-2xl border border-slate-300 max-w-4xl w-full overflow-hidden flex flex-col max-h-[95vh]">
+                <div class="flex justify-between items-center border-b border-slate-200 bg-white px-6 py-4">
+                    <h3 class="text-xl font-black text-slate-900" id="product-modal-title">Product Specifications Setup</h3>
+                    <button class="text-slate-400 hover:text-slate-600 text-xl font-bold" onclick="closeProductModal()">✕</button>
+                </div>
+                
+                <div class="flex overflow-x-auto border-b border-slate-200 bg-white px-6 custom-scrollbar">
+                    <button type="button" class="ptab-btn active px-6 py-3 border-b-2 font-black text-xs uppercase tracking-widest whitespace-nowrap" data-target="ptab-general">📝 General Info</button>
+                    <button type="button" class="ptab-btn px-6 py-3 border-b-2 font-bold text-xs uppercase tracking-widest whitespace-nowrap" data-target="ptab-commercial">💰 Pricing & Terms</button>
+                    <button type="button" class="ptab-btn px-6 py-3 border-b-2 font-bold text-xs uppercase tracking-widest whitespace-nowrap" data-target="ptab-specs">🧪 Specs & Logistics</button>
+                </div>
+
+                <div class="overflow-y-auto p-6 flex-1 bg-slate-50">
+                    <form id="product-form" class="space-y-0 relative">
+                        <input type="hidden" id="form-product-id">
+                        
+                        <div id="ptab-general" class="ptab-pane block space-y-6">
+                            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div class="md:col-span-2">
+                                    <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Product Name <span class="text-red-500">*</span></label>
+                                    <input type="text" id="form-product-name" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-blue-500" required>
+                                </div>
+                                <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Category</label><input type="text" id="form-product-category" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none"></div>
+                                <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">HS Code</label><input type="text" id="form-product-hscode" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-mono text-slate-900 outline-none"></div>
+                                <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">SKU / Article No.</label><input type="text" id="form-product-sku" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-mono text-slate-900 outline-none"></div>
+                                <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Brand / Manufacturer</label><input type="text" id="form-product-brand" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none"></div>
+                            </div>
+                        </div>
+
+                        <div id="ptab-commercial" class="ptab-pane hidden space-y-6">
+                            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm grid grid-cols-2 md:grid-cols-4 gap-6">
+                                <div class="col-span-2"><label class="block text-[10px] font-black text-blue-600 uppercase tracking-widest mb-2">Selling Price <span class="text-red-500">*</span></label><input type="number" step="0.01" id="form-product-price" class="w-full bg-blue-50 border border-blue-300 rounded-lg px-4 py-3 text-lg font-black text-blue-900 outline-none" required></div>
+                                <div>
+                                    <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Currency</label>
+                                    <select id="form-product-currency" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none">
+                                        <option value="USD">USD</option><option value="EUR">EUR</option><option value="AED">AED</option>
+                                    </select>
+                                </div>
+                                <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Unit (e.g. MT)</label><input type="text" id="form-product-unit" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none" required></div>
+                                
+                                <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Min Order (MOQ)</label><input type="number" id="form-product-moq" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold outline-none"></div>
+                                <div>
+                                    <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Incoterm</label>
+                                    <select id="form-product-incoterm" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 outline-none">
+                                        <option value="FOB">FOB</option><option value="CIF">CIF</option><option value="EXW">EXW</option><option value="DDP">DDP</option>
+                                    </select>
+                                </div>
+                                <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Country of Origin</label><input type="text" id="form-product-origin" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold outline-none"></div>
+                                <div><label class="block text-[10px] font-black text-red-500 uppercase tracking-widest mb-2">Valid Until</label><input type="date" id="form-product-valid" class="w-full bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm font-bold text-red-800 outline-none"></div>
+                            </div>
+                        </div>
+
+                        <div id="ptab-specs" class="ptab-pane hidden space-y-6">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                    <h4 class="font-black text-xs uppercase tracking-widest text-slate-800 mb-4 flex items-center gap-2">🧪 COA Parameters</h4>
+                                    <div id="portal-coa-list" class="space-y-2 mb-4 max-h-40 overflow-y-auto custom-scrollbar"></div>
+                                    <div class="flex gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                                        <input id="p-coa-name" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-xs font-bold outline-none" placeholder="Parameter">
+                                        <input id="p-coa-value" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-xs font-bold outline-none" placeholder="Value">
+                                        <button type="button" class="bg-blue-600 text-white font-bold px-4 rounded-md text-xs" onclick="addPortalCOA()">Add</button>
+                                    </div>
+                                </div>
+                                <div class="space-y-6">
+                                    <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm grid grid-cols-2 gap-4">
+                                        <div class="col-span-2"><h4 class="font-black text-xs uppercase tracking-widest text-slate-800 flex items-center gap-2">🚢 Container Logistics</h4></div>
+                                        <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Cap. 1x20'ft (MT)</label><input type="number" id="form-product-cap20" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-mono outline-none"></div>
+                                        <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Cap. 1x40'ft (MT)</label><input type="number" id="form-product-cap40" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-mono outline-none"></div>
+                                    </div>
+                                    <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                        <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Certificates & Lab Assays</label>
+                                        <input type="file" id="form-product-certs" class="text-[10px] font-bold text-slate-500 w-full file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-blue-50 file:text-blue-700" accept=".pdf,.jpg,.png" multiple>
+                                        <div id="form-existing-certs" class="mt-2 space-y-1 text-xs font-bold text-blue-600"></div>
+                                    </div>
+                                </div>
+                                <div class="md:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                    <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Detailed Specification</label>
+                                    <textarea id="form-product-spec" rows="4" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm outline-none"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                
+                <div class="bg-white p-4 border-t border-slate-200 flex justify-end">
+                    <button type="button" class="bg-white hover:bg-slate-50 text-slate-600 font-bold px-6 py-3 rounded-xl text-sm border mr-3" onclick="closeProductModal()">Cancel</button>
+                    <button type="button" class="bg-blue-600 hover:bg-blue-700 text-white font-black px-8 py-3 rounded-xl text-sm uppercase tracking-widest shadow-lg" onclick="saveProductItem()">Submit to Vault</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="full-loading" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 hidden flex items-center justify-center">
+            <div class="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center gap-4 border">
+                <div class="animate-spin rounded-full h-10 w-10 border-b-4 border-blue-600"></div>
+                <p class="font-black text-slate-800 uppercase tracking-widest text-xs" id="lbl-uploading-docs">UPLOADING & ENCRYPTING DATA...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const TOKEN = "{{ token }}";
+        let portalData = null;
+        let currentLang = 'en'; // Forsirano engleski
+        let authKey = sessionStorage.getItem(`portal_auth_${TOKEN}`);
+        let otpRequested = false;
+        let uploadedCertUrls = [];
+        let activeCOAParams = [];
+    </script>
+    <script src="/static/js/portal/i18n.js"></script>
+    <script src="/static/js/portal/ui.js"></script>
+    <script src="/static/js/portal/api.js"></script>
+</body>
+</html>
