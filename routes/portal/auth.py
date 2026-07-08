@@ -27,6 +27,7 @@ def generate_portal_link(partner_id):
         partner = safe_parse(row[0])
         if 'portalToken' not in partner or not partner['portalToken']:
             partner['portalToken'] = secrets.token_urlsafe(32)
+            partner['isPortalActive'] = True # DODATO: Inicijalni status za Kill Switch
             c.execute('UPDATE partners SET data=? WHERE id=?', (json.dumps(partner), partner_id))
             conn.commit()
             action_log = ('EDIT', 'partners', f'Generated secure B2B portal token for partner ID: {partner_id}', False)
@@ -58,6 +59,11 @@ def send_otp(token):
                 
         if not partner:
             return jsonify({"error": "Invalid token"}), 403
+            
+        # DODATO: Kill Switch provera
+        if partner.get('isPortalActive', True) is False:
+            log_audit('SECURITY', 'portal', f'Blocked OTP request for revoked portal access. Partner ID: {partner.get("id", "Unknown")}', is_suspicious=True)
+            return jsonify({"error": "Access Revoked. Please contact administrator."}), 403
             
         client_email = partner.get('contact', {}).get('email') or partner.get('email')
         otp = str(secrets.randbelow(900000) + 100000)

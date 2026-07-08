@@ -118,8 +118,37 @@ if(kycForm) {
                 }
                 return arr;
             };
+
+            // DODATO: Sekvencijalno otpremanje KYC fajlova pre slanja forme
+            const uploadedFiles = {};
+            const fileInputs = [
+                { id: 'file-passport', key: 'passport' },
+                { id: 'file-license', key: 'license' },
+                { id: 'file-registry', key: 'registry' }
+            ];
+
+            for (const input of fileInputs) {
+                const el = document.getElementById(input.id);
+                if (el && el.files.length > 0) {
+                    const fd = new FormData();
+                    fd.append('file', el.files[0]);
+                    try {
+                        const uploadRes = await fetch(`/api/portal/upload/${TOKEN}`, { method: 'POST', headers: { 'X-Portal-Auth': authKey }, body: fd });
+                        if (uploadRes.ok) {
+                            const uploadData = await uploadRes.json();
+                            if (uploadData.urls && uploadData.urls.length > 0) {
+                                uploadedFiles[input.key] = uploadData.urls[0];
+                            } else if (uploadData.url) {
+                                uploadedFiles[input.key] = uploadData.url;
+                            }
+                        }
+                    } catch(err) { console.error("Upload error", err); }
+                }
+            }
+
             const payload = {
-                partner_id: portalData?.partner?.id, companyName: document.getElementById('kyc-comp-name')?.value, regNo: document.getElementById('kyc-reg-no')?.value, taxId: document.getElementById('kyc-tax-id')?.value, website: document.getElementById('kyc-website')?.value, industry: document.getElementById('kyc-industry')?.value, regAddr: document.getElementById('kyc-reg-addr')?.value, opAddr: document.getElementById('kyc-op-addr')?.value, bankName: document.getElementById('kyc-bank-name')?.value, bankIban: document.getElementById('kyc-bank-iban')?.value, bankSwift: document.getElementById('kyc-bank-swift')?.value, bankAddr: document.getElementById('kyc-bank-addr')?.value, corrBank: document.getElementById('kyc-corr-bank')?.value, turnover: document.getElementById('kyc-turnover')?.value, sourceOfFunds: document.getElementById('kyc-sof')?.value, directors: extractPersons('directors-container'), ubos: extractPersons('ubos-container'), aml: { isPEP: document.getElementById('kyc-pep')?.checked, isSanctioned: document.getElementById('kyc-sanctions')?.checked, litigation: document.getElementById('kyc-litigation')?.checked, dualUse: document.getElementById('kyc-dualuse')?.checked }, submitterName: document.getElementById('kyc-sub-name')?.value, submitterTitle: document.getElementById('kyc-sub-title')?.value, consent: document.getElementById('kyc-consent')?.checked, files: {}
+                partner_id: portalData?.partner?.id, companyName: document.getElementById('kyc-comp-name')?.value, regNo: document.getElementById('kyc-reg-no')?.value, taxId: document.getElementById('kyc-tax-id')?.value, website: document.getElementById('kyc-website')?.value, industry: document.getElementById('kyc-industry')?.value, regAddr: document.getElementById('kyc-reg-addr')?.value, opAddr: document.getElementById('kyc-op-addr')?.value, bankName: document.getElementById('kyc-bank-name')?.value, bankIban: document.getElementById('kyc-bank-iban')?.value, bankSwift: document.getElementById('kyc-bank-swift')?.value, bankAddr: document.getElementById('kyc-bank-addr')?.value, corrBank: document.getElementById('kyc-corr-bank')?.value, turnover: document.getElementById('kyc-turnover')?.value, sourceOfFunds: document.getElementById('kyc-sof')?.value, directors: extractPersons('directors-container'), ubos: extractPersons('ubos-container'), aml: { isPEP: document.getElementById('kyc-pep')?.checked, isSanctioned: document.getElementById('kyc-sanctions')?.checked, litigation: document.getElementById('kyc-litigation')?.checked, dualUse: document.getElementById('kyc-dualuse')?.checked }, submitterName: document.getElementById('kyc-sub-name')?.value, submitterTitle: document.getElementById('kyc-sub-title')?.value, consent: document.getElementById('kyc-consent')?.checked, 
+                files: uploadedFiles // Promenjeno sa {} na sakupljene fajlove
             };
             const res = await fetch(`/api/portal/kyc/submit/${TOKEN}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey }, body: JSON.stringify(payload) });
             if(res.ok) { alert('Data securely encrypted and stored in Vault!'); loadPortalData(); }
@@ -188,7 +217,12 @@ async function loadPortalData() {
         renderOffers(); 
         renderRFQs(); 
         renderGoodsTable();
-        renderDocuments(); // NOVO DODATO
+        renderDocuments(); 
+
+        // DODATO: Primena permisija nakon učitavanja podataka
+        if (typeof applyPermissions === 'function') {
+            applyPermissions(portalData?.permissions || []);
+        }
 
     } catch (e) {
         document.getElementById('loading-state').innerHTML = `<span class="text-5xl">🛑</span><p class="mt-4 text-red-600 font-black text-xl">ACCESS DENIED</p>`;

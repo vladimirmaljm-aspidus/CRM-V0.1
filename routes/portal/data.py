@@ -41,6 +41,11 @@ def get_portal_data(token):
                 
         if not partner: return jsonify({"error": "Access Denied"}), 403
         
+        # DODATO: Kill Switch provera
+        if partner.get('isPortalActive', True) is False:
+            log_audit('SECURITY', 'portal', f'Blocked data access for revoked portal. Partner ID: {partner_id}', is_suspicious=True)
+            return jsonify({"error": "Access Revoked"}), 403
+        
         # SYSTEM PERMISSIONS: Dozvoljavamo pristup i novom tabu za dokumente
         permissions = partner.get("portalPermissions", ["shipments", "offers", "kyc", "goods", "profile", "rfq", "documents"])
         

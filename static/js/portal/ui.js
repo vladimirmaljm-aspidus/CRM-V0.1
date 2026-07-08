@@ -156,7 +156,6 @@ function editProductItem(id) {
     document.getElementById('product-modal').classList.remove('hidden');
 }
 
-// NOVO: Funkcija za prikaz dokumenata u novom tabu
 function renderDocuments() {
     const body = document.getElementById('documents-table-body'); 
     if(!body) return;
@@ -179,3 +178,30 @@ function renderDocuments() {
         </tr>
     `).join('');
 }
+
+// DODATO: Funkcija za dinamičko sakrivanje tabova na osnovu dozvola
+window.applyPermissions = function(permissions) {
+    if (!permissions || permissions.length === 0) return;
+
+    // Sakrij sve tabove prvo
+    document.querySelectorAll('.ptab-btn').forEach(tab => {
+        tab.classList.add('hidden');
+    });
+
+    // Otkrij samo one za koje postoji dozvola
+    let firstVisibleSet = false;
+    document.querySelectorAll('.ptab-btn').forEach(tab => {
+        const targetId = tab.getAttribute('data-target') || '';
+        const hasPermission = permissions.some(p => targetId.includes(p)); 
+        
+        // Osnovni tabovi uvek treba da budu vidljivi
+        if (hasPermission || targetId.includes('kyc') || targetId.includes('profile')) {
+            tab.classList.remove('hidden');
+            
+            if (!firstVisibleSet) {
+                tab.click();
+                firstVisibleSet = true;
+            }
+        }
+    });
+};

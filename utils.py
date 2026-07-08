@@ -78,6 +78,8 @@ def allowed_file(filename):
 def get_ip_info(ip):
     if not ip or ip in ['127.0.0.1', 'localhost', '::1']:
         return "LOCAL_NETWORK", "N/A", "LOCAL_TIMEZONE"
+    
+    # Primarni pokušaj preko ip-api.com
     try:
         url = f"http://ip-api.com/json/{ip}?fields=country,city,isp,lat,lon,status,timezone"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -90,6 +92,21 @@ def get_ip_info(ip):
                 return network, location, timezone
     except Exception:
         pass
+        
+    # UNAPREĐENJE / FALLBACK MEHANIZAM: Ako ip-api.com zakaže ili dostigne limit, koristi se ipapi.co
+    try:
+        url = f"https://ipapi.co/{ip}/json/"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=3) as response:
+            data = json.loads(response.read().decode())
+            if 'error' not in data and 'latitude' in data:
+                network = f"{data.get('city', 'Unknown')}, {data.get('country_name', 'Unknown')} (ISP: {data.get('org', 'Unknown')})"
+                location = f"{data.get('latitude')},{data.get('longitude')}"
+                timezone = data.get('timezone', 'UNKNOWN_TIMEZONE')
+                return network, location, timezone
+    except Exception:
+        pass
+        
     return "UNKNOWN_IP_LOCATION", "N/A", "UNKNOWN_TIMEZONE"
 
 def log_audit(action, module, details, is_suspicious=False, location="N/A"):

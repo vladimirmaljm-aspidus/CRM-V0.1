@@ -18,21 +18,29 @@ def upload_file():
 
     file = request.files.get('file')
     if not file or not allowed_file(file.filename):
-        log_audit('SECURITY', 'files', f'Zabranjena ekstenzija fajla: {file.filename if file else "N/A"}', is_suspicious=True)
+        # Čistimo originalno ime čak i pri odbijanju kako bismo sprečili prljanje logova
+        safe_original_name = secure_filename(file.filename) if file else "N/A"
+        log_audit('SECURITY', 'files', f'Zabranjena ekstenzija fajla: {safe_original_name}', is_suspicious=True)
         return jsonify({"error": "api.invalidFileType"}), 400
         
     # DUBINSKA INSPEKCIJA
     if not is_safe_file_content(file, file.filename):
-        log_audit('SECURITY', 'files', f'Blokiran skriveni malware u fajlu: {file.filename}', is_suspicious=True)
+        safe_original_name = secure_filename(file.filename)
+        log_audit('SECURITY', 'files', f'Blokiran skriveni malware u fajlu: {safe_original_name}', is_suspicious=True)
         return jsonify({"error": "api.invalidFileType"}), 400
         
     try:
-        ext = file.filename.rsplit('.', 1)[-1].lower()
+        # Sigurno izvlačenje ekstenzije
+        ext = secure_filename(file.filename).rsplit('.', 1)[-1].lower() if '.' in secure_filename(file.filename) else 'bin'
         unique_name = f"{uuid.uuid4().hex}.{ext}"
         save_path = os.path.join(current_app.config['UPLOAD_FOLDER'], unique_name)
         
         file.save(save_path)
-        log_audit('CREATE', 'files', f'Uploaded file: {unique_name} (Original: {file.filename})')
+        
+        # Očišćeno originalno ime fajla za bezbedan upis u bazu logova
+        safe_original_name = secure_filename(file.filename)
+        log_audit('CREATE', 'files', f'Uploaded file: {unique_name} (Original: {safe_original_name})')
+        
         return jsonify({"url": f"/uploads/{unique_name}"})
         
     except Exception as e:

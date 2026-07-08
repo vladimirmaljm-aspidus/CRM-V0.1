@@ -35,12 +35,12 @@ def get_data(key):
         def can_view(module):
             return role == 'admin' or permissions.get(f'{module}_view_all', False) or permissions.get(f'{module}_view_own', False) or permissions.get(f'{module}_view', False)
 
-        perm_map = { 'partners':'partners', 'products':'products', 'deals':'deals', 'demands':'products', 'accounts':'finances', 'transactions':'finances', 'recurringExpenses':'finances', 'connections':'partners', 'offers':'offers' }
+        perm_map = { 'partners':'partners', 'products':'products', 'deals':'deals', 'demands':'products', 'accounts':'finances', 'transactions':'finances', 'recurringExpenses':'finances', 'connections':'partners', 'offers':'offers', 'shared_documents':'shared_documents' }
         
         if key in perm_map and not can_view(perm_map[key]):
             return jsonify({"value": [], "error": "Unauthorized"}), 403 
         
-        tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers']
+        tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
         if key in tables:
             c.execute(f'SELECT data FROM {key}')
             rows = c.fetchall()
@@ -109,13 +109,13 @@ def save_single_item(key):
         role = user_row[0]
         perms = decrypt_data(user_row[1]) if user_row[1] else {}
         
-        perm_map = { 'partners':'partners_edit', 'products':'products_edit', 'deals':'deals_edit', 'demands':'products_edit', 'accounts':'finances_edit', 'transactions':'finances_edit', 'recurringExpenses':'finances_edit', 'connections':'partners_edit', 'offers':'offers_edit' }
+        perm_map = { 'partners':'partners_edit', 'products':'products_edit', 'deals':'deals_edit', 'demands':'products_edit', 'accounts':'finances_edit', 'transactions':'finances_edit', 'recurringExpenses':'finances_edit', 'connections':'partners_edit', 'offers':'offers_edit', 'shared_documents':'shared_documents_edit' }
         if role != 'admin' and key in perm_map and not perms.get(perm_map[key], False):
             conn.rollback()
             log_audit('SECURITY', 'database', f'Prevented write access to module: {key}', is_suspicious=True)
             return jsonify({"error": "Unauthorized"}), 403
 
-        tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers']
+        tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
         action = 'EDIT'
         
         if key in tables:
@@ -183,13 +183,13 @@ def delete_single_item(key, item_id):
         role = user_row[0]
         perms = decrypt_data(user_row[1]) if user_row[1] else {}
         
-        perm_map = { 'partners':'partners_delete', 'products':'products_delete', 'deals':'deals_delete', 'demands':'products_delete', 'accounts':'finances_delete', 'transactions':'finances_delete', 'recurringExpenses':'finances_delete', 'connections':'partners_delete', 'offers':'offers_delete' }
+        perm_map = { 'partners':'partners_delete', 'products':'products_delete', 'deals':'deals_delete', 'demands':'products_delete', 'accounts':'finances_delete', 'transactions':'finances_delete', 'recurringExpenses':'finances_delete', 'connections':'partners_delete', 'offers':'offers_delete', 'shared_documents':'shared_documents_delete' }
         if role != 'admin' and key in perm_map and not perms.get(perm_map[key], False):
             conn.rollback()
             log_audit('SECURITY', 'database', f'Prevented delete from module {key} (ID: {item_id})', is_suspicious=True)
             return jsonify({"error": "Unauthorized"}), 403
 
-        tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers']
+        tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
         if key in tables:
             
             # Cascade Delete
@@ -230,7 +230,7 @@ def save_data(key):
         
         c.execute('BEGIN TRANSACTION;')
         
-        tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers']
+        tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
         
         if key in tables:
             if session.get('role') != 'admin':

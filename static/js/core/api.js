@@ -182,7 +182,7 @@ async function importDatabase(file) {
           document.getElementById('import-btn-txt').innerHTML = `📥 <span class="text-xs ml-1">${Utils.t('misc.importLabel')}</span>`;
           alert(Utils.t('misc.importSuccess')); 
           await loadFromStorage(); 
-          render();
+          if (typeof render === 'function') { render(); } else { window.location.reload(); }
       } catch (err) { 
           alert(Utils.t('misc.importError') || 'Import error or corrupted file.'); 
           console.error(err); 
@@ -227,7 +227,7 @@ function importPartnersFromCSV(file) {
           if (addedCount > 0) {
               await saveToStorage('partners'); 
               alert(Utils.t('misc.partnersImported') || 'Partners successfully imported.'); 
-              render();
+              if (typeof render === 'function') { render(); } else { window.location.reload(); }
           }
       } catch(err) {
           alert(Utils.t('misc.invalidCsv') || 'Invalid CSV format.');
@@ -257,7 +257,7 @@ function importProductsFromCSV(file) {
           if(addedCount > 0) {
               await saveToStorage('products');
               alert(Utils.t('misc.productsImported') || 'Products successfully imported.'); 
-              render();
+              if (typeof render === 'function') { render(); } else { window.location.reload(); }
           }
       } catch(err) { alert(Utils.t('misc.invalidCsv') || 'Invalid CSV format.'); }
   };
@@ -286,7 +286,7 @@ function importOffersFromCSV(file) {
           if (changedProducts) {
               await saveToStorage('products');
               alert(Utils.t('misc.offersImported') || 'Offers successfully imported.'); 
-              render();
+              if (typeof render === 'function') { render(); } else { window.location.reload(); }
           }
       } catch(err) { alert(Utils.t('misc.invalidCsv') || 'Invalid CSV format.'); }
   };

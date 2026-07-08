@@ -209,7 +209,8 @@ def submit_kyc(token):
         "aml": kyc_data.get('aml', {}),
         "submitterName": str(kyc_data.get('submitterName', '')).strip()[:100],
         "submitterTitle": str(kyc_data.get('submitterTitle', '')).strip()[:100],
-        "consent": bool(kyc_data.get('consent', False))
+        "consent": bool(kyc_data.get('consent', False)),
+        "files": kyc_data.get('files', {}) # DODATO: Prihvatanje putanja do uploadovanih dokumenata
     }
     
     if not clean_data['consent']:
@@ -288,6 +289,7 @@ def approve_kyc_submission(sub_id):
         partner['kyc']['directors'] = kyc_data.get('directors', [])
         partner['kyc']['ubos'] = kyc_data.get('ubos', [])
         partner['kyc']['aml'] = kyc_data.get('aml', {})
+        partner['kyc']['files'] = kyc_data.get('files', {}) # DODATO: Trajno čuvanje fajlova u CRM profilu
         
         cm.execute("UPDATE partners SET data=? WHERE id=?", (json.dumps(partner), partner_id))
         conn_m.commit()
