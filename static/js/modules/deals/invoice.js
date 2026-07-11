@@ -1,4 +1,5 @@
 // static/js/modules/deals/invoice.js
+
 function renderInvoiceModal(dealId) {
   const deal = state.data.deals.find(d => d.id === dealId); 
   const buyer = state.data.partners.find(p => p.id === deal.buyerId); 
@@ -12,13 +13,12 @@ function renderInvoiceModal(dealId) {
 
   const datalists = `
     <datalist id="inv-payment-terms-list">
-      <option value="100% Irrevocable L/C at Sight">
-      <option value="100% T/T in Advance">
-      <option value="30% T/T Advance, 70% Against BL Copy">
-      <option value="50% T/T Advance, 50% Before Shipment">
+      <option value="100% Avans (Advance)">
+      <option value="30% Avans, 70% pre isporuke">
+      <option value="100% Neopozivi L/C po viđenju">
       <option value="CAD (Cash Against Documents)">
-      <option value="D/P at Sight">
-      <option value="Net 30 Days">
+      <option value="Net 30 Dana">
+      <option value="Net 60 Dana">
     </datalist>
     <datalist id="inv-packaging-list">
       <option value="25kg Multi-wall Kraft Paper Bags">
@@ -28,6 +28,11 @@ function renderInvoiceModal(dealId) {
       <option value="Bulk in 20ft Container">
       <option value="Bulk in 40ft Container">
       <option value="Flexitanks">
+    </datalist>
+    <datalist id="tax-clause-list">
+      <option value="${tLang('Oslobođeno PDV-a (Izvoz)', 'VAT Exempt (Export)')}">
+      <option value="Reverse Charge">
+      <option value="${tLang('Uključen PDV', 'VAT Included')}">
     </datalist>
   `;
 
@@ -73,17 +78,20 @@ function renderInvoiceModal(dealId) {
 
       <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-5 border-b border-[var(--border)] border-dashed pb-5">
           <div class="md:col-span-2"><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${tLang('Primalac (Consignee - Ship To)', 'Consignee (Ship To)')}</label><select id="inv-consignee" class="form-input bg-[var(--card)]"><option value="">-- Ista firma kao Kupac --</option>${consigneeOptions}</select></div>
-          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">Vessel / Voyage</label><input id="inv-vessel" class="form-input bg-[var(--card)]" value="" placeholder="e.g. MSC DANIELA V.123" /></div>
-          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">B/L Number</label><input id="inv-bl-num" class="form-input bg-[var(--card)] font-mono" value="" placeholder="Bill of Lading No." /></div>
           
-          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${tLang('Datum Utovara', 'Date of Shipment')}</label><input type="date" id="inv-ship-date" class="form-input bg-[var(--card)]" /></div>
-          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${Utils.t('invoice.pol')}</label><input id="inv-pol" class="form-input bg-[var(--card)]" value="" placeholder="${Utils.t('placeholders.pol')}" /></div>
-          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${Utils.t('invoice.pod')}</label><input id="inv-pod" class="form-input bg-[var(--card)]" value="${Utils.escapeHtml(deal.deliveryLocation || '')}" placeholder="${Utils.t('placeholders.pod')}" /></div>
           <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${Utils.t('invoice.paymentTerms')}</label><input id="inv-pay-terms" list="inv-payment-terms-list" class="form-input bg-[var(--card)]" value="" placeholder="${Utils.t('placeholders.pay')}" /></div>
+          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${tLang('Poreska Klauzula', 'Tax Clause')}</label><input id="inv-tax-clause" list="tax-clause-list" class="form-input bg-[var(--card)]" value="" placeholder="e.g. VAT Exempt" /></div>
+
+          <div class="inv-transport-field"><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">Vessel / Truck</label><input id="inv-vessel" class="form-input bg-[var(--card)]" value="" placeholder="e.g. MSC DANIELA V.123" /></div>
+          <div class="inv-transport-field"><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${tLang('Br. Kontejnera', 'Container No.')}</label><input id="inv-container" class="form-input bg-[var(--card)]" value="" placeholder="e.g. HLBU1234567" /></div>
+          <div class="inv-transport-field"><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">B/L Number</label><input id="inv-bl-num" class="form-input bg-[var(--card)] font-mono" value="" placeholder="Bill of Lading No." /></div>
+          <div class="inv-transport-field"><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${tLang('Datum Utovara', 'Date of Shipment')}</label><input type="date" id="inv-ship-date" class="form-input bg-[var(--card)]" /></div>
+          <div class="inv-transport-field"><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${Utils.t('invoice.pol')}</label><input id="inv-pol" class="form-input bg-[var(--card)]" value="" placeholder="${Utils.t('placeholders.pol')}" /></div>
+          <div class="inv-transport-field"><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${Utils.t('invoice.pod')}</label><input id="inv-pod" class="form-input bg-[var(--card)]" value="${Utils.escapeHtml(deal.deliveryLocation || '')}" placeholder="${Utils.t('placeholders.pod')}" /></div>
           
           <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">${Utils.t('invoice.packaging')}</label><input id="inv-packaging" list="inv-packaging-list" class="form-input bg-[var(--card)]" value="" placeholder="${Utils.t('placeholders.pack')}" /></div>
-          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">Net Weight (MT)</label><input id="inv-net-weight" type="number" step="0.001" class="form-input bg-[var(--card)]" value="${deal.quantity}" /></div>
-          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">Gross Weight (MT)</label><input id="inv-gross-weight" type="number" step="0.001" class="form-input bg-[var(--card)]" placeholder="e.g. 50.150" /></div>
+          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">Net Weight (${deal.unit})</label><input id="inv-net-weight" type="number" step="0.001" class="form-input bg-[var(--card)]" value="${deal.quantity}" /></div>
+          <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">Gross Weight (${deal.unit})</label><input id="inv-gross-weight" type="number" step="0.001" class="form-input bg-[var(--card)]" placeholder="e.g. 50.150" /></div>
           <div><label class="block text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wider mb-1">Volume (CBM)</label><input id="inv-cbm" type="number" step="0.01" class="form-input bg-[var(--card)]" placeholder="e.g. 65.50" /></div>
       </div>
 
@@ -137,15 +145,17 @@ function renderInvoiceModal(dealId) {
         </section>
         
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4 text-sm border-l-4 border-gray-800 pl-5 py-3 bg-gray-50">
-            <div><strong class="text-gray-500 uppercase text-[10px] tracking-wider">Vessel / Voyage:</strong><br> <span id="disp-vessel" class="font-bold text-gray-900"></span></div>
-            <div><strong class="text-gray-500 uppercase text-[10px] tracking-wider">B/L Number:</strong><br> <span id="disp-bl-num" class="font-bold text-gray-900"></span></div>
-            <div><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${tLang('Datum Utovara', 'Date of Shipment')}:</strong><br> <span id="disp-ship-date" class="font-bold text-gray-900"></span></div>
             <div><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${Utils.t('fields.incoterm')}:</strong><br> <span class="font-black text-gray-900">${Utils.escapeHtml(deal.incoterm || 'N/A')}</span></div>
+            <div><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${Utils.t('invoice.packaging')}:</strong><br> <span id="disp-inv-packaging" class="font-bold text-gray-900"></span></div>
+            <div class="col-span-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${Utils.t('invoice.paymentTerms')}:</strong><br> <span id="disp-pay-terms" class="text-red-700 bg-red-50 px-1 py-0.5 rounded font-black"></span></div>
             
-            <div class="mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${Utils.t('invoice.pol')}:</strong><br> <span id="disp-pol" class="font-bold text-gray-900"></span></div>
-            <div class="mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${Utils.t('invoice.pod')}:</strong><br> <span id="disp-pod" class="font-bold text-gray-900"></span></div>
-            <div class="mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${Utils.t('invoice.packaging')}:</strong><br> <span id="disp-inv-packaging" class="font-bold text-gray-900"></span></div>
-            <div class="mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${Utils.t('invoice.paymentTerms')}:</strong><br> <span id="disp-pay-terms" class="text-red-700 bg-red-50 px-1 py-0.5 rounded font-black"></span></div>
+            <div class="inv-transport-field mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">Vessel / Truck:</strong><br> <span id="disp-vessel" class="font-bold text-gray-900"></span></div>
+            <div class="inv-transport-field mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">Container No:</strong><br> <span id="disp-container" class="font-bold text-gray-900"></span></div>
+            <div class="inv-transport-field mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">B/L Number:</strong><br> <span id="disp-bl-num" class="font-bold text-gray-900"></span></div>
+            <div class="inv-transport-field mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${tLang('Datum Utovara', 'Date of Shipment')}:</strong><br> <span id="disp-ship-date" class="font-bold text-gray-900"></span></div>
+            
+            <div class="inv-transport-field mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${Utils.t('invoice.pol')}:</strong><br> <span id="disp-pol" class="font-bold text-gray-900"></span></div>
+            <div class="inv-transport-field mt-2 border-t border-gray-300 pt-2"><strong class="text-gray-500 uppercase text-[10px] tracking-wider">${Utils.t('invoice.pod')}:</strong><br> <span id="disp-pod" class="font-bold text-gray-900"></span></div>
         </div>
 
         <div class="flex justify-between items-center bg-gray-100 p-3 rounded-lg mb-6 text-sm">
@@ -180,6 +190,7 @@ function renderInvoiceModal(dealId) {
                     <td class="p-2 pt-4 uppercase tracking-wider text-sm text-red-700">BALANCE DUE:</td>
                     <td class="text-right p-2 pt-4 text-red-700" id="invoice-balance"></td>
                 </tr>
+                <tr id="disp-tax-row"><td class="p-2 pt-4 text-gray-500 font-bold uppercase text-[10px] tracking-wider border-t border-gray-300">Tax Clause:</td><td class="text-right p-2 pt-4 font-bold text-gray-700 border-t border-gray-300" id="disp-inv-tax-clause"></td></tr>
             </table>
         </section>
 
@@ -223,7 +234,16 @@ function renderInvoiceModal(dealId) {
 
   updateBankDetailsForCurrency(curInp.value);
 
+  const toggleInvTransport = () => {
+      const isExw = ['EXW', 'FCA'].includes((deal.incoterm || '').toUpperCase());
+      document.querySelectorAll('.inv-transport-field').forEach(el => {
+          el.style.display = isExw ? 'none' : 'block';
+      });
+  };
+
   const calc = () => {
+      toggleInvTransport();
+      
       const vOpt = document.querySelector('input[name="vat_option"]:checked').value; 
       const docType = document.querySelector('input[name="doc_type"]:checked').value;
       const curr = curInp.value; 
@@ -257,6 +277,7 @@ function renderInvoiceModal(dealId) {
       document.getElementById('disp-inv-notes').innerText = document.getElementById('inv-notes').value;
       
       document.getElementById('disp-vessel').innerText = document.getElementById('inv-vessel').value || 'TBA';
+      document.getElementById('disp-container').innerText = document.getElementById('inv-container').value || 'TBA';
       document.getElementById('disp-bl-num').innerText = document.getElementById('inv-bl-num').value || 'TBA';
       const sDate = document.getElementById('inv-ship-date').value;
       document.getElementById('disp-ship-date').innerText = sDate ? new Date(sDate).toLocaleDateString(state.lang) : 'TBA';
@@ -266,6 +287,14 @@ function renderInvoiceModal(dealId) {
       document.getElementById('disp-inv-packaging').innerText = document.getElementById('inv-packaging').value || 'N/A';
       document.getElementById('disp-pay-terms').innerText = document.getElementById('inv-pay-terms').value || 'TBA';
       
+      const taxClauseVal = document.getElementById('inv-tax-clause').value;
+      if (taxClauseVal) {
+          document.getElementById('disp-tax-row').classList.remove('hidden');
+          document.getElementById('disp-inv-tax-clause').innerText = taxClauseVal;
+      } else {
+          document.getElementById('disp-tax-row').classList.add('hidden');
+      }
+
       document.getElementById('disp-net-weight').innerText = `${document.getElementById('inv-net-weight').value || 0} ${selectedUnit}`;
       document.getElementById('disp-gross-weight').innerText = `${document.getElementById('inv-gross-weight').value || 0} ${selectedUnit}`;
       document.getElementById('disp-cbm').innerText = document.getElementById('inv-cbm').value || '0.00';
@@ -317,7 +346,7 @@ function renderInvoiceModal(dealId) {
   document.querySelectorAll('input[name="vat_option"], input[name="doc_type"]').forEach(r => r.addEventListener('change', calc));
   curInp.addEventListener('change', (e) => { updateBankDetailsForCurrency(e.target.value); calc(); });
   
-  document.querySelectorAll('#inv-bank-details, #inv-notes, #inv-pol, #inv-pod, #inv-packaging, #inv-pay-terms, #inv-po-num, #inv-consignee, #inv-vessel, #inv-bl-num, #inv-ship-date, #inv-net-weight, #inv-gross-weight, #inv-cbm, #inv-discount, #inv-advance').forEach(el => el.addEventListener('input', calc));
+  document.querySelectorAll('#inv-bank-details, #inv-notes, #inv-tax-clause, #inv-pol, #inv-pod, #inv-packaging, #inv-pay-terms, #inv-po-num, #inv-consignee, #inv-vessel, #inv-container, #inv-bl-num, #inv-ship-date, #inv-net-weight, #inv-gross-weight, #inv-cbm, #inv-discount, #inv-advance').forEach(el => el.addEventListener('input', calc));
   
   document.getElementById('add-inv-service-btn').addEventListener('click', () => {
       const id = Date.now();
@@ -338,7 +367,7 @@ function renderInvoiceModal(dealId) {
       
       document.querySelectorAll('.inv-svc-item').forEach(el => {
           const n = el.querySelector('.svc-name').value; const p = parseFloat(el.querySelector('.svc-price').value) || 0;
-          if(n && p > 0) { servicesTotal += p; svcs.push({desc: n, qty: 1, unit: 'srv', price: p, total: p}); }
+          if(n && p > 0) { servicesTotal += p; svcs.push({desc: n, hsCode: '', qty: 1, unit: 'srv', price: p, total: p}); }
       });
       
       let baseTotal = bTotal + servicesTotal; let subtotal = baseTotal; let vatAmt = 0;
@@ -363,13 +392,14 @@ function renderInvoiceModal(dealId) {
           customer: buyer,
           consignee: consigneePartner,
           productName: product?.name || 'N/A',
-          hsCode: product?.hsCode || 'N/A',
+          hsCode: product?.hsCode || 'N/A', // Za unazadnu kompatibilnost
           detailedSpec: product?.detailedSpec || '',
           currency: curr,
           logistics: {
               origin: product?.supplyOffers?.[0]?.country || 'N/A',
               incoterm: deal.incoterm || 'N/A',
               vessel: document.getElementById('inv-vessel').value,
+              containerNo: document.getElementById('inv-container').value,
               blNumber: document.getElementById('inv-bl-num').value,
               shipmentDate: document.getElementById('inv-ship-date').value,
               pol: document.getElementById('inv-pol').value || 'N/A',
@@ -377,6 +407,7 @@ function renderInvoiceModal(dealId) {
               packaging: document.getElementById('inv-packaging').value || 'N/A',
               paymentTerms: document.getElementById('inv-pay-terms').value || 'TBA',
           },
+          taxClause: document.getElementById('inv-tax-clause').value || '',
           weights: {
               net: document.getElementById('inv-net-weight').value || 0,
               gross: document.getElementById('inv-gross-weight').value || 0,
@@ -384,7 +415,7 @@ function renderInvoiceModal(dealId) {
               unit: selectedUnit
           },
           items: [
-              { desc: product?.name || 'N/A', qty: deal.quantity, unit: selectedUnit, price: deal.sellingPrice, total: bTotal },
+              { desc: product?.name || 'N/A', hsCode: product?.hsCode || '', qty: deal.quantity, unit: selectedUnit, price: deal.sellingPrice, total: bTotal },
               ...svcs
           ],
           discount: discount,

@@ -49,16 +49,16 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
     const currentLang = Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US';
     const tLang = (srStr, enStr) => Utils.getLang() === 'sr' ? srStr : enStr;
     
+    const incotermsList = typeof INCOTERMS !== 'undefined' ? INCOTERMS : ['EXW', 'FCA', 'FAS', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'];
+
     const datalists = `
       <datalist id="payment-terms-list">
-        <option value="100% Irrevocable L/C at Sight">
-        <option value="100% T/T in Advance">
-        <option value="30% T/T Advance, 70% Against BL Copy">
-        <option value="50% T/T Advance, 50% Before Shipment">
+        <option value="100% Avans (Advance)">
+        <option value="30% Avans, 70% pre isporuke">
+        <option value="100% Neopozivi L/C po viđenju">
         <option value="CAD (Cash Against Documents)">
-        <option value="D/P at Sight">
-        <option value="Net 30 Days">
-        <option value="Net 60 Days">
+        <option value="Net 30 Dana">
+        <option value="Net 60 Dana">
       </datalist>
       <datalist id="packaging-list">
         <option value="25kg Multi-wall Kraft Paper Bags">
@@ -70,6 +70,11 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
         <option value="25kg Cartons with inner PE liner">
         <option value="Flexitanks">
         <option value="Palletized and Shrink-wrapped">
+      </datalist>
+      <datalist id="tax-clause-list">
+        <option value="${tLang('Oslobođeno PDV-a (Izvoz)', 'VAT Exempt (Export)')}">
+        <option value="Reverse Charge">
+        <option value="${tLang('Uključen PDV', 'VAT Included')}">
       </datalist>
     `;
     
@@ -93,11 +98,26 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
           </div>
           
           <div class="col-span-1 md:col-span-4 grid grid-cols-2 md:grid-cols-4 gap-6 mt-2 border-t border-slate-200 pt-6">
+              <div>
+                  <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Incoterm (Paritet)</label>
+                  <select id="off-incoterm" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm font-bold outline-none focus:border-blue-500">
+                      <option value="">-- ${Utils.t('actions.select') || 'Select'} --</option>
+                      ${incotermsList.map(i => `<option value="${i}" ${i === savedOfferData.incoterm ? 'selected' : ''}>${i}</option>`).join('')}
+                  </select>
+              </div>
+              <div class="md:col-span-2">
+                  <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${tLang('Poreska Klauzula', 'Tax Clause')}</label>
+                  <input id="off-tax-clause" list="tax-clause-list" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.taxClause || '')}" placeholder="${tLang('Npr. Oslobođeno PDV-a...', 'e.g. VAT Exempt...')}" />
+              </div>
               <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.packaging')}</label><input id="off-packaging" list="packaging-list" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.packaging || '')}" placeholder="${Utils.t('placeholders.pack')}" /></div>
-              <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.pol')}</label><input id="off-pol" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.pol || '')}" placeholder="${Utils.t('placeholders.pol')}" /></div>
-              <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.pod')}</label><input id="off-pod" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.pod || '')}" placeholder="${Utils.t('placeholders.pod')}" /></div>
+              
+              <div class="transport-field"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.pol')}</label><input id="off-pol" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.pol || '')}" placeholder="${Utils.t('placeholders.pol')}" /></div>
+              <div class="transport-field"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.pod')}</label><input id="off-pod" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.pod || '')}" placeholder="${Utils.t('placeholders.pod')}" /></div>
+              <div class="transport-field"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${tLang('Brod/Kamion', 'Vessel/Truck')}</label><input id="off-vessel" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.vessel || '')}" placeholder="${tLang('Ime broda', 'Vessel name')}" /></div>
+              <div class="transport-field"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${tLang('Br. Kontejnera', 'Container No.')}</label><input id="off-container" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.containerNo || '')}" placeholder="e.g. HLBU1234567" /></div>
+              
               <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.leadTime')}</label><input id="off-lead" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.leadTime || '')}" placeholder="${Utils.t('placeholders.lead')}" /></div>
-              <div class="md:col-span-2"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.paymentTerms')}</label><input id="off-pay-terms" list="payment-terms-list" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm font-bold outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.paymentTerms || '')}" placeholder="${Utils.t('placeholders.pay')}" /></div>
+              <div class="md:col-span-3"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.paymentTerms')}</label><input id="off-pay-terms" list="payment-terms-list" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm font-bold outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.paymentTerms || '')}" placeholder="${Utils.t('placeholders.pay')}" /></div>
               <div class="md:col-span-4"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.specificNotes')}</label><textarea id="off-notes" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-3 text-sm outline-none focus:border-blue-500" rows="2">${Utils.escapeHtml(savedOfferData.notes || state.settings.defaultOfferNotes || Utils.t('offer.default_note'))}</textarea></div>
           </div>
           
@@ -139,10 +159,16 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
         
         <h3 class="text-lg font-black mb-4 mt-10 text-slate-900 uppercase tracking-widest flex items-center gap-3"><span class="bg-blue-100 text-blue-800 w-6 h-6 flex items-center justify-center rounded-full text-xs font-black">2</span> Logistics & Payment</h3>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-6 mb-10 text-sm bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-            <div><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${Utils.t('offer.pol')}:</strong> <span id="disp-off-pol" class="font-bold text-slate-700"></span></div>
-            <div><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${Utils.t('offer.pod')}:</strong> <span id="disp-off-pod" class="font-bold text-slate-700"></span></div>
-            <div><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${Utils.t('offer.leadTime')}:</strong> <span id="disp-off-lead" class="font-bold text-slate-700"></span></div>
+            <div><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">Incoterm:</strong> <span id="disp-off-incoterm" class="font-black text-slate-900"></span></div>
             <div><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${Utils.t('offer.packaging')}:</strong> <span id="disp-off-packaging" class="font-bold text-slate-700"></span></div>
+            <div><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${Utils.t('offer.leadTime')}:</strong> <span id="disp-off-lead" class="font-bold text-slate-700"></span></div>
+            <div><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${tLang('Poreska Klauzula', 'Tax Clause')}:</strong> <span id="disp-off-tax-clause" class="font-bold text-slate-700"></span></div>
+
+            <div class="disp-transport"><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${Utils.t('offer.pol')}:</strong> <span id="disp-off-pol" class="font-bold text-slate-700"></span></div>
+            <div class="disp-transport"><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${Utils.t('offer.pod')}:</strong> <span id="disp-off-pod" class="font-bold text-slate-700"></span></div>
+            <div class="disp-transport"><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${tLang('Brod/Kamion', 'Vessel/Truck')}:</strong> <span id="disp-off-vessel" class="font-bold text-slate-700"></span></div>
+            <div class="disp-transport"><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${tLang('Kontejner', 'Container')}:</strong> <span id="disp-off-container" class="font-bold text-slate-700"></span></div>
+            
             <div class="col-span-2 md:col-span-4 mt-2 border-t border-slate-100 pt-4 flex flex-col"><strong class="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">${Utils.t('offer.paymentTerms')}:</strong> <span id="disp-off-pay-terms" class="text-slate-900 font-black text-lg"></span></div>
         </div>
         
@@ -269,15 +295,32 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
         updateDetails();
     });
 
+    const toggleTransportFields = () => {
+        const incoterm = document.getElementById('off-incoterm').value.toUpperCase();
+        const isExw = ['EXW', 'FCA'].includes(incoterm);
+        
+        document.querySelectorAll('.transport-field').forEach(el => {
+            el.style.display = isExw ? 'none' : 'block';
+            if (isExw) {
+                const input = el.querySelector('input');
+                if(input) input.value = '';
+            }
+        });
+        document.querySelectorAll('.disp-transport').forEach(el => {
+            el.style.display = isExw ? 'none' : 'block';
+        });
+    };
+
     const updateDetails = () => {
         const cust = state.data.partners.find(p => p.id === custSel.value);
         if (cust) {
             document.getElementById('offer-customer-details').innerHTML = `<p class="text-xl font-black text-slate-900 uppercase tracking-wide"><strong>${Utils.escapeHtml(cust.companyName)}</strong></p><p class="text-slate-600 font-medium mt-2">${Utils.escapeHtml(cust.address?.street || '')}</p><p class="text-slate-600 font-medium">${Utils.escapeHtml(cust.address?.city || '')}, ${Utils.escapeHtml(cust.address?.zip || '')}</p><p class="text-slate-900 font-black mt-1">${Utils.escapeHtml(cust.address?.country || '')}</p>`;
         }
         
+        toggleTransportFields();
+
         const curr = curInp.value; 
         let baseTotal = 0;
-        let extraRows = []; 
         let servicesTotal = 0;
         
         // Zbirni prikaz logistike i supstituta
@@ -335,9 +378,13 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
         document.getElementById('logistics-calc').innerHTML = logMsg;
         document.getElementById('substitutes-warning-container').innerHTML = subWarnHtml;
 
+        document.getElementById('disp-off-incoterm').innerText = document.getElementById('off-incoterm').value || 'TBA';
+        document.getElementById('disp-off-tax-clause').innerText = document.getElementById('off-tax-clause').value || 'N/A';
         document.getElementById('disp-off-packaging').innerText = document.getElementById('off-packaging').value || 'N/A';
         document.getElementById('disp-off-pol').innerText = document.getElementById('off-pol').value || 'N/A';
         document.getElementById('disp-off-pod').innerText = document.getElementById('off-pod').value || 'N/A';
+        document.getElementById('disp-off-vessel').innerText = document.getElementById('off-vessel').value || 'N/A';
+        document.getElementById('disp-off-container').innerText = document.getElementById('off-container').value || 'N/A';
         document.getElementById('disp-off-lead').innerText = document.getElementById('off-lead').value || 'N/A';
         document.getElementById('disp-off-pay-terms').innerText = document.getElementById('off-pay-terms').value || 'TBA';
         document.getElementById('disp-off-notes').innerHTML = Utils.escapeHtml(document.getElementById('off-notes').value).replace(/\n/g, '<br>');
@@ -386,15 +433,19 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
             date: savedOfferData.date || new Date().toISOString(),
             validUntil: document.getElementById('offer-valid-until').value,
             customerId: custId,
-            items: currentItems, // Čuvamo cijeli niz
+            items: currentItems, 
             productId: currentItems[0].productId, // Zadržano zbog kompatibilnosti
             quantity: currentItems[0].quantity,
             sellingPrice: currentItems[0].price,
             unit: currentItems[0].unit,
             currency: curInp.value,
+            incoterm: document.getElementById('off-incoterm').value,
+            taxClause: document.getElementById('off-tax-clause').value,
             packaging: document.getElementById('off-packaging').value,
             pol: document.getElementById('off-pol').value,
             pod: document.getElementById('off-pod').value,
+            vessel: document.getElementById('off-vessel').value,
+            containerNo: document.getElementById('off-container').value,
             leadTime: document.getElementById('off-lead').value,
             paymentTerms: document.getElementById('off-pay-terms').value,
             notes: document.getElementById('off-notes').value,
@@ -426,7 +477,14 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
             const p = state.data.products.find(x => x.id === item.productId);
             const total = item.price * item.quantity;
             baseTotal += total;
-            return { desc: p ? p.name : 'Unknown', qty: item.quantity, unit: item.unit, price: item.price, total: total };
+            return { 
+                desc: p ? p.name : 'Unknown', 
+                hsCode: p ? (p.hsCode || '') : '',
+                qty: item.quantity, 
+                unit: item.unit, 
+                price: item.price, 
+                total: total 
+            };
         });
 
         document.querySelectorAll('.off-svc-item').forEach(el => {
@@ -434,7 +492,7 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
             const sPrice = parseFloat(el.querySelector('.svc-price').value) || 0;
             if(sName && sPrice > 0) {
                 servicesTotal += sPrice;
-                pdfItems.push({desc: sName, qty: 1, unit: 'srv', price: sPrice, total: sPrice});
+                pdfItems.push({desc: sName, hsCode: '', qty: 1, unit: 'srv', price: sPrice, total: sPrice});
             }
         });
         
@@ -455,18 +513,21 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
             validUntil: document.getElementById('offer-valid-until').value,
             customer: state.data.partners.find(p => p.id === custSel.value),
             productName: currentItems.length > 1 ? 'Multiple Commodities' : (state.data.products.find(x => x.id === currentItems[0].productId)?.name || ''),
-            hsCode: 'N/A',
+            hsCode: 'N/A', // Ostavljeno kao fallback, koristi se unutar items za svaki posebno
             detailedSpec: specCombined.trim(),
             currency: curr,
             logistics: {
                 origin: 'Various',
-                incoterm: 'TBA',
+                incoterm: document.getElementById('off-incoterm').value || 'TBA',
                 pol: document.getElementById('off-pol').value || 'N/A',
                 pod: document.getElementById('off-pod').value || 'N/A',
+                vessel: document.getElementById('off-vessel').value || 'N/A',
+                containerNo: document.getElementById('off-container').value || 'N/A',
                 packaging: document.getElementById('off-packaging').value || 'N/A',
                 leadTime: document.getElementById('off-lead').value || 'N/A',
                 paymentTerms: document.getElementById('off-pay-terms').value || 'N/A'
             },
+            taxClause: document.getElementById('off-tax-clause').value || '',
             items: pdfItems,
             subtotal: baseTotal + servicesTotal,
             vat: 0,
@@ -476,8 +537,11 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
         };
     }
 
-    custSel.addEventListener('change', updateDetails); curInp.addEventListener('change', updateDetails); document.getElementById('offer-valid-until').addEventListener('change', updateDetails);
-    document.querySelectorAll('#off-packaging, #off-pol, #off-pod, #off-lead, #off-pay-terms, #off-notes').forEach(el => el.addEventListener('input', updateDetails));
+    document.getElementById('off-incoterm').addEventListener('change', updateDetails);
+    custSel.addEventListener('change', updateDetails); 
+    curInp.addEventListener('change', updateDetails); 
+    document.getElementById('offer-valid-until').addEventListener('change', updateDetails);
+    document.querySelectorAll('#off-packaging, #off-tax-clause, #off-pol, #off-pod, #off-vessel, #off-container, #off-lead, #off-pay-terms, #off-notes').forEach(el => el.addEventListener('input', updateDetails));
     
     document.getElementById('add-offer-service-btn').addEventListener('click', (e) => {
        e.preventDefault();
