@@ -179,6 +179,13 @@ label { letter-spacing: -0.005em; }
 
 .table-row:hover { background: var(--hover-bg); cursor: default; }
 .modal-backdrop { background: rgba(16, 24, 40, 0.5); backdrop-filter: blur(6px); }
+
+/* Konzistentan unutrašnji razmak sadržaja modala (sprečava da tekst/dugmad
+   dodiruju ivice prozora) + pouzdano skrolovanje na malim ekranima. */
+.modal-body-scroll { padding: 1.5rem 1.75rem; }
+@media (max-width: 640px) { .modal-body-scroll { padding: 1.15rem 1.15rem; } }
+/* Ako sadržaj modala već ima sopstveni "card" sa razmakom, izbegni dupli okvir. */
+.modal-body-scroll > form { margin: 0; }
 .file-link { color: var(--accent); text-decoration: none; cursor: pointer; font-weight: 600; border-bottom: 1px solid transparent; }
 .file-link:hover { border-bottom-color: var(--accent); }
 .notification-link { color: var(--accent); text-decoration: none; cursor: pointer; font-weight: 600; }

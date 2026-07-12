@@ -1,2 +1,18 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Binarni fajlovi — NIKADA line-ending normalizacija (sprečava korupciju baza/ključeva)
+*.db binary
+*.db-wal binary
+*.db-shm binary
+*.sqlite binary
+*.sqlite3 binary
+*.key binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.xls binary
+*.xlsx binary
+*.doc binary
+*.docx binary
