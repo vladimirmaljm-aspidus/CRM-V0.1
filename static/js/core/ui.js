@@ -140,7 +140,7 @@ function showProfileModal() {
     const pwHint = srLang ? '(ostavite prazno da ne menjate)' : '(leave blank to keep current)';
 
     const html = `
-    <div class="p-6 space-y-6">
+    <div class="space-y-6">
       <form id="profile-form" class="space-y-5">
         <div>
             <label class="block text-xs font-semibold text-[var(--muted)] uppercase tracking-wide mb-1.5">${t('users.usernameLabelFull')}</label>
