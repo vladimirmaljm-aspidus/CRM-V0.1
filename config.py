@@ -1,47 +1,99 @@
 import os
+import secrets
 from cryptography.fernet import Fernet
 
-# Dobijanje apsolutne putanje do glavnog direktorijuma (sprečava gubljenje baze pri restartu)
+# Apsolutna putanja do glavnog direktorijuma projekta
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
-SECRET_KEY = os.environ.get('SECRET_KEY', 'aspidus-pro-secure-vault-x92f8j3pL-2026-vQpZm1!k9')
+# ==========================================================
+# SECRET KEY
+# ==========================================================
 
-# --- KREIRANJE VOJNOG TREZORA (FERNET AES-128-CBC KLJUČ) ---
-# Ako ključ ne postoji, sistem generiše novi. OVAJ FAJL (vault.key) ČUVAJ NA SIGURNOM!
-KEY_FILE = os.path.join(BASE_DIR, 'vault.key')
+INSTANCE_DIR = os.path.join(BASE_DIR, "instance")
+os.makedirs(INSTANCE_DIR, exist_ok=True)
+
+SECRET_KEY_FILE = os.path.join(INSTANCE_DIR, "secret.key")
+
+# Prioritet:
+# 1. Environment variable
+# 2. Sačuvani ključ
+# 3. Automatski generisani ključ
+
+if os.getenv("SECRET_KEY"):
+    SECRET_KEY = os.getenv("SECRET_KEY")
+
+elif os.path.exists(SECRET_KEY_FILE):
+    with open(SECRET_KEY_FILE, "r", encoding="utf-8") as f:
+        SECRET_KEY = f.read().strip()
+
+else:
+    SECRET_KEY = secrets.token_urlsafe(64)
+
+    with open(SECRET_KEY_FILE, "w", encoding="utf-8") as f:
+        f.write(SECRET_KEY)
+
+    try:
+        os.chmod(SECRET_KEY_FILE, 0o600)
+    except Exception:
+        pass
+
+# ==========================================================
+# ENCRYPTION KEY (FERNET)
+# ==========================================================
+
+KEY_FILE = os.path.join(BASE_DIR, "vault.key")
 
 if not os.path.exists(KEY_FILE):
-    # Generisanje i čuvanje novog ključa
     key = Fernet.generate_key()
-    with open(KEY_FILE, 'wb') as f:
+
+    with open(KEY_FILE, "wb") as f:
         f.write(key)
-    
-    # Sigurnosno zaključavanje fajla na nivou operativnog sistema (samo vlasnik ima pristup)
+
     try:
         os.chmod(KEY_FILE, 0o600)
     except Exception:
-        # Na Windows sistemima chmod možda neće raditi na isti način, ignorišemo grešku
         pass
 
-with open(KEY_FILE, 'rb') as f:
+with open(KEY_FILE, "rb") as f:
     ENCRYPTION_KEY = f.read()
-# -----------------------------------------------
 
-# 1. Glavna baza i folder (Nedostupno klijentima)
-DB_FILE = os.path.join(BASE_DIR, 'aspidus_crm.db')
-UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+# ==========================================================
+# DATABASES
+# ==========================================================
 
-# 2. [AIR-GAPPED PORTAL] - Potpuno izolovana baza i folder za B2B Portal i KYC
-PORTAL_DB_FILE = os.path.join(BASE_DIR, 'aspidus_portal.db') 
-PORTAL_UPLOAD_FOLDER = os.path.join(BASE_DIR, 'portal_uploads')
+DB_FILE = os.path.join(BASE_DIR, "aspidus_crm.db")
 
-# 3. [VOJNA AUDIT BAZA] - Izolovana baza samo za nadzor
-AUDIT_DB_FILE = os.path.join(BASE_DIR, 'aspidus_audit.db')
+PORTAL_DB_FILE = os.path.join(BASE_DIR, "aspidus_portal.db")
 
-# Sigurnosni limiti za fajlove
-MAX_CONTENT_LENGTH = 100 * 1024 * 1024 
-ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'csv', 'json', 'txt', 'doc', 'docx', 'xls', 'xlsx'}
+AUDIT_DB_FILE = os.path.join(BASE_DIR, "aspidus_audit.db")
 
-# Kreiranje radnih direktorijuma ako ne postoje
+# ==========================================================
+# STORAGE
+# ==========================================================
+
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+
+PORTAL_UPLOAD_FOLDER = os.path.join(BASE_DIR, "portal_uploads")
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PORTAL_UPLOAD_FOLDER, exist_ok=True)
+
+# ==========================================================
+# UPLOAD LIMITS
+# ==========================================================
+
+MAX_CONTENT_LENGTH = 100 * 1024 * 1024
+
+ALLOWED_EXTENSIONS = {
+    "pdf",
+    "png",
+    "jpg",
+    "jpeg",
+    "csv",
+    "json",
+    "txt",
+    "doc",
+    "docx",
+    "xls",
+    "xlsx",
+}

@@ -170,6 +170,42 @@ function convertCurrency(amount, fromCurrency, toCurrency) {
     return (amount / rateFrom) * rateTo; 
 }
 
+// Normalizuje unos jedinice (npr. "kg - Kilogram" ili "MT" ili "t") na kratki kod.
+function normalizeUnit(unit) {
+    if (!unit) return '';
+    const code = String(unit).split('-')[0].trim().toLowerCase();
+    if (code === 't' || code === 'mt' || code === 'ton' || code === 'tons' || code === 'tonne') return 'mt';
+    return code;
+}
+
+// Faktori konverzije tezinskih jedinica u kilograme. Samo prave tezinske
+// jedinice se mogu konvertovati - pcs/L/CBM/box/ctr itd. nemaju fiksan odnos
+// prema kilogramu pa se za njih konverzija ne radi (vraca se null).
+const WEIGHT_UNITS_TO_KG = { 'kg': 1, 'mt': 1000, 'g': 0.001, 'lb': 0.45359237, 'oz': 0.0283495231 };
+
+function isWeightUnit(unit) {
+    return Object.prototype.hasOwnProperty.call(WEIGHT_UNITS_TO_KG, normalizeUnit(unit));
+}
+
+// Konvertuje kolicinu iz jedne tezinske jedinice u drugu.
+// ISPRAVKA: ranije se na vise mesta (deals_calculations.js) koristila logika
+// "ako jedinica nije 't'/'MT', pretpostavi da je 'kg'" - sto je davalo pogresne
+// obracune provizije za bilo koju drugu jedinicu (g, lb, oz, pcs, CBM...).
+// Vraca null ako konverzija nije moguca (npr. iz 'pcs' u 'kg').
+function convertWeight(qty, fromUnit, toUnit) {
+    const from = normalizeUnit(fromUnit);
+    const to = normalizeUnit(toUnit);
+    if (!WEIGHT_UNITS_TO_KG[from] || !WEIGHT_UNITS_TO_KG[to]) return null;
+    if (from === to) return qty;
+    const kg = qty * WEIGHT_UNITS_TO_KG[from];
+    return kg / WEIGHT_UNITS_TO_KG[to];
+}
+
+// Vraca kolicinu izrazenu u tonama, ili null ako jedinica nije tezinska.
+function toMetricTons(qty, unit) { return convertWeight(qty, unit, 'mt'); }
+// Vraca kolicinu izrazenu u kilogramima, ili null ako jedinica nije tezinska.
+function toKilograms(qty, unit) { return convertWeight(qty, unit, 'kg'); }
+
 async function uploadFileToServer(file) {
     const formData = new FormData();
     formData.append('file', file);
@@ -248,6 +284,11 @@ window.Utils = {
     escapeFilename,
     fetchLiveExchangeRates,
     convertCurrency,
+    normalizeUnit,
+    isWeightUnit,
+    convertWeight,
+    toMetricTons,
+    toKilograms,
     uploadFileToServer,
     formatBytes,
     initAutocomplete,

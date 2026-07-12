@@ -130,16 +130,28 @@ async function generateNativePDF(data, filename, action = 'download') {
 
     // --- TRANSPORT I LOGISTIKA ---
     const logData = data.logistics || {};
+    const incotermCode = (logData.incoterm || '').substring(0, 3).toUpperCase();
+    // EXW/FCA: prodavac ne organizuje glavni prevoz, pa POL/POD/brod/BL/datum utovara
+    // najcesce nisu poznati u trenutku izdavanja dokumenta i ne treba ih prikazivati -
+    // ranije su se uvek prikazivali kao "N/A"/"TBA" bez obzira na paritet.
+    const showFullLogistics = !['EXW', 'FCA'].includes(incotermCode);
+
+    let logisticsBody = [
+        [ { content: t('product')+':', styles: { fontStyle: 'bold' } }, data.productName || 'N/A', { content: t('hs')+':', styles: { fontStyle: 'bold' } }, data.hsCode || 'N/A' ],
+        [ { content: t('origin')+':', styles: { fontStyle: 'bold' } }, logData.origin || 'N/A', { content: t('incoterm')+':', styles: { fontStyle: 'bold' } }, logData.incoterm || 'N/A' ]
+    ];
+    if (showFullLogistics) {
+        logisticsBody.push([ { content: t('pol')+':', styles: { fontStyle: 'bold' } }, logData.pol || 'N/A', { content: t('pod')+':', styles: { fontStyle: 'bold' } }, logData.pod || 'N/A' ]);
+        logisticsBody.push([ { content: t('vessel')+':', styles: { fontStyle: 'bold' } }, logData.vessel || 'TBA', { content: t('bl')+':', styles: { fontStyle: 'bold' } }, logData.blNumber || 'TBA' ]);
+        logisticsBody.push([ { content: t('ship_date')+':', styles: { fontStyle: 'bold' } }, logData.shipmentDate ? new Date(logData.shipmentDate).toLocaleDateString(lang) : 'TBA', { content: t('pack')+':', styles: { fontStyle: 'bold' } }, logData.packaging || 'N/A' ]);
+    } else {
+        logisticsBody.push([ { content: t('pack')+':', styles: { fontStyle: 'bold' } }, logData.packaging || 'N/A', { content: '', styles: {} }, '' ]);
+    }
+    logisticsBody.push([ { content: t('pay_terms')+':', styles: { fontStyle: 'bold' } }, { content: logData.paymentTerms || 'TBA', colSpan: 3, styles: { fontStyle: 'bold', textColor: [200,0,0] } } ]);
+
     doc.autoTable({
         startY: currentY,
-        body: [
-            [ { content: t('product')+':', styles: { fontStyle: 'bold' } }, data.productName || 'N/A', { content: t('hs')+':', styles: { fontStyle: 'bold' } }, data.hsCode || 'N/A' ],
-            [ { content: t('origin')+':', styles: { fontStyle: 'bold' } }, logData.origin || 'N/A', { content: t('incoterm')+':', styles: { fontStyle: 'bold' } }, logData.incoterm || 'N/A' ],
-            [ { content: t('pol')+':', styles: { fontStyle: 'bold' } }, logData.pol || 'N/A', { content: t('pod')+':', styles: { fontStyle: 'bold' } }, logData.pod || 'N/A' ],
-            [ { content: t('vessel')+':', styles: { fontStyle: 'bold' } }, logData.vessel || 'TBA', { content: t('bl')+':', styles: { fontStyle: 'bold' } }, logData.blNumber || 'TBA' ],
-            [ { content: t('ship_date')+':', styles: { fontStyle: 'bold' } }, logData.shipmentDate ? new Date(logData.shipmentDate).toLocaleDateString(lang) : 'TBA', { content: t('pack')+':', styles: { fontStyle: 'bold' } }, logData.packaging || 'N/A' ],
-            [ { content: t('pay_terms')+':', styles: { fontStyle: 'bold' } }, { content: logData.paymentTerms || 'TBA', colSpan: 3, styles: { fontStyle: 'bold', textColor: [200,0,0] } } ]
-        ],
+        body: logisticsBody,
         theme: 'grid',
         styles: { font: 'helvetica', fontSize: 8, cellPadding: 2, textColor: darkGray, lineColor: [220, 220, 220] },
         columnStyles: { 0: { fillColor: [250, 250, 250], cellWidth: 35 }, 2: { fillColor: [250, 250, 250], cellWidth: 35 } },
@@ -148,14 +160,17 @@ async function generateNativePDF(data, filename, action = 'download') {
     currentY = doc.lastAutoTable.finalY + 3;
 
     // --- TEŽINE I ZAPREMINA ---
-    if (data.weights && (data.weights.net || data.weights.gross || data.weights.cbm)) {
+    if (data.weights && (data.weights.net || data.weights.gross || (showFullLogistics && data.weights.cbm))) {
+        const weightCells = [
+            { content: `${t('net')}: ${data.weights.net} ${data.weights.unit}`, styles: { halign: 'center' } },
+            { content: `${t('gross')}: ${data.weights.gross} ${data.weights.unit}`, styles: { halign: 'center' } }
+        ];
+        if (showFullLogistics) {
+            weightCells.push({ content: `${t('vol')}: ${data.weights.cbm} CBM`, styles: { halign: 'center' } });
+        }
         doc.autoTable({
             startY: currentY,
-            body: [[
-                { content: `${t('net')}: ${data.weights.net} ${data.weights.unit}`, styles: { halign: 'center' } },
-                { content: `${t('gross')}: ${data.weights.gross} ${data.weights.unit}`, styles: { halign: 'center' } },
-                { content: `${t('vol')}: ${data.weights.cbm} CBM`, styles: { halign: 'center' } }
-            ]],
+            body: [weightCells],
             theme: 'grid',
             styles: { font: 'helvetica', fontSize: 8, fontStyle: 'bold', fillColor: [250, 250, 250], textColor: darkGray, lineColor: [220, 220, 220], cellPadding: 2 },
             margin: { left: margin, right: margin }
@@ -176,14 +191,24 @@ async function generateNativePDF(data, filename, action = 'download') {
     }
 
     // --- GLAVNA TABELA STAVKI ---
-    const tableData = data.items.map(item => [ item.desc, `${item.qty} ${item.unit}`, fmtCurr(item.price, data.currency), fmtCurr(item.total, data.currency) ]);
+    const hasAnyItemHs = data.items.some(item => item.hsCode);
+    const tableData = data.items.map(item => hasAnyItemHs
+        ? [ item.desc, item.hsCode || '-', `${item.qty} ${item.unit}`, fmtCurr(item.price, data.currency), fmtCurr(item.total, data.currency) ]
+        : [ item.desc, `${item.qty} ${item.unit}`, fmtCurr(item.price, data.currency), fmtCurr(item.total, data.currency) ]
+    );
+    const tableHead = hasAnyItemHs
+        ? [[ t('desc'), t('hs'), t('qty'), t('price'), t('total') ]]
+        : [[ t('desc'), t('qty'), t('price'), t('total') ]];
+    const tableColumnStyles = hasAnyItemHs
+        ? { 0: { cellWidth: 'auto' }, 1: { cellWidth: 25 }, 2: { cellWidth: 25, halign: 'right' }, 3: { cellWidth: 30, halign: 'right' }, 4: { cellWidth: 35, halign: 'right' } }
+        : { 0: { cellWidth: 'auto' }, 1: { cellWidth: 30, halign: 'right' }, 2: { cellWidth: 35, halign: 'right' }, 3: { cellWidth: 40, halign: 'right' } };
     doc.autoTable({
         startY: currentY,
-        head: [[ t('desc'), t('qty'), t('price'), t('total') ]],
+        head: tableHead,
         body: tableData, theme: 'grid',
         headStyles: { fillColor: blue, textColor: 255, fontStyle: 'bold', fontSize: 9, cellPadding: 3 },
         styles: { font: 'helvetica', fontSize: 9, cellPadding: 3, textColor: darkGray, lineColor: [220, 220, 220] },
-        columnStyles: { 0: { cellWidth: 'auto' }, 1: { cellWidth: 30, halign: 'right' }, 2: { cellWidth: 35, halign: 'right' }, 3: { cellWidth: 40, halign: 'right' } },
+        columnStyles: tableColumnStyles,
         margin: { left: margin, right: margin, bottom: 45 } 
     });
     currentY = doc.lastAutoTable.finalY + 2;
@@ -271,8 +296,24 @@ async function generateNativePDF(data, filename, action = 'download') {
     }
 
     // --- LOGIKA ZA EMAIL ILI DOWNLOAD ---
+    const base64Str = doc.output('datauristring');
+
+    // ISPRAVKA / NOVA FUNKCIONALNOST: generisani dokumenti (ponude, profakture,
+    // fakture) se ranije NIGDE nisu čuvali - klijent ih nije mogao videti u svom
+    // B2B portalu iako ceo mehanizam za to (trezor dokumenata + tab "Moji
+    // dokumenti" u portalu) već postoji na backendu i u portal UI-ju. Sada se
+    // svaki generisan dokument automatski upisuje u trezor, vezan za partnera.
+    if (data.customer && data.customer.id) {
+        saveDocumentToVault({
+            partnerId: data.customer.id,
+            productId: data.productId || null,
+            docType: docTypeStr,
+            fileName: filename,
+            fileUrl: base64Str
+        }).catch(err => console.warn('Dokument nije sačuvan u trezoru portala:', err));
+    }
+
     if (action === 'send') {
-        const base64Str = doc.output('datauristring');
         if (typeof Comms !== 'undefined') {
             Comms.showSendModal(base64Str, filename, data);
         } else {

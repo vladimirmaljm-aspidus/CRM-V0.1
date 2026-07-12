@@ -14,6 +14,30 @@ def get_db_connection():
     conn.execute('PRAGMA busy_timeout=60000;')
     return conn
 
+# Moduli koji podrzavaju ownerId/sharedWith model vlasnistva.
+# NAPOMENA: ranije je ownership filtriranje bilo hardkodirano samo za 'partners' i
+# 'deals', zbog cega je '*_view_own' permisija za ostale module (accounts,
+# transactions, demands, connections, offers) bila potpuno neefikasna - korisnik je
+# video SVE zapise umesto samo svojih. Sada je generalizovano za sve module.
+OWNERSHIP_MODULES = {'partners', 'deals', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'demands', 'shared_documents'}
+
+# Settings kljucevi koji sadrze kredencijale/osetljive podatke i smeju se citati/pisati samo od strane admina.
+SENSITIVE_SETTINGS_KEYS = {'comms_settings'}
+
+def filter_by_ownership(key, item, module_name, permissions, user_id, role):
+    """Vraca False ako korisnik NE sme da vidi ovaj zapis (nema view_all i nije vlasnik/deljeno sa njim)."""
+    if role == 'admin':
+        return True
+    if permissions.get(f'{module_name}_view_all', False):
+        return True
+    if key not in OWNERSHIP_MODULES:
+        return True
+    owner_id = item.get('ownerId')
+    shared_with = item.get('sharedWith', [])
+    if owner_id is None:
+        return True
+    return owner_id == user_id or user_id in shared_with
+
 @data_bp.route('/api/data/<key>', methods=['GET'])
 @login_required
 def get_data(key):
@@ -50,13 +74,10 @@ def get_data(key):
                 item = decrypt_data(row[0]) 
                 
                 if role != 'admin':
-                    owner_id = item.get('ownerId')
-                    shared_with = item.get('sharedWith', [])
-                    
-                    if key == 'partners' and not permissions.get('partners_view_all', False):
-                        if owner_id != user_id and user_id not in shared_with: continue
-                    if key == 'deals' and not permissions.get('deals_view_all', False):
-                        if owner_id != user_id and user_id not in shared_with: continue
+                    module_name = perm_map.get(key, key)
+                    if not filter_by_ownership(key, item, module_name, permissions, user_id, role):
+                        continue
+
                     if key == 'deals' and not permissions.get('deals_view_costs', False):
                         item['purchasePrice'] = 0
                         item['bankCosts'] = 0
@@ -73,6 +94,14 @@ def get_data(key):
                 
             return jsonify({"value": data})
         else:
+            # ISPRAVKA: comms_settings (SMTP host/user/LOZINKA) je ranije mogao da
+            # procita BILO KOJI ulogovan korisnik. 'settings'/'company' ostaju javni
+            # jer ih frontend koristi za osnovni prikaz aplikacije, ali osetljivi
+            # kljucevi zahtevaju admin rolu.
+            if key in SENSITIVE_SETTINGS_KEYS and role != 'admin':
+                log_audit('SECURITY', 'database', f'Prevented read access to sensitive settings key: {key}', is_suspicious=True)
+                return jsonify({"error": "Unauthorized"}), 403
+
             c.execute('SELECT value FROM settings WHERE key=?', (key,))
             row = c.fetchone()
             # Settings je OBAVEZNO kriptovan jer čuva SMTP lozinke
@@ -126,6 +155,24 @@ def save_single_item(key):
                 action = 'CREATE'
                 item['ownerId'] = session['user_id']
                 item['sharedWith'] = []
+
+                # ISPRAVKA (eskalacija privilegija): sanitizacija cena/troskova se
+                # ranije radila SAMO pri izmeni postojeceg zapisa. Korisnik bez
+                # 'deals_view_costs'/'products_view_prices' je pri KREIRANJU novog
+                # deal-a/proizvoda i dalje mogao da upise nabavnu cenu, bankovne
+                # podatke dobavljaca ili cene ponuda.
+                if role != 'admin':
+                    if key == 'deals' and not perms.get('deals_view_costs', False):
+                        item['purchasePrice'] = 0
+                        item['supplierId'] = None
+                        item['supplierName'] = ''
+                        item['supplierBankDetails'] = ''
+                        item['costs'] = []
+                        item['bankCosts'] = 0
+                    if key == 'products' and not perms.get('products_view_prices', False):
+                        for offer in item.get('supplyOffers', []) or []:
+                            offer['price'] = 0
+                            offer['supplierId'] = None
             else:
                 existing = decrypt_data(existing_row[0])
                 item['ownerId'] = existing.get('ownerId')
@@ -146,7 +193,14 @@ def save_single_item(key):
             c.execute(f'INSERT OR REPLACE INTO {key} (id, data) VALUES (?, ?)', (item_id, json.dumps(item)))
             action_log_msg = (action, key, f'Updated item ID: {item_id}', False)
         
-        elif key == 'settings' or key == 'company':
+        elif key == 'settings' or key == 'company' or key in SENSITIVE_SETTINGS_KEYS:
+            # KRITICNA ISPRAVKA: ova grana ranije uopste nije proveravala rolu, pa je
+            # SVAKI ulogovani korisnik mogao da prepise SMTP lozinku, podatke firme i
+            # druge sistemske postavke preko ovog endpointa.
+            if role != 'admin':
+                conn.rollback()
+                log_audit('SECURITY', 'database', f'Prevented write access to settings key: {key}', is_suspicious=True)
+                return jsonify({"error": "Unauthorized"}), 403
             # ENKRIPCIJA: Podešavanja ostaju bezbedna u trezoru
             c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, encrypt_data(item)))
             action_log_msg = ('EDIT', 'settings', f'Updated settings for {key}', False)
@@ -244,6 +298,14 @@ def save_data(key):
                 c.execute(f'INSERT INTO {key} (id, data) VALUES (?, ?)', (item.get('id', str(uuid.uuid4())), json.dumps(item)))
             action_log_msg = ('CREATE', key, 'Admin performed bulk save on table.', False)
         else:
+            # KRITICNA ISPRAVKA: identicna rupa kao gore - ova grana nije proveravala
+            # rolu, pa je bilo koji ulogovan korisnik mogao da prepise proizvoljan
+            # settings kljuc (ukljucujuci SMTP kredencijale) preko bulk-save rute.
+            if session.get('role') != 'admin':
+                conn.rollback()
+                log_audit('SECURITY', 'database', f'Prevented settings write for key: {key}', is_suspicious=True)
+                return jsonify({"error": "Unauthorized"}), 403
+
             data = request.json.get('value')
             c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, encrypt_data(data)))
             action_log_msg = ('EDIT', 'settings', f'Updated settings for {key}', False)

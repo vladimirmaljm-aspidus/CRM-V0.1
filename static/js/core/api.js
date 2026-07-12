@@ -131,6 +131,16 @@ async function deleteFileFromServer(fileUrl) {
     } catch(e) { console.error(Utils.t('api.fileDeleteError'), e); }
 }
 
+async function saveDocumentToVault(payload) {
+    const res = await fetchWithRetry('/api/vault/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    await handleApiError(res);
+    return res.json();
+}
+
 async function exportDatabase() {
   const exportData = {};
   for(const key of DATA_KEYS) {

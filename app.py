@@ -4,7 +4,7 @@ from datetime import timedelta
 from flask import Flask, render_template, jsonify, request, abort
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from config import SECRET_KEY, MAX_CONTENT_LENGTH, UPLOAD_FOLDER
+from config import SECRET_KEY, MAX_CONTENT_LENGTH, UPLOAD_FOLDER, PORTAL_UPLOAD_FOLDER
 from database import init_db
 from utils import FirewallCache, log_audit
 
@@ -27,9 +27,15 @@ app = Flask(__name__)
 # OBAVEZNO ZA PRODUKCIJU (Nginx/Cloudflare): Rešava problem lažiranja IP adresa
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
+if SECRET_KEY == 'aspidus-pro-secure-vault-x92f8j3pL-2026-vQpZm1!k9':
+    logger.warning("SECURITY WARNING: SECRET_KEY environment variable is not set. Using the hardcoded fallback key from source code is UNSAFE in production (session cookies can be forged). Set the SECRET_KEY env var before deploying.")
+
 app.secret_key = SECRET_KEY
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# ISPRAVKA: ranije nije bio postavljen, pa je /portal_uploads/<filename> (u
+# routes/portal/actions.py) uvek bacao KeyError -> 500 pri preuzimanju KYC/portal fajlova.
+app.config['PORTAL_UPLOAD_FOLDER'] = PORTAL_UPLOAD_FOLDER
 
 # BRUTALNA ZAŠTITA SESIJE - VOJNI STANDARD
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
@@ -68,7 +74,7 @@ def limit_login_attempts():
         valid_attempts = [t for t in attempts if now - t < 300]
         
         # Provera pre nego što dodamo novi pokušaj (sprečava produžavanje kazne u beskraj)
-        if len(valid_attempts) >= 10:
+        if len(valid_attempts) >= FirewallCache.settings.get('max_login', 10):
             logger.warning(f"Brute force attempt blocked from IP: {ip}")
             log_audit('SECURITY_BLOCK', 'firewall', f'IP {ip} blocked due to excessive login attempts.', is_suspicious=True)
             abort(429, description="Too many login attempts. Your IP address is blocked for 5 minutes for security reasons.")

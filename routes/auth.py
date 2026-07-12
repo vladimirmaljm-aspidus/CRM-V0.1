@@ -62,6 +62,7 @@ def login():
         
         session['login_ip'] = client_ip
         session['login_ua'] = request.user_agent.string if request.user_agent else "Unknown"
+        session['login_ua_family'] = f"{request.user_agent.browser or ''}|{request.user_agent.platform or ''}"
         
         if client_ip in FirewallCache.login_attempts:
             del FirewallCache.login_attempts[client_ip]

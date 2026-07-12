@@ -31,9 +31,22 @@ const DealsCalculations = {
             let commission = 0; 
             const val = asc.commissionValue || 0;
             switch(asc.commissionType) { 
-                case 'percent_profit': commission = baseProfit * (val / 100); break; 
-                case 'fixed_ton': commission = (deal.unit === 't' || deal.unit === 'MT - Metric Ton' || deal.unit === 'MT' ? deal.quantity : deal.quantity / 1000) * val; break; 
-                case 'fixed_kg': commission = (deal.unit === 'kg' || deal.unit === 'kg - Kilogram' ? deal.quantity : deal.quantity * 1000) * val; break; 
+                case 'percent_profit':
+                    commission = baseProfit * (val / 100);
+                    break;
+                case 'fixed_ton': {
+                    // ISPRAVKA: ranije se pretpostavljalo da je kolicina u kg ako
+                    // jedinica nije eksplicitno 't'/'MT', sto je davalo pogresan
+                    // obracun za lb/oz/g i sve nemerne jedinice (pcs, CBM, box...).
+                    const tons = Utils.toMetricTons(deal.quantity, deal.unit);
+                    commission = (tons !== null ? tons : deal.quantity) * val;
+                    break;
+                }
+                case 'fixed_kg': {
+                    const kilos = Utils.toKilograms(deal.quantity, deal.unit);
+                    commission = (kilos !== null ? kilos : deal.quantity) * val;
+                    break;
+                }
             }
             return total + commission;
         }, 0);
@@ -108,9 +121,15 @@ const DealsCalculations = {
             formEl.querySelectorAll('.associate-item').forEach(el => {
                const type = el.querySelector('[name^="commissionType_"]')?.value;
                const val = parseFloat(el.querySelector('[name^="commissionValue_"]')?.value) || 0;
-               if(type === 'percent_profit') commission += baseProfit * (val / 100);
-               else if(type === 'fixed_ton') commission += (unit === 't' || unit === 'MT' || unit === 'MT - Metric Ton' ? qty : qty / 1000) * val;
-               else if(type === 'fixed_kg') commission += (unit === 'kg' || unit === 'kg - Kilogram' ? qty : qty * 1000) * val;
+               if(type === 'percent_profit') {
+                   commission += baseProfit * (val / 100);
+               } else if(type === 'fixed_ton') {
+                   const tons = Utils.toMetricTons(qty, unit);
+                   commission += (tons !== null ? tons : qty) * val;
+               } else if(type === 'fixed_kg') {
+                   const kilos = Utils.toKilograms(qty, unit);
+                   commission += (kilos !== null ? kilos : qty) * val;
+               }
             });
             const netProfit = baseProfit - commission;
             const sellCur = formEl.querySelector('[name="sellingCurrency"]')?.value || 'USD';

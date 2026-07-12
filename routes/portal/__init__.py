@@ -30,7 +30,7 @@ def check_portal_rate_limit(ip):
     if ip in FirewallCache.whitelist: return True
     now = time.time()
     FirewallCache.portal_attempts[ip] = [t for t in FirewallCache.portal_attempts.get(ip, []) if now - t < 60]
-    if len(FirewallCache.portal_attempts.get(ip, [])) > 50: return False
+    if len(FirewallCache.portal_attempts.get(ip, [])) > FirewallCache.settings.get('max_portal', 50): return False
     FirewallCache.portal_attempts.setdefault(ip, []).append(now)
     return True
 

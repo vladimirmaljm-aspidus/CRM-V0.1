@@ -5,10 +5,38 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 from werkzeug.utils import secure_filename
-from flask import request, jsonify, abort, send_from_directory, current_app
+from flask import request, jsonify, abort, send_from_directory, current_app, session
 from config import DB_FILE, PORTAL_DB_FILE, PORTAL_UPLOAD_FOLDER, ALLOWED_EXTENSIONS
 from utils import log_audit, login_required, encrypt_data, decrypt_data, is_safe_file_content
 from . import portal_bp, portal_auth_sessions, safe_parse
+
+
+def require_portal_admin():
+    """ISPRAVKA: admin rute za B2B portal (pregled/odobravanje KYC dokumenata sa
+    bankovnim podacima, direktorima, UBO-ima, i odobravanje proizvoda partnera) su
+    ranije imale SAMO @login_required, bez provere role ili permisije. Bilo koji
+    ulogovan zaposleni - bez obzira na dodeljene permisije - mogao je da odobrava
+    ili odbija KYC podneske i proizvode partnera. Sada zahtevamo admin rolu ili
+    eksplicitnu 'partners_edit' permisiju, po uzoru na model permisija iz
+    routes/data.py. Vraca None ako je pristup dozvoljen, ili Flask response ako nije."""
+    if 'user_id' not in session:
+        return jsonify({"error": "UNAUTHORIZED"}), 401
+    role = session.get('role')
+    if role == 'admin':
+        return None
+    import sqlite3
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    perms = decrypt_data(row[0]) if row and row[0] else {}
+    if perms.get('partners_edit', False):
+        return None
+    log_audit('SECURITY', 'portal', 'Prevented unauthorized access to portal admin endpoint', is_suspicious=True)
+    return jsonify({"error": "Unauthorized"}), 403
 
 def verify_portal_auth(token, auth_header):
     """Pomoćna funkcija za proveru memorijske sesije i validnosti tokena"""
@@ -98,6 +126,8 @@ def submit_rfq(token):
 @portal_bp.route('/api/portal/admin/products', methods=['GET'])
 @login_required
 def admin_get_portal_products():
+    denied = require_portal_admin()
+    if denied: return denied
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     cp = conn_p.cursor()
     cp.execute("SELECT id, partner_id, data, status, created_at FROM portal_products ORDER BY created_at DESC")
@@ -115,6 +145,8 @@ def admin_get_portal_products():
 @portal_bp.route('/api/portal/admin/products/review/<product_id>', methods=['POST'])
 @login_required
 def admin_review_portal_product(product_id):
+    denied = require_portal_admin()
+    if denied: return denied
     action = request.json.get('action')
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     cp = conn_p.cursor()
@@ -228,6 +260,8 @@ def submit_kyc(token):
 @portal_bp.route('/api/portal/admin/submissions/all', methods=['GET'])
 @login_required
 def get_all_kyc_submissions():
+    denied = require_portal_admin()
+    if denied: return denied
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     cp = conn_p.cursor()
     cp.execute("SELECT id, partner_id, data, submitted_at FROM kyc_submissions ORDER BY submitted_at DESC")
@@ -246,6 +280,8 @@ def get_all_kyc_submissions():
 @portal_bp.route('/api/portal/admin/submissions/approve/<sub_id>', methods=['POST'])
 @login_required
 def approve_kyc_submission(sub_id):
+    denied = require_portal_admin()
+    if denied: return denied
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     cp = conn_p.cursor()
     cp.execute("SELECT partner_id, data FROM kyc_submissions WHERE id=?", (sub_id,))
