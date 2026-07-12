@@ -229,6 +229,7 @@ function renderPartnerDetailView(partnerId) {
                    </div>
                    <button id="kyc-partner-btn" class="w-full btn bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 shadow-sm border border-indigo-800">📄 ${Utils.t('kyc.reviewTitle')}</button>
                    <button id="b2b-portal-btn" class="w-full btn bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs py-2 shadow-sm border border-slate-900">🌐 ${Utils.t('misc.b2bLinkBtn')}</button>
+                   ${partner.portalToken ? `<button id="portal-access-btn" class="w-full btn ${partner.isPortalActive === false ? 'bg-emerald-600 hover:bg-emerald-700 border-emerald-800' : 'bg-rose-600 hover:bg-rose-700 border-rose-800'} text-white font-bold text-xs py-2 shadow-sm border">${partner.isPortalActive === false ? '✅ ' + Utils.t('misc.portalReactivate') : '🔒 ' + Utils.t('misc.portalRevoke')}</button>` : ''}
                </div>
             </div>
             
@@ -302,6 +303,35 @@ function renderPartnerDetailView(partnerId) {
         } catch(e) { alert("Network Error."); }
         btn.innerHTML = `🌐 ${Utils.t('misc.b2bLinkBtn')}`; btn.disabled = false;
     });
+
+    // KILL SWITCH: opoziv / reaktivacija pristupa partnera B2B portalu
+    const portalAccessBtn = document.getElementById('portal-access-btn');
+    if (portalAccessBtn) {
+        portalAccessBtn.addEventListener('click', async () => {
+            const willActivate = partner.isPortalActive === false;
+            const confirmMsg = willActivate ? Utils.t('misc.portalReactivateConfirm') : Utils.t('misc.portalRevokeConfirm');
+            if (!confirm(confirmMsg)) return;
+            portalAccessBtn.disabled = true; portalAccessBtn.innerText = '⏳...';
+            try {
+                const res = await fetch(`/api/portal/access/${partnerId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ active: willActivate })
+                });
+                const data = await res.json();
+                if (res.ok && data.status === 'success') {
+                    await loadFromStorage();
+                    renderPartnerDetailView(partnerId);
+                } else {
+                    alert("Error: " + (data.error || 'Unknown'));
+                    portalAccessBtn.disabled = false;
+                }
+            } catch (e) {
+                alert("Network Error.");
+                portalAccessBtn.disabled = false;
+            }
+        });
+    }
 
     if(state.user.role === 'admin') {
         document.getElementById('access-partner-btn').addEventListener('click', () => typeof showPartnerAccessModal === 'function' && showPartnerAccessModal(partnerId));

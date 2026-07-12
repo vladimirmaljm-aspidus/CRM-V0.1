@@ -1,0 +1,40 @@
+# ==========================================================
+#  BEZBEDNOST: Tajne i podaci NIKADA ne smeju u repozitorijum
+# ==========================================================
+
+# Kriptografski ključevi (dešifruju SVE osetljive podatke)
+vault.key
+instance/secret.key
+instance/*.key
+*.key
+
+# Baze podataka (sadrže klijente, KYC, dilove, ponude...)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Otpremljeni fajlovi i KYC dokumenti klijenata
+uploads/*
+!uploads/.gitkeep
+portal_uploads/*
+!portal_uploads/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+
+# Node
+node_modules/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

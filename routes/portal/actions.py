@@ -8,7 +8,7 @@ from werkzeug.utils import secure_filename
 from flask import request, jsonify, abort, send_from_directory, current_app, session
 from config import DB_FILE, PORTAL_DB_FILE, PORTAL_UPLOAD_FOLDER, ALLOWED_EXTENSIONS
 from utils import log_audit, login_required, encrypt_data, decrypt_data, is_safe_file_content
-from . import portal_bp, portal_auth_sessions, safe_parse
+from . import (portal_bp, safe_parse, verify_portal_session, find_partner_by_token)
 
 
 def require_portal_admin():
@@ -39,10 +39,8 @@ def require_portal_admin():
     return jsonify({"error": "Unauthorized"}), 403
 
 def verify_portal_auth(token, auth_header):
-    """Pomoćna funkcija za proveru memorijske sesije i validnosti tokena"""
-    if not token or not auth_header or portal_auth_sessions.get(token) != auth_header:
-        return False
-    return True
+    """Provera portal sesije (constant-time + TTL). Deleguje na centralizovanu logiku."""
+    return verify_portal_session(token, auth_header)
 
 @portal_bp.route('/api/portal/products/submit/<token>', methods=['POST'])
 def submit_portal_product(token):
@@ -52,22 +50,31 @@ def submit_portal_product(token):
     
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
     c = conn.cursor()
-    c.execute("SELECT id, data FROM partners")
-    partner_id, company_name = None, "Unknown"
-    for r in c.fetchall():
-        p_data = safe_parse(r[1])
-        if p_data.get('portalToken') == token:
-            partner_id, company_name = r[0], p_data.get('companyName', 'Unknown')
-            break
+    partner_id, partner = find_partner_by_token(c, token, enforce_active=True)
     conn.close()
     if not partner_id: abort(403)
-    
-    prod_data = request.json
-    product_id = prod_data.get('id') or str(uuid.uuid4())
-    prod_data['id'] = product_id
-    
+    company_name = partner.get('companyName', 'Unknown')
+
+    prod_data = request.json or {}
+
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     cp = conn_p.cursor()
+
+    # BEZBEDNOST: partner sme da izmeni SAMO sopstveni pending proizvod.
+    # Ako je prosleđen id, mora pripadati ovom partneru; u suprotnom se
+    # generiše nov server-side id. Ovo sprečava da partner (preko client-side id-a)
+    # prepiše tuđi portal-proizvod ili, nakon odobrenja, postojeći proizvod u glavnoj bazi.
+    client_id = prod_data.get('id')
+    product_id = None
+    if client_id:
+        cp.execute("SELECT partner_id FROM portal_products WHERE id=?", (client_id,))
+        owner = cp.fetchone()
+        if owner and owner[0] == partner_id:
+            product_id = client_id
+    if not product_id:
+        product_id = str(uuid.uuid4())
+    prod_data['id'] = product_id
+
     created_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     cp.execute("INSERT OR REPLACE INTO portal_products (id, partner_id, data, status, created_at) VALUES (?, ?, ?, ?, ?)", (product_id, partner_id, json.dumps(prod_data), 'pending', created_at))
     conn_p.commit()
@@ -83,21 +90,13 @@ def submit_rfq(token):
     
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
     c = conn.cursor()
-    c.execute("SELECT id, data FROM partners")
-    partner_id = None
-    company_name = "Unknown"
-    for r in c.fetchall():
-        p_data = safe_parse(r[1])
-        if p_data.get('portalToken') == token:
-            partner_id = r[0]
-            company_name = p_data.get('companyName', 'Unknown')
-            break
-    
+    partner_id, partner = find_partner_by_token(c, token, enforce_active=True)
     if not partner_id:
         conn.close()
         abort(403)
-        
-    demand_data = request.json
+    company_name = partner.get('companyName', 'Unknown')
+
+    demand_data = request.json or {}
     
     # Striktna sanitizacija ulaza
     product_name = str(demand_data.get("productName", "")).strip()[:100]
@@ -216,10 +215,18 @@ def submit_kyc(token):
     if not verify_portal_auth(token, auth_header): 
         abort(401)
         
-    kyc_data = request.json
-    partner_id = kyc_data.get('partner_id')
-    if not partner_id: abort(400)
-    
+    kyc_data = request.json or {}
+
+    # BEZBEDNOST: partner_id se izvodi iz TOKENA (autoritativno), a ne iz payload-a.
+    # Ranije je klijent slao partner_id i mogao da podnese KYC za tuđi profil.
+    conn_id = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c_id = conn_id.cursor()
+        partner_id, _partner = find_partner_by_token(c_id, token, enforce_active=True)
+    finally:
+        conn_id.close()
+    if not partner_id: abort(403)
+
     # 1. Osnovna sanitizacija kyc podataka
     clean_data = {
         "companyName": str(kyc_data.get('companyName', '')).strip()[:150],
