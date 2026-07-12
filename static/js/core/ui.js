@@ -1,20 +1,40 @@
 // static/js/core/ui.js
 
+// Čiste line-ikone (Heroicons stil) umesto emoji — profesionalniji, konzistentan izgled.
+const NAV_ICONS = {
+  deals: '<path d="M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z"/>',
+  offers: '<path d="M12 3l2.09 4.26L19 8l-3.5 3.36L16.18 16 12 13.77 7.82 16l.68-4.64L5 8l4.91-.74L12 3z"/>',
+  products: '<path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10M4 7v10l8 4"/>',
+  demands: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+  product_search: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+  finances: '<path d="M12 3v18m5-14H9.5a2.5 2.5 0 0 0 0 5h5a2.5 2.5 0 0 1 0 5H7"/>',
+  cashflow: '<path d="M3 12c2-3 4-3 6 0s4 3 6 0 4-3 6 0M3 18c2-3 4-3 6 0s4 3 6 0 4-3 6 0"/>',
+  partners: '<circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0M16 6a3 3 0 0 1 0 6m5 8a5 5 0 0 0-4-4.9"/>',
+  network: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M6.7 7.5l4 8.5m6.6-8.5l-4 8.5M7 6h10"/>',
+  users: '<circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+  audit: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9.5 12l1.8 1.8 3.2-3.6"/>'
+};
+
 let fullNavigationItems = [
-  { view:'deals', icon:'📄', labelPath:'nav.deals', group: 'sales' },
-  { view:'offers', icon:'💎', labelPath:'nav.offers', group: 'sales' },
-  { view:'products', icon:'📦', labelPath:'nav.products', group: 'sales' },
-  { view:'demands', icon:'🔎', labelPath:'nav.demands', group: 'sales' },
-  { view:'product_search', icon:'🎯', labelPath:'nav.product_search', group: 'sales' },
-  
-  { view:'finances', icon:'💰', labelPath:'nav.finances', group: 'network' },
-  { view:'cashflow', icon:'🌊', labelPath:'nav.cashflow', group: 'network' },
-  { view:'partners', icon:'👥', labelPath:'nav.partners', group: 'network' },
-  { view:'network', icon:'🕸️', labelPath:'nav.network', group: 'network' },
-  
-  { view:'users', icon:'🧑‍💼', labelPath:'users.manage', adminOnly: true, group: 'admin' },
-  { view:'audit', icon:'🛡️', labelPath:'audit.title', adminOnly: true, group: 'admin' }
+  { view:'deals', icon:'deals', labelPath:'nav.deals', group: 'sales' },
+  { view:'offers', icon:'offers', labelPath:'nav.offers', group: 'sales' },
+  { view:'products', icon:'products', labelPath:'nav.products', group: 'sales' },
+  { view:'demands', icon:'demands', labelPath:'nav.demands', group: 'sales' },
+  { view:'product_search', icon:'product_search', labelPath:'nav.product_search', group: 'sales' },
+
+  { view:'finances', icon:'finances', labelPath:'nav.finances', group: 'network' },
+  { view:'cashflow', icon:'cashflow', labelPath:'nav.cashflow', group: 'network' },
+  { view:'partners', icon:'partners', labelPath:'nav.partners', group: 'network' },
+  { view:'network', icon:'network', labelPath:'nav.network', group: 'network' },
+
+  { view:'users', icon:'users', labelPath:'users.manage', adminOnly: true, group: 'admin' },
+  { view:'audit', icon:'audit', labelPath:'audit.title', adminOnly: true, group: 'admin' }
 ];
+
+function navIconSvg(key) {
+  const path = NAV_ICONS[key] || NAV_ICONS.deals;
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5">${path}</svg>`;
+}
 
 if (typeof DATA_KEYS !== 'undefined' && !DATA_KEYS.includes('offers')) {
     DATA_KEYS.push('offers');
@@ -44,29 +64,30 @@ function buildNavigation() {
       if (grp.items.length === 0) return;
       
       const grpHeader = document.createElement('div');
-      grpHeader.className = 'nav-group-title text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest pl-4 mb-2 mt-6 transition-all duration-300';
+      grpHeader.className = 'nav-group-title text-[10px] font-semibold text-slate-400 uppercase tracking-widest pl-3 mb-2 mt-6 transition-all duration-300';
       grpHeader.innerText = grp.label;
       nav.appendChild(grpHeader);
 
       grp.items.forEach(item => {
           const labelText = item.labelPath.startsWith('nav.') || item.labelPath.startsWith('users.') || item.labelPath.startsWith('audit.') ? t(item.labelPath) : item.labelPath;
           const isActive = state.currentView === item.view;
-          
-          const activeClasses = isActive 
-              ? 'bg-blue-600 text-white shadow-[0_4px_14px_rgba(37,99,235,0.25)] translate-x-1' 
-              : 'text-[var(--muted)] hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400';
+
+          const activeClasses = isActive
+              ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+              : 'text-[var(--muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--text-color)]';
 
           const btn = document.createElement('button');
-          btn.className = `group flex items-center w-full text-left p-2 mb-1.5 rounded-xl transition-all duration-300 ease-out border border-transparent ${activeClasses}`;
-          btn.title = labelText; 
-          
+          btn.className = `nav-item group relative flex items-center w-full text-left px-2.5 py-2 mb-0.5 rounded-lg transition-colors duration-200 ${activeClasses}`;
+          btn.title = labelText;
+
           btn.innerHTML = `
-              <div class="flex items-center justify-center w-8 h-8 min-w-[2rem] rounded-lg ${isActive ? 'bg-white/20 text-white' : 'text-slate-400 group-hover:text-blue-500'} transition-colors duration-300">
-                  <span class="text-xl">${item.icon}</span>
+              ${isActive ? '<span class="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-full bg-[var(--accent)]"></span>' : ''}
+              <div class="flex items-center justify-center w-8 h-8 min-w-[2rem] ${isActive ? 'text-[var(--accent)]' : 'text-slate-400 group-hover:text-[var(--text-color)]'} transition-colors duration-200">
+                  ${navIconSvg(item.icon)}
               </div>
-              <span class="nav-text ml-3 text-sm font-bold tracking-wide">${labelText}</span>
+              <span class="nav-text ml-2.5 text-sm ${isActive ? 'font-semibold' : 'font-medium'}">${labelText}</span>
           `;
-          
+
           btn.addEventListener('click', () => { state.currentView = item.view; state.detailViewId = null; resetFilters(); render(); });
           nav.appendChild(btn);
       });

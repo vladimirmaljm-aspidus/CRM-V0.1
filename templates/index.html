@@ -106,7 +106,9 @@
             
             <div class="p-4">
                 <div id="user-profile-plate" class="bg-gradient-to-r from-blue-50 to-transparent dark:from-slate-800/50 dark:to-transparent border border-blue-100 dark:border-slate-700/50 p-3 rounded-2xl flex items-center gap-3 cursor-pointer hover:shadow-sm transition-all group overflow-hidden" title="My Profile">
-                    <div class="w-10 h-10 min-w-[2.5rem] rounded-full bg-white dark:bg-slate-700 flex items-center justify-center text-blue-600 font-bold text-lg border border-blue-100 dark:border-slate-600 shadow-sm group-hover:scale-110 transition-transform">👤</div>
+                    <div class="w-10 h-10 min-w-[2.5rem] rounded-full bg-white dark:bg-slate-700 flex items-center justify-center text-blue-600 border border-blue-100 dark:border-slate-600 shadow-sm group-hover:scale-105 transition-transform">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>
+                    </div>
                     <div class="overflow-hidden flex-1 sidebar-header-text">
                         <p id="nav-account-label" class="text-[9px] text-blue-500 font-black uppercase tracking-widest mb-0.5">Moj Nalog</p>
                         <p id="current-user-display" class="font-bold text-main truncate text-sm leading-tight"></p>
@@ -120,26 +122,26 @@
             
             <div class="p-4 border-t border-[var(--border)] bg-[var(--panel)] space-y-1.5 flex flex-col items-center">
                 
-                <button id="show-notifications-btn" class="relative w-full flex items-center bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 text-main p-2 rounded-xl transition-all group btn-content-wrapper" title="Obaveštenja">
-                  <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center relative text-[var(--muted)] group-hover:text-blue-500 transition-colors">
-                      <span class="text-xl">🔔</span>
-                      <span id="notification-count" class="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-black rounded-full w-4 h-4 flex items-center justify-center shadow-sm">0</span>
+                <button id="show-notifications-btn" class="relative w-full flex items-center bg-transparent hover:bg-[var(--hover-bg)] text-main p-2 rounded-lg transition-colors group btn-content-wrapper" title="Obaveštenja">
+                  <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center relative text-[var(--muted)] group-hover:text-[var(--accent)] transition-colors">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+                      <span id="notification-count" class="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center shadow-sm">0</span>
                   </div>
-                  <span id="notif-label" class="nav-text ml-3 font-semibold text-sm">Obaveštenja</span>
+                  <span id="notif-label" class="nav-text ml-2.5 font-medium text-sm">Obaveštenja</span>
               </button>
 
-              <button id="settings-btn" class="w-full flex items-center bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 text-main p-2 rounded-xl transition-all group btn-content-wrapper" title="Podešavanja Firme">
-                  <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center text-[var(--muted)] group-hover:text-blue-500 transition-colors group-hover:rotate-90 duration-300">
-                      <span class="text-xl">⚙️</span>
+              <button id="settings-btn" class="w-full flex items-center bg-transparent hover:bg-[var(--hover-bg)] text-main p-2 rounded-lg transition-colors group btn-content-wrapper" title="Podešavanja Firme">
+                  <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center text-[var(--muted)] group-hover:text-[var(--accent)] transition-colors">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                   </div>
-                  <span id="company-settings-label" class="nav-text ml-3 font-semibold text-sm">Podešavanja</span>
+                  <span id="company-settings-label" class="nav-text ml-2.5 font-medium text-sm">Podešavanja</span>
               </button>
-              
-              <button id="logout-btn" class="w-full flex items-center bg-red-50/50 dark:bg-red-900/10 hover:bg-red-100 dark:hover:bg-red-900/30 text-red-600 p-2 mt-2 rounded-xl transition-all group btn-content-wrapper border border-red-100 dark:border-red-900/20" title="Odjavi se">
-                  <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center transition-transform group-hover:-translate-x-1">
-                      <span class="text-xl">🚪</span>
+
+              <button id="logout-btn" class="w-full flex items-center bg-transparent hover:bg-red-50 text-[var(--muted)] hover:text-red-600 p-2 mt-1 rounded-lg transition-colors group btn-content-wrapper" title="Odjavi se">
+                  <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center transition-transform group-hover:-translate-x-0.5">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
                   </div>
-                  <span id="logout-btn-txt" class="nav-text ml-3 font-black text-sm">Odjavi se</span>
+                  <span id="logout-btn-txt" class="nav-text ml-2.5 font-medium text-sm">Odjavi se</span>
               </button>
               
               <input id="import-file-input" type="file" accept=".json" class="hidden" />
