@@ -42,6 +42,29 @@ def verify_portal_auth(token, auth_header):
     """Provera portal sesije (constant-time + TTL). Deleguje na centralizovanu logiku."""
     return verify_portal_session(token, auth_header)
 
+
+def require_partner_view():
+    """KYC/portal dokumenti (pasoši, bankovni podaci, UBO...) su compliance-osetljivi.
+    Sme ih preuzeti admin ili korisnik sa nekom 'partners' view/edit permisijom.
+    Vraća None ako je dozvoljeno, ili Flask response ako nije."""
+    if 'user_id' not in session:
+        return jsonify({"error": "UNAUTHORIZED"}), 401
+    if session.get('role') == 'admin':
+        return None
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    perms = decrypt_data(row[0]) if row and row[0] else {}
+    allowed_keys = ('partners_view_all', 'partners_view', 'partners_view_own', 'partners_edit')
+    if any(perms.get(k, False) for k in allowed_keys):
+        return None
+    log_audit('SECURITY', 'portal', 'Prevented unauthorized KYC/portal document download', is_suspicious=True)
+    return jsonify({"error": "Unauthorized"}), 403
+
 @portal_bp.route('/api/portal/products/submit/<token>', methods=['POST'])
 def submit_portal_product(token):
     auth_header = request.headers.get('X-Portal-Auth')
@@ -104,14 +127,24 @@ def submit_rfq(token):
         product_name = "Unspecified Commodity"
         
     demand_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     demand_obj = {
         "id": demand_id,
+        # Pišemo OBA polja (customerId za portal, buyerId za CRM prikaz) kako bi
+        # RFQ sa portala bio ispravno povezan sa klijentom u oba sistema. Ranije je
+        # portal pisao samo customerId, a CRM lista potražnje čita buyerId, pa se
+        # kupac prikazivao prazan.
         "customerId": partner_id,
+        "buyerId": partner_id,
+        "productId": None,
+        "isNewProduct": True,
         "productName": product_name,
         "quantity": float(demand_data.get("quantity") or 0),
         "targetPrice": float(demand_data.get("targetPrice") or 0),
         "notes": str(demand_data.get("notes", "")).strip()[:1000],
-        "date": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        "date": now_iso,
+        # createdAt je polje koje CRM prikaz koristi za datum; date ostaje zbog portala.
+        "createdAt": now_iso,
         "status": "pending",
         "source": "B2B Portal"
     }
@@ -344,4 +377,7 @@ def approve_kyc_submission(sub_id):
 @portal_bp.route('/portal_uploads/<filename>')
 @login_required
 def serve_portal_uploads(filename):
+    denied = require_partner_view()
+    if denied: return denied
+    log_audit('DOWNLOAD', 'portal', f'KYC/portal document downloaded: {secure_filename(filename)}', is_suspicious=False)
     return send_from_directory(current_app.config['PORTAL_UPLOAD_FOLDER'], secure_filename(filename))
