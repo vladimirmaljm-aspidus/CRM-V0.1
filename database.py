@@ -1,9 +1,41 @@
+import os
+import uuid
 import sqlite3
 import logging
 from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE
 
 # Postavljanje logera za bazu
 logger = logging.getLogger(__name__)
+
+def seed_admin_if_empty(cursor):
+    """Ako u bazi NEMA nijednog korisnika (npr. sveža/prazna baza na produkciji
+    gde .db fajlovi nisu deployovani), kreira početnog administratora kako korisnik
+    ne bi ostao zaključan van sistema (uzrok 'auth_error' na praznoj bazi).
+
+    Kredencijali se uzimaju iz env-a ADMIN_USERNAME / ADMIN_PASSWORD; ako nisu
+    postavljeni, koristi se podrazumevani nalog uz glasno upozorenje da se odmah
+    promeni lozinka. NE dira postojeće korisnike."""
+    try:
+        from werkzeug.security import generate_password_hash
+        count = cursor.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+        if count and count > 0:
+            return
+        username = (os.getenv('ADMIN_USERNAME') or 'admin').strip()
+        password = os.getenv('ADMIN_PASSWORD') or 'Admin12345'
+        pw_hash = generate_password_hash(password, method='scrypt:32768:8:1')
+        cursor.execute(
+            'INSERT INTO users (id, username, password, role, permissions) VALUES (?, ?, ?, ?, ?)',
+            (str(uuid.uuid4()), username, pw_hash, 'admin', '{}')
+        )
+        if os.getenv('ADMIN_PASSWORD'):
+            logger.warning(f"SEED: kreiran početni administrator '{username}' (lozinka iz ADMIN_PASSWORD env-a).")
+        else:
+            logger.warning("=" * 70)
+            logger.warning(f"SEED: baza je bila prazna — kreiran administrator '{username}' / 'Admin12345'.")
+            logger.warning("ODMAH se prijavite i promenite lozinku (Moj Profil), ili postavite env ADMIN_PASSWORD.")
+            logger.warning("=" * 70)
+    except Exception as e:
+        logger.error(f"CRITICAL: seed_admin_if_empty nije uspeo - {e}")
 
 def init_db():
     # 1. GLAVNA CRM BAZA
@@ -27,7 +59,11 @@ def init_db():
             tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
             for table in tables:
                 c.execute(f'''CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT)''')
-                
+
+            # Ako je baza prazna (nema korisnika), kreiraj početnog admina da se izbegne
+            # zaključavanje van sistema (npr. sveža baza na produkciji).
+            seed_admin_if_empty(c)
+
             conn.commit()
     except Exception as e:
         logger.error(f"CRITICAL: Greška pri inicijalizaciji glavne baze - {e}")

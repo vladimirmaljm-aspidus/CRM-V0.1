@@ -2,10 +2,13 @@ import datetime
 import json
 import sqlite3
 import re
+import logging
 from flask import Blueprint, request, jsonify, session
 from werkzeug.security import generate_password_hash, check_password_hash
 from config import DB_FILE
 from utils import log_audit, login_required, FirewallCache
+
+logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -49,8 +52,17 @@ def login():
             c = conn.cursor()
             c.execute('SELECT id, username, password, role, permissions, signature FROM users WHERE LOWER(username)=LOWER(?)', (username,))
             user = c.fetchone()
-    except Exception:
+    except Exception as e:
+        # Detaljno logovanje u server log (Render) radi dijagnostike; klijent dobija generičku poruku.
+        logger.error(f"LOGIN DB ERROR for user '{username}': {e}", exc_info=True)
+        log_audit('CRITICAL_ERROR', 'system', f'Login failed due to database error: {e}', is_suspicious=True, location=location)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
+
+    # Dijagnostika (samo u server log): razlog neuspeha, bez otkrivanja klijentu.
+    if not user:
+        logger.info(f"LOGIN: unknown username '{username}' from IP {client_ip}")
+    elif not check_password_hash(user[2], password):
+        logger.info(f"LOGIN: wrong password for '{username}' from IP {client_ip}")
 
     # 4. Uspešna prijava
     if user and check_password_hash(user[2], password):
