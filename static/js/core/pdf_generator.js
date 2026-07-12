@@ -269,8 +269,16 @@ async function generateNativePDF(data, filename, action = 'download') {
     doc.text(`${t('from')}\n${compName}`, margin, signY + 4);
     doc.text(t('accepted'), pageWidth - margin, signY + 4, { align: 'right' });
 
-    if(typeof state !== 'undefined' && state.company && state.company.stampDataUrl) { 
-        try { doc.addImage(state.company.stampDataUrl, 'PNG', margin + 10, signY - 25, 40, 25, '', 'FAST'); } catch(e) {} 
+    // LIČNI POTPIS: koristi se isključivo potpis TRENUTNO ulogovanog korisnika.
+    if(typeof state !== 'undefined' && state.user && state.user.signature) {
+        try { doc.addImage(state.user.signature, 'PNG', margin + 2, signY - 22, 45, 18, '', 'FAST'); } catch(e) {}
+    }
+
+    // FIRMIN PEČAT: samo ako korisnik ima posebnu dozvolu (admin uvek).
+    const canUseStamp = typeof state !== 'undefined' && state.user &&
+        (state.user.role === 'admin' || (state.user.permissions && state.user.permissions.use_company_stamp));
+    if(canUseStamp && typeof state !== 'undefined' && state.company && state.company.stampDataUrl) {
+        try { doc.addImage(state.company.stampDataUrl, 'PNG', margin + 12, signY - 27, 38, 24, '', 'FAST'); } catch(e) {}
     }
 
     // --- FOOTER SA VERIFIKACIJOM (Na svakoj stranici) ---

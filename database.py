@@ -17,6 +17,11 @@ def init_db():
             
             c.execute('''CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE, password TEXT, role TEXT, permissions TEXT)''')
             c.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
+
+            # MIGRACIJA: lični potpis po korisniku (svako koristi samo svoj potpis na dokumentima).
+            cols = [r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()]
+            if 'signature' not in cols:
+                c.execute('ALTER TABLE users ADD COLUMN signature TEXT')
             
             # Kreiranje tabela za sve entitete
             tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']

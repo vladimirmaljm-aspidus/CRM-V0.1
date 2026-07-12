@@ -33,11 +33,12 @@ function resetFilters() {
 
 function handleFilterChange(view, name, value) { state.activeFilters[view][name] = value; render(); }
 
-function createViewHeader(title, buttonText, onButtonClick) { 
-  const header = document.createElement('div'); header.className = 'flex items-center justify-between mb-6'; 
-  header.innerHTML = `<h2 class="text-3xl font-extrabold text-main">${title}</h2>${buttonText ? `<div class="flex items-center gap-4"><button class="btn bg-blue-600 text-white shadow" id="view-add-btn">${buttonText}</button></div>` : ''}`; 
-  if (onButtonClick) header.querySelector('#view-add-btn').addEventListener('click', onButtonClick); 
-  return header; 
+function createViewHeader(title, buttonText, onButtonClick) {
+  const header = document.createElement('div');
+  header.className = 'flex items-center justify-between gap-4 mb-7 pb-5 border-b border-[var(--border)]';
+  header.innerHTML = `<h2 class="page-title">${title}</h2>${buttonText ? `<div class="flex items-center gap-3"><button class="btn btn-primary" id="view-add-btn">${buttonText}</button></div>` : ''}`;
+  if (onButtonClick) header.querySelector('#view-add-btn').addEventListener('click', onButtonClick);
+  return header;
 }
 
 function applyFiltersFor(view) { 
@@ -58,8 +59,11 @@ function applyFiltersFor(view) {
 function openModal(title, innerHtml, onSubmit) { 
   const viewName = state.currentView;
   const isDetailsModal = title.includes(typeof t === 'function' ? t('actions.details') : 'Details');
-  
-  if (viewName !== 'settings' && viewName !== 'users' && !isDetailsModal && !hasPerm(viewName, 'edit')) {
+  // Lični profil (izmena svoje lozinke/potpisa) mora biti dostupan svakom korisniku,
+  // nezavisno od edit-permisija na trenutnom modulu.
+  const isProfileModal = typeof t === 'function' && title === t('misc.myProfile');
+
+  if (viewName !== 'settings' && viewName !== 'users' && !isDetailsModal && !isProfileModal && !hasPerm(viewName, 'edit')) {
       alert(typeof t === 'function' ? t('users.accessDeniedEdit') : 'Access Denied');
       return;
   }
