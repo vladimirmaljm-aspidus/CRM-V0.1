@@ -1,6 +1,6 @@
 // static/js/modules/products/customer_offers.js
 
-function showCustomerOfferModal({productId = null, offerIndex = null, isInventory = false, invIndex = null, savedOfferId = null}) {
+function showCustomerOfferModal({productId = null, offerIndex = null, isInventory = false, invIndex = null, savedOfferId = null, prefillCustomerId = null, prefillQuantity = null}) {
     let savedOfferData = {};
     let currentItems = [];
 
@@ -34,7 +34,7 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
 
         currentItems.push({
             productId: product.id,
-            quantity: 1,
+            quantity: (parseFloat(prefillQuantity) > 0 ? parseFloat(prefillQuantity) : 1),
             price: sourceData.sellingPrice || sourceData.price || sourceData.purchasePrice || 0,
             unit: sourceData.unit || 'MT',
             isInventory: isInventory,
@@ -599,6 +599,15 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
     
     renderItemsList();
     updateDetails();
+
+    // AUTOMATIZACIJA: ako je modal otvoren iz potražnje (RFQ), pred-popuni kupca.
+    if (prefillCustomerId && custSel) {
+        const hasOption = Array.from(custSel.options).some(o => o.value === prefillCustomerId);
+        if (hasOption) {
+            custSel.value = prefillCustomerId;
+            custSel.dispatchEvent(new Event('change'));
+        }
+    }
 }
 
 function renderOffersView() {

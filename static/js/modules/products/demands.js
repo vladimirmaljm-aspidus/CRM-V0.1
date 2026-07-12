@@ -77,12 +77,17 @@ function showDemandForm(id = null) {
         const demand = {
             id,
             buyerId: fd.get('buyerId'),
+            // customerId se drži usklađenim sa buyerId da bi potražnja bila vidljiva
+            // i klijentu u B2B portalu (portal filtrira po customerId).
+            customerId: fd.get('buyerId'),
             productId: isNew ? null : fd.get('productId'),
             productName: isNew ? fd.get('newProductName') : Utils.getProductNameById(fd.get('productId')),
             quantity: fd.get('quantity'),
+            targetPrice: state.editingItem?.targetPrice || 0,
             status: fd.get('status') || 'open',
             isNewProduct: isNew,
-            createdAt: state.editingItem?.createdAt || new Date().toISOString(),
+            source: state.editingItem?.source || 'CRM',
+            createdAt: state.editingItem?.createdAt || state.editingItem?.date || new Date().toISOString(),
             ownerId: state.editingItem?.ownerId || state.user?.id || 'SYSTEM',
             sharedWith: state.editingItem?.sharedWith || []
         };
@@ -132,12 +137,13 @@ function renderDemandsView() {
     const currentLang = Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US';
     
     const stColors = {
+        'pending': 'bg-amber-100 text-amber-800 border-amber-300',
         'open': 'bg-blue-100 text-blue-800 border-blue-300',
         'sourced': 'bg-emerald-100 text-emerald-800 border-emerald-300',
         'closed': 'bg-slate-200 text-slate-700 border-slate-300'
     };
     const stLabels = {
-        'open': 'OTVORENO', 'sourced': 'PRONAĐENO', 'closed': 'ZAVRŠENO'
+        'pending': tLang('NOVO SA PORTALA', 'NEW FROM PORTAL'), 'open': 'OTVORENO', 'sourced': 'PRONAĐENO', 'closed': 'ZAVRŠENO'
     };
 
     container.innerHTML = `
@@ -155,17 +161,20 @@ function renderDemandsView() {
         <tbody class="divide-y divide-slate-100">
             ${state.data.demands.map(d => {
                 const isNewIndicator = d.isNewProduct ? `<span class="bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 text-[9px] rounded-full font-black uppercase ml-2 shadow-sm whitespace-nowrap">✨ ${Utils.t('misc.newTag') || 'NOVO (VAN KATALOGA)'}</span>` : '';
-                const bC = stColors[d.status || 'open'];
-                const bL = stLabels[d.status || 'open'];
-                
+                const sourceIndicator = d.source === 'B2B Portal' ? `<span class="bg-indigo-100 text-indigo-800 border border-indigo-300 px-2 py-0.5 text-[9px] rounded-full font-black uppercase ml-2 shadow-sm whitespace-nowrap">🌐 B2B PORTAL</span>` : '';
+                const bC = stColors[d.status || 'open'] || stColors['open'];
+                const bL = stLabels[d.status || 'open'] || (d.status || 'open').toUpperCase();
+                const dateVal = d.createdAt || d.date;
+
                 return `
                 <tr class="hover:bg-slate-50 transition-colors">
-                    <td class="p-5 text-sm font-black text-slate-900">🏢 ${Utils.escapeHtml(Utils.getPartnerNameById(d.buyerId) || d.buyerName || '')}</td>
-                    <td class="p-5 text-sm font-bold text-slate-700">${Utils.escapeHtml(d.productName || '')} ${isNewIndicator}</td>
+                    <td class="p-5 text-sm font-black text-slate-900">🏢 ${Utils.escapeHtml(Utils.getPartnerNameById(d.buyerId || d.customerId) || d.buyerName || tLang('(Nepoznat kupac)', '(Unknown client)'))}</td>
+                    <td class="p-5 text-sm font-bold text-slate-700">${Utils.escapeHtml(d.productName || '')} ${isNewIndicator}${sourceIndicator}</td>
                     <td class="p-5 font-black text-blue-700 text-lg">${Utils.escapeHtml(d.quantity || '')}</td>
                     <td class="p-5"><span class="px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider border shadow-sm ${bC}">${bL}</span></td>
-                    <td class="p-5 text-xs text-slate-500 font-bold">${d.createdAt ? new Date(d.createdAt).toLocaleDateString(currentLang) : 'N/A'}</td>
+                    <td class="p-5 text-xs text-slate-500 font-bold">${dateVal ? new Date(dateVal).toLocaleDateString(currentLang) : 'N/A'}</td>
                     <td class="p-5 text-right whitespace-nowrap">
+                        <button class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors mr-2 offer-from-demand" data-id="${d.id}">💱 ${tLang('Kreiraj ponudu', 'Create offer')}</button>
                         <button class="bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors mr-2 edit-demand" data-id="${d.id}">✏️ ${Utils.t('actions.edit') || 'Izmeni'}</button>
                         <button class="bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors del-demand" data-id="${d.id}">🗑️</button>
                     </td>
@@ -177,4 +186,33 @@ function renderDemandsView() {
     main.appendChild(container);
     container.querySelectorAll('.edit-demand').forEach(b => b.addEventListener('click', e => showDemandForm(e.currentTarget.dataset.id)));
     container.querySelectorAll('.del-demand').forEach(b => b.addEventListener('click', e => Utils.handleDelete('demands', e.currentTarget.dataset.id)));
+    container.querySelectorAll('.offer-from-demand').forEach(b => b.addEventListener('click', e => createOfferFromDemand(e.currentTarget.dataset.id)));
+}
+
+// AUTOMATIZACIJA: iz zahteva kupca (RFQ) direktno u modal za ponudu, sa
+// pred-popunjenim kupcem i (ako je iz kataloga) proizvodom.
+function createOfferFromDemand(demandId) {
+    const tLang = (srStr, enStr) => Utils.getLang() === 'sr' ? srStr : enStr;
+    const demand = (state.data.demands || []).find(d => d.id === demandId);
+    if (!demand) return;
+
+    if (typeof showCustomerOfferModal !== 'function') {
+        alert(tLang('Modul za ponude nije učitan.', 'Offers module is not loaded.'));
+        return;
+    }
+
+    const customerId = demand.buyerId || demand.customerId || null;
+    const product = demand.productId ? (state.data.products || []).find(p => p.id === demand.productId) : null;
+
+    // Modal za ponudu zahteva proizvod iz kataloga sa bar jednom ponudom dobavljača.
+    // Ako je zahtev za robom van kataloga, uputimo korisnika da prvo doda proizvod.
+    if (!product || !(product.supplyOffers && product.supplyOffers.length > 0)) {
+        alert(tLang(
+            'Ova potražnja je za robom van kataloga (ili proizvod nema ponudu dobavljača).\nPrvo dodajte proizvod u katalog (Proizvodi), pa kreirajte ponudu.',
+            'This demand is for an off-catalog product (or the product has no supplier offer).\nAdd the product to the catalog (Products) first, then create the offer.'
+        ));
+        return;
+    }
+
+    showCustomerOfferModal({ productId: demand.productId, offerIndex: 0, prefillCustomerId: customerId, prefillQuantity: demand.quantity });
 }
