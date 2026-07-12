@@ -1,9 +1,26 @@
 import sqlite3
 from flask import Blueprint, request, jsonify, session
-from config import AUDIT_DB_FILE
-from utils import log_audit, login_required
+from config import AUDIT_DB_FILE, DB_FILE
+from utils import log_audit, login_required, decrypt_data
 
 audit_bp = Blueprint('audit', __name__)
+
+def user_has_permission(perm_key):
+    """Admin uvek; inače proverava eksplicitnu permisiju iz korisničkog naloga.
+    decrypt_data korektno čita i kriptovane i čiste (json) permisije."""
+    if session.get('role') == 'admin':
+        return True
+    if 'user_id' not in session:
+        return False
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    perms = decrypt_data(row[0]) if row and row[0] else {}
+    return bool(isinstance(perms, dict) and perms.get(perm_key))
 
 @audit_bp.route('/api/audit/event', methods=['POST'])
 @login_required
@@ -15,7 +32,8 @@ def log_client_event():
 @audit_bp.route('/api/audit_logs', methods=['GET'])
 @login_required
 def get_audit_logs():
-    if session.get('role') != 'admin':
+    # Admin ili radnik kome je admin eksplicitno dodelio 'audit_view'.
+    if not user_has_permission('audit_view'):
         log_audit('SECURITY', 'audit', 'Unauthorized attempt to access audit logs', is_suspicious=True)
         return jsonify({"error": "Unauthorized"}), 403
     

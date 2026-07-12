@@ -1,14 +1,27 @@
 from flask import Blueprint, jsonify, request, session
 import sqlite3
 import ipaddress
-from utils import login_required, log_audit, FirewallCache
-from config import AUDIT_DB_FILE
+from utils import login_required, log_audit, FirewallCache, decrypt_data
+from config import AUDIT_DB_FILE, DB_FILE
 
 firewall_bp = Blueprint('firewall', __name__, url_prefix='/api/firewall')
 
 def is_admin():
+    """Dozvoljeno adminu ili radniku kome je admin dodelio 'firewall_manage' permisiju."""
     role = session.get('role', '')
-    return role.lower() == 'admin' if role else False
+    if role and role.lower() == 'admin':
+        return True
+    if 'user_id' not in session:
+        return False
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    perms = decrypt_data(row[0]) if row and row[0] else {}
+    return bool(isinstance(perms, dict) and perms.get('firewall_manage'))
 
 @firewall_bp.route('/status', methods=['GET'])
 @login_required

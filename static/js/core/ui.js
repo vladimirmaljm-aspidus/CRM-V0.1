@@ -28,7 +28,7 @@ let fullNavigationItems = [
   { view:'network', icon:'network', labelPath:'nav.network', group: 'network' },
 
   { view:'users', icon:'users', labelPath:'users.manage', adminOnly: true, group: 'admin' },
-  { view:'audit', icon:'audit', labelPath:'audit.title', adminOnly: true, group: 'admin' }
+  { view:'audit', icon:'audit', labelPath:'audit.title', adminOnly: true, permKey: 'audit_view', group: 'admin' }
 ];
 
 function navIconSvg(key) {
@@ -51,8 +51,12 @@ function buildNavigation() {
       'admin': { label: Utils.getLang() === 'sr' ? 'Administracija' : 'System Admin', items: [] }
   };
 
+  const userPerms = (state.user && state.user.permissions) || {};
   fullNavigationItems.forEach(item => {
-    if(item.adminOnly && (!state.user || state.user.role !== 'admin')) return;
+    if(item.adminOnly && (!state.user || state.user.role !== 'admin')) {
+        // Izuzetak: stavke sa permKey su vidljive radniku kome je permisija dodeljena.
+        if(!(item.permKey && userPerms[item.permKey])) return;
+    }
     if(item.view === 'deals' && !hasPerm('deals', 'view')) return;
     if((item.view === 'finances' || item.view === 'cashflow') && !hasPerm('finances', 'view')) return;
     if(item.view === 'partners' && !hasPerm('partners', 'view')) return;
@@ -115,7 +119,7 @@ function render() {
       else if(state.currentView === 'demands') { if(typeof renderDemandsView==='function') renderDemandsView(); }
       else if(state.currentView === 'offers' && hasPerm('offers', 'view')) { if(typeof renderOffersView==='function') renderOffersView(); }
       else if(state.currentView === 'users' && state.user.role === 'admin') { if(typeof renderUsersView==='function') renderUsersView(); } 
-      else if(state.currentView === 'audit' && state.user.role === 'admin') { if(typeof renderAuditLogView==='function') renderAuditLogView(); }
+      else if(state.currentView === 'audit' && (state.user.role === 'admin' || (state.user.permissions && state.user.permissions.audit_view))) { if(typeof renderAuditLogView==='function') renderAuditLogView(); }
       else {
           main.innerHTML = `<div class="p-10 text-center"><h2 class="text-3xl text-red-500 font-bold mb-4">${t('users.accessDenied')}</h2><p class="text-gray-400">${t('users.accessDeniedMsg')}</p></div>`;
       }
@@ -128,32 +132,83 @@ function render() {
 }
 
 function showProfileModal() {
+    const srLang = Utils.getLang() === 'sr';
+    const sig = state.user.signature;
+    const sigLabel = srLang ? 'Moj potpis (na dokumentima)' : 'My signature (on documents)';
+    const sigHint = srLang ? 'Ovaj potpis se koristi ISKLJUČIVO na Vašim dokumentima. Preporuka: PNG sa providnom pozadinom.' : 'This signature is used ONLY on your own documents. Recommended: PNG with transparent background.';
+    const removeTxt = srLang ? 'Ukloni potpis' : 'Remove signature';
+    const pwHint = srLang ? '(ostavite prazno da ne menjate)' : '(leave blank to keep current)';
+
     const html = `
-    <form id="profile-form" class="space-y-4">
+    <div class="p-6 space-y-6">
+      <form id="profile-form" class="space-y-5">
         <div>
-            <label class="block font-bold text-main mb-1">${t('users.usernameLabelFull')}</label>
-            <input type="text" class="form-input bg-gray-100 dark:bg-gray-800" value="${escapeHtml(state.user.username)}" readonly disabled>
+            <label class="block text-xs font-semibold text-[var(--muted)] uppercase tracking-wide mb-1.5">${t('users.usernameLabelFull')}</label>
+            <input type="text" class="form-input" style="background:var(--hover-bg)" value="${escapeHtml(state.user.username)}" readonly disabled>
         </div>
         <div>
-            <label class="block font-bold text-main mb-1">${t('users.newPassword')}</label>
-            <input type="password" name="new_password" class="form-input" required placeholder="******">
+            <label class="block text-xs font-semibold text-[var(--muted)] uppercase tracking-wide mb-1.5">${t('users.newPassword')} <span class="text-[var(--muted)] normal-case font-normal">${pwHint}</span></label>
+            <input type="password" name="new_password" class="form-input" placeholder="••••••••">
         </div>
-        <div class="flex justify-end pt-4 border-t border-theme mt-4">
-            <button type="submit" class="btn bg-accent text-white shadow-lg">${t('actions.saveChanges')}</button>
+        <div class="flex justify-end pt-2">
+            <button type="submit" class="btn btn-primary">${t('actions.saveChanges')}</button>
         </div>
-    </form>`;
-    
+      </form>
+
+      <div class="pt-5 border-t border-[var(--border)]">
+        <label class="block text-xs font-semibold text-[var(--muted)] uppercase tracking-wide mb-1.5">${sigLabel}</label>
+        <p class="text-xs text-[var(--muted)] mb-3">${sigHint}</p>
+        <div class="flex items-center gap-4">
+            <div id="sig-preview" class="w-44 h-24 rounded-lg border border-[var(--border)] bg-white flex items-center justify-center overflow-hidden">
+                ${sig ? `<img src="${escapeHtml(sig)}" alt="signature" class="max-w-full max-h-full object-contain">` : `<span class="text-xs text-[var(--muted)]">—</span>`}
+            </div>
+            <div class="flex flex-col gap-2">
+                <input type="file" id="sig-file" accept="image/png,image/jpeg" class="text-xs text-[var(--muted)]">
+                <button type="button" id="sig-remove" class="btn btn-ghost small ${sig ? '' : 'hidden'}">${removeTxt}</button>
+            </div>
+        </div>
+      </div>
+    </div>`;
+
     openModal(t('misc.myProfile'), html, async (fd) => {
         const new_password = fd.get('new_password');
+        if (!new_password) { closeModal(); return; }
         try {
             const res = await fetch('/api/auth/change_password', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({new_password})
             });
-            if(res.ok) { alert(t('misc.saved')); closeModal(); } 
+            if(res.ok) { alert(t('misc.saved')); closeModal(); }
             else { alert(t('misc.loginErrorMsg')); }
         } catch(e) { console.error(e); }
     });
+
+    const saveSignature = async (url) => {
+        try {
+            const res = await fetch('/api/auth/signature', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ signatureUrl: url })
+            });
+            if (res.ok) {
+                const d = await res.json();
+                state.user.signature = d.signature || null;
+                const prev = document.getElementById('sig-preview');
+                if (prev) prev.innerHTML = state.user.signature ? `<img src="${state.user.signature}" class="max-w-full max-h-full object-contain">` : `<span class="text-xs text-[var(--muted)]">—</span>`;
+                const rm = document.getElementById('sig-remove');
+                if (rm) rm.classList.toggle('hidden', !state.user.signature);
+            } else { alert(srLang ? 'Greška pri čuvanju potpisa.' : 'Error saving signature.'); }
+        } catch(e) { console.error(e); }
+    };
+
+    const fileInput = document.getElementById('sig-file');
+    if (fileInput) fileInput.addEventListener('change', async (e) => {
+        const f = e.target.files[0]; if (!f) return;
+        const url = await uploadFileToServer(f);
+        if (url) await saveSignature(url); else alert(srLang ? 'Otpremanje nije uspelo.' : 'Upload failed.');
+        e.target.value = '';
+    });
+    const rmBtn = document.getElementById('sig-remove');
+    if (rmBtn) rmBtn.addEventListener('click', () => saveSignature(''));
 }
 
 function checkAllNotifications(){
