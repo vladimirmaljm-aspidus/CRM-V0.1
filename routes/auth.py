@@ -47,11 +47,11 @@ def login():
         with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
             conn.execute('PRAGMA journal_mode=WAL;')
             c = conn.cursor()
-            c.execute('SELECT id, username, password, role, permissions FROM users WHERE LOWER(username)=LOWER(?)', (username,))
+            c.execute('SELECT id, username, password, role, permissions, signature FROM users WHERE LOWER(username)=LOWER(?)', (username,))
             user = c.fetchone()
     except Exception:
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
-    
+
     # 4. Uspešna prijava
     if user and check_password_hash(user[2], password):
         session.permanent = True
@@ -69,7 +69,7 @@ def login():
             
         full_details = f"Successful login. Device: {device_info}"
         log_audit('LOGIN', 'system', full_details, location=location)
-        return jsonify({"status": "success", "user": {"id": user[0], "username": user[1], "role": user[3], "permissions": json.loads(user[4]) if user[4] else {}}})
+        return jsonify({"status": "success", "user": {"id": user[0], "username": user[1], "role": user[3], "permissions": json.loads(user[4]) if user[4] else {}, "signature": user[5] if len(user) > 5 else None}})
     
     # 5. Neuspešna prijava - beleženje pokušaja
     if client_ip not in FirewallCache.login_attempts:
@@ -104,12 +104,12 @@ def me():
             with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
                 conn.execute('PRAGMA journal_mode=WAL;')
                 c = conn.cursor()
-                c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+                c.execute('SELECT permissions, signature FROM users WHERE id=?', (session['user_id'],))
                 row = c.fetchone()
         except Exception:
             pass
-            
-        return jsonify({"user": {"id": session['user_id'], "username": session['username'], "role": session['role'], "permissions": json.loads(row[0]) if row and row[0] else {}}})
+
+        return jsonify({"user": {"id": session['user_id'], "username": session['username'], "role": session['role'], "permissions": json.loads(row[0]) if row and row[0] else {}, "signature": (row[1] if row and len(row) > 1 else None)}})
     return jsonify({"error": "UNAUTHORIZED"}), 401
 
 @auth_bp.route('/api/auth/change_password', methods=['POST'])
@@ -139,3 +139,33 @@ def change_password():
     
     log_audit('EDIT', 'users', 'User successfully changed their own password.')
     return jsonify({"status": "success"})
+
+@auth_bp.route('/api/auth/signature', methods=['POST'])
+@login_required
+def set_signature():
+    """Postavlja/uklanja LIČNI potpis trenutno ulogovanog korisnika.
+    Svaki korisnik može da menja isključivo svoj potpis (izvodi se iz sesije),
+    čime se garantuje da na dokumentima može stajati samo sopstveni potpis."""
+    data = request.get_json(silent=True) or {}
+    sig = data.get('signatureUrl')
+
+    # Dozvoljena je samo interna putanja do uploadovanog fajla (ne proizvoljan URL),
+    # ili prazna vrednost (uklanjanje potpisa).
+    if sig not in (None, ''):
+        sig = str(sig).strip()
+        if not sig.startswith('/uploads/') or '..' in sig or len(sig) > 256:
+            return jsonify({"error": "INVALID_SIGNATURE_PATH"}), 400
+    else:
+        sig = None
+
+    try:
+        with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
+            conn.execute('PRAGMA journal_mode=WAL;')
+            conn.execute('PRAGMA busy_timeout=30000;')
+            conn.execute('UPDATE users SET signature=? WHERE id=?', (sig, session['user_id']))
+            conn.commit()
+    except Exception:
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
+
+    log_audit('EDIT', 'users', 'User updated their personal signature.' if sig else 'User removed their personal signature.')
+    return jsonify({"status": "success", "signature": sig})
