@@ -1,21 +1,73 @@
 :root {
-  /* GLOBALNA SVETLA TEMA */
-  --bg: #f8fafc; /* Tailwind slate-50 */
+  /* =========================================
+     ASPIDUS — RAFINIRANI ENTERPRISE DIZAJN-SISTEM
+     ========================================= */
+  --bg: #f4f6f9;            /* mekana neutralna pozadina */
   --panel: #ffffff;
-  --text-color: #0f172a; /* Tailwind slate-900 */
-  --border: #e2e8f0; /* Tailwind slate-200 */
   --card: #ffffff;
-  --muted: #64748b; /* Tailwind slate-500 */
-  --hover-bg: #f1f5f9; /* Tailwind slate-100 */
-  --accent: #2563eb; /* Tailwind blue-600 */
+  --text-color: #101828;   /* meko crna, bolji kontrast bez tvrdoće */
+  --muted: #667085;        /* uravnotežena siva za sekundarni tekst */
+  --border: #e7eaef;       /* suptilne linije */
+  --border-strong: #d5dae1;
+  --hover-bg: #f2f5f9;
+
+  /* Primarna boja (zadržan plavi identitet, ali dublji/mirniji ton) */
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eef4ff;
+  --accent-ring: rgba(37, 99, 235, 0.18);
+
+  /* Statusne boje */
+  --success: #059669;
+  --danger: #dc2626;
+  --warning: #d97706;
+
+  /* Radijusi */
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+
+  /* Slojeviti, mekani shadow sistem */
+  --shadow-xs: 0 1px 2px rgba(16,24,40,0.05);
+  --shadow-sm: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06);
+  --shadow-md: 0 2px 6px rgba(16,24,40,0.05), 0 6px 16px rgba(16,24,40,0.06);
+  --shadow-lg: 0 10px 28px rgba(16,24,40,0.08), 0 3px 10px rgba(16,24,40,0.04);
 }
 
-body { 
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; 
-  background-color: var(--bg); 
+* { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+html { font-size: 15px; }
+
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  background-color: var(--bg);
   color: var(--text-color);
-  color-scheme: light; 
+  color-scheme: light;
+  line-height: 1.5;
+  letter-spacing: -0.006em;
+  font-feature-settings: "cv02","cv03","cv04","cv11";
 }
+
+/* =========================================
+   TIPOGRAFSKO SMIRIVANJE (manje "vikanja")
+   Globalno ublažava prenaglašene težine i razmake
+   koji su hardkodirani po modulima.
+   ========================================= */
+.font-black { font-weight: 800 !important; }
+.tracking-widest { letter-spacing: 0.08em !important; }
+.tracking-\[0\.4em\] { letter-spacing: 0.24em !important; }
+
+/* Mekši, konzistentniji shadow preko celog UI-a */
+.shadow-2xl { box-shadow: var(--shadow-lg) !important; }
+.shadow-xl  { box-shadow: var(--shadow-lg) !important; }
+.shadow-lg  { box-shadow: var(--shadow-md) !important; }
+.shadow-md  { box-shadow: var(--shadow-sm) !important; }
+
+/* Profesionalna zaglavlja stranica (koristi createViewHeader) */
+.page-title { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text-color); }
+.page-subtitle { color: var(--muted); font-size: 0.9rem; font-weight: 500; margin-top: 0.15rem; }
+.section-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
 
 /* =========================================
    SIGURNOSNE KLASE ZA BAZNE BOJE I KONTRAST
@@ -99,33 +151,42 @@ button[class*="bg-yellow-500"], button[class*="bg-warning"] {
 /* =========================================
    FORME, INPUTI I DUGMIĆI
    ========================================= */
-.form-input { 
-    width: 100%; padding: 10px 14px; background: var(--panel); border-radius: 10px; 
-    color: var(--text-color) !important; border: 1px solid var(--border); transition: all 0.2s ease-in-out; 
-    box-shadow: inset 0 1px 2px rgba(0,0,0,0.02);
+.form-input {
+    width: 100%; padding: 10px 13px; background: var(--panel); border-radius: var(--radius-sm);
+    color: var(--text-color) !important; border: 1px solid var(--border-strong); transition: box-shadow 0.15s ease, border-color 0.15s ease;
+    font-size: 0.9rem;
 }
-.form-input:focus { outline: none; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2); border-color: var(--accent); }
-.form-input::placeholder { color: var(--muted); opacity: 0.8; }
+.form-input:focus { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-color: var(--accent); }
+.form-input:hover:not(:focus) { border-color: #c3cad4; }
+.form-input::placeholder { color: var(--muted); opacity: 0.7; }
+label { letter-spacing: -0.005em; }
 
-.btn { 
-    display: inline-flex; align-items: center; justify-content: center; gap: 8px; 
-    padding: 10px 16px; border-radius: 10px; font-weight: 600; cursor: pointer; user-select: none;
-    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); border: 1px solid transparent;
+.btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 9px 15px; border-radius: var(--radius-sm); font-weight: 600; font-size: 0.9rem; cursor: pointer; user-select: none;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease, filter 0.15s ease; border: 1px solid transparent;
 }
-.btn:hover { transform: translateY(-1px); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); filter: brightness(1.05); }
-.btn:active { transform: translateY(0); box-shadow: none; }
-.small { padding: 6px 10px; font-size: 0.85rem; border-radius: 8px; }
+.btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); filter: brightness(1.03); }
+.btn:active { transform: translateY(0); box-shadow: none; filter: brightness(0.98); }
+.small { padding: 6px 11px; font-size: 0.82rem; border-radius: var(--radius-sm); }
+
+/* Semantičke varijante dugmadi (za nove/refaktorisane ekrane) */
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-ghost { background: var(--panel); color: var(--text-color); border-color: var(--border-strong); }
+.btn-ghost:hover { background: var(--hover-bg); }
+.btn-danger { background: var(--danger); color: #fff; }
 
 .table-row:hover { background: var(--hover-bg); cursor: default; }
-.modal-backdrop { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); }
-.file-link { color: var(--accent); text-decoration: underline; cursor: pointer; font-weight: 600;}
-.notification-link { color: var(--accent); text-decoration: underline; cursor: pointer; font-weight: 600; }
+.modal-backdrop { background: rgba(16, 24, 40, 0.5); backdrop-filter: blur(6px); }
+.file-link { color: var(--accent); text-decoration: none; cursor: pointer; font-weight: 600; border-bottom: 1px solid transparent; }
+.file-link:hover { border-bottom-color: var(--accent); }
+.notification-link { color: var(--accent); text-decoration: none; cursor: pointer; font-weight: 600; }
+.notification-link:hover { text-decoration: underline; }
 .hidden { display: none !important; }
 .data-table tr:hover td { background: var(--hover-bg); }
 .clickable-row { cursor: pointer; font-weight: 600; color: var(--accent); }
-.tag { padding: 4px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600;}
-
-.shadow-xl { box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05), 0 4px 6px -2px rgba(0,0,0,0.025); }
+.tag { padding: 3px 9px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.01em; }
 
 /* Custom Animacije Scrollbara */
 .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
