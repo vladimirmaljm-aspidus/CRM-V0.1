@@ -3,7 +3,8 @@ import json
 from flask import request, jsonify, abort, render_template
 from config import DB_FILE, PORTAL_DB_FILE
 from utils import decrypt_data, log_audit
-from . import portal_bp, portal_auth_sessions, safe_parse, check_portal_rate_limit
+from . import (portal_bp, safe_parse, check_portal_rate_limit,
+               verify_portal_session, find_partner_by_token)
 
 @portal_bp.route('/portal/<token>', methods=['GET'])
 def view_portal(token):
@@ -20,32 +21,21 @@ def get_portal_data(token):
     if not check_portal_rate_limit(ip): abort(429)
     
     auth_header = request.headers.get('X-Portal-Auth')
-    if not token or not auth_header or portal_auth_sessions.get(token) != auth_header: 
+    if not verify_portal_session(token, auth_header):
         return jsonify({"error": "Authentication required", "require_otp": True}), 401
-        
+
     conn = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
         conn.execute('PRAGMA journal_mode=WAL;')
         c = conn.cursor()
-        
-        c.execute("SELECT id, data FROM partners")
-        partner_id = None
-        partner = None
-        for r in c.fetchall():
-            p_data = safe_parse(r[1])
-            if p_data.get('portalToken') == token:
-                partner_id = r[0]
-                partner = p_data
-                break
-                
-        if not partner: return jsonify({"error": "Access Denied"}), 403
-        
-        # DODATO: Kill Switch provera
-        if partner.get('isPortalActive', True) is False:
-            log_audit('SECURITY', 'portal', f'Blocked data access for revoked portal. Partner ID: {partner_id}', is_suspicious=True)
-            return jsonify({"error": "Access Revoked"}), 403
-        
+
+        # find_partner_by_token sprovodi Kill Switch (opozvan portal -> None)
+        partner_id, partner = find_partner_by_token(c, token, enforce_active=True)
+        if not partner:
+            log_audit('SECURITY', 'portal', f'Blocked data access (invalid or revoked portal token)', is_suspicious=True)
+            return jsonify({"error": "Access Denied"}), 403
+
         # SYSTEM PERMISSIONS: Dozvoljavamo pristup i novom tabu za dokumente
         permissions = partner.get("portalPermissions", ["shipments", "offers", "kyc", "goods", "profile", "rfq", "documents"])
         
@@ -162,26 +152,21 @@ def get_portal_data(token):
 @portal_bp.route('/api/portal/profile/update/<token>', methods=['POST'])
 def update_portal_profile(token):
     auth_header = request.headers.get('X-Portal-Auth')
-    if not token or not auth_header or portal_auth_sessions.get(token) != auth_header: abort(401)
-    
-    data = request.json
-    new_email = data.get('email')
-    if not new_email: return jsonify({"error": "Email structure missing"}), 400
-    
+    if not verify_portal_session(token, auth_header): abort(401)
+
+    data = request.get_json(silent=True) or {}
+    new_email = str(data.get('email', '')).strip()[:150]
+    # Osnovna validacija formata e-maila (sprečava upis smeća/injekcija)
+    if not new_email or '@' not in new_email or '.' not in new_email.split('@')[-1]:
+        return jsonify({"error": "Valid email is required"}), 400
+
     conn = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
         c = conn.cursor()
-        c.execute("SELECT id, data FROM partners")
-        partner_id, partner_record = None, None
-        for r in c.fetchall():
-            p_data = safe_parse(r[1])
-            if p_data.get('portalToken') == token:
-                partner_id, partner_record = r[0], p_data
-                break
-                
+        partner_id, partner_record = find_partner_by_token(c, token, enforce_active=True)
         if not partner_record: return jsonify({"error": "Partner not found"}), 404
-            
+
         old_email = partner_record.get('contact', {}).get('email') or partner_record.get('email', 'N/A')
         if 'contact' not in partner_record: partner_record['contact'] = {}
         partner_record['contact']['email'] = partner_record['email'] = new_email

@@ -1,3 +1,4 @@
+import os
 import time
 import logging
 from datetime import timedelta
@@ -42,8 +43,12 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
 
-# NAPOMENA: U produkciji (na pravom domenu sa SSL-om) ovo mora biti True.
-app.config['SESSION_COOKIE_SECURE'] = False
+# U produkciji (pravi domen sa SSL-om) ovo MORA biti True kako se sesijski kolačić
+# ne bi slao preko nešifrovanog HTTP-a. Podrazumevano je sada True i isključuje se
+# samo eksplicitno (SESSION_COOKIE_SECURE=false) za lokalni razvoj bez HTTPS-a.
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'true').lower() not in ('false', '0', 'no')
+if not app.config['SESSION_COOKIE_SECURE']:
+    logger.warning("SECURITY WARNING: SESSION_COOKIE_SECURE je isključen. Sesijski kolačić se šalje i preko HTTP-a. Koristiti samo za lokalni razvoj, NIKADA u produkciji.")
 
 # Registracija modula (Blueprints)
 app.register_blueprint(auth_bp)
