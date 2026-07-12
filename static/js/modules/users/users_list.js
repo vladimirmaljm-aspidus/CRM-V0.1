@@ -211,8 +211,12 @@ function showUserForm(user = null) {
                         ${tLang('Nabavne Cene & Profit', 'Cost Prices & Profits')}
                     </label>
                     <label class="inline-flex items-center cursor-pointer text-[11px] font-black text-blue-800 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 px-2 py-1.5 rounded transition-colors hover:bg-blue-200">
-                        <input type="checkbox" name="perm_deals_approve" ${perms['deals_approve'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-blue-600 focus:ring-blue-500 border-blue-400"> 
+                        <input type="checkbox" name="perm_deals_approve" ${perms['deals_approve'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-blue-600 focus:ring-blue-500 border-blue-400">
                         ${tLang('Pravo Odobravanja', 'Approve Deals')}
+                    </label>
+                    <label class="inline-flex items-center cursor-pointer text-[11px] font-black text-rose-800 dark:text-rose-400 bg-rose-100 dark:bg-rose-900/30 border border-rose-300 dark:border-rose-700 px-2 py-1.5 rounded transition-colors hover:bg-rose-200">
+                        <input type="checkbox" name="perm_use_company_stamp" ${perms['use_company_stamp'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-rose-600 focus:ring-rose-500 border-rose-400">
+                        ${tLang('Korišćenje Pečata Firme', 'Use Company Stamp')}
                     </label>
                 </div>`;
         } else if (id === 'partners') {
@@ -378,6 +382,7 @@ function showUserForm(user = null) {
         // Napredne dozvole (Special Rights)
         if (fd.get('perm_deals_view_costs')) payload.permissions['deals_view_costs'] = true;
         if (fd.get('perm_deals_approve')) payload.permissions['deals_approve'] = true;
+        if (fd.get('perm_use_company_stamp')) payload.permissions['use_company_stamp'] = true;
         if (fd.get('perm_partners_kyc')) payload.permissions['partners_kyc'] = true;
         if (fd.get('perm_products_view_prices')) payload.permissions['products_view_prices'] = true;
         if (fd.get('perm_finances_export')) payload.permissions['finances_export'] = true;

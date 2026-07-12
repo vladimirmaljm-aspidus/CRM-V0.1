@@ -51,6 +51,12 @@ app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'false'
 if not app.config['SESSION_COOKIE_SECURE']:
     logger.warning("NAPOMENA: SESSION_COOKIE_SECURE je isključen (dev/localhost). U produkciji sa HTTPS-om postaviti env SESSION_COOKIE_SECURE=true.")
 
+# Inicijalizacija/migracija baze pri učitavanju aplikacije.
+# VAŽNO: ranije se init_db() zvao samo u __main__ bloku, pa se pod
+# `flask run` i gunicorn-om (produkcija) nije izvršavao — nove migracije
+# (npr. kolona 'signature') se ne bi primenile. Sada se izvršava uvek.
+init_db()
+
 # Registracija modula (Blueprints)
 app.register_blueprint(auth_bp)
 app.register_blueprint(users_bp)

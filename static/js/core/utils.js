@@ -59,8 +59,11 @@ function applyFiltersFor(view) {
 function openModal(title, innerHtml, onSubmit) { 
   const viewName = state.currentView;
   const isDetailsModal = title.includes(typeof t === 'function' ? t('actions.details') : 'Details');
-  
-  if (viewName !== 'settings' && viewName !== 'users' && !isDetailsModal && !hasPerm(viewName, 'edit')) {
+  // Lični profil (izmena svoje lozinke/potpisa) mora biti dostupan svakom korisniku,
+  // nezavisno od edit-permisija na trenutnom modulu.
+  const isProfileModal = typeof t === 'function' && title === t('misc.myProfile');
+
+  if (viewName !== 'settings' && viewName !== 'users' && !isDetailsModal && !isProfileModal && !hasPerm(viewName, 'edit')) {
       alert(typeof t === 'function' ? t('users.accessDeniedEdit') : 'Access Denied');
       return;
   }
