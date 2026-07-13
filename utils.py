@@ -18,12 +18,30 @@ def encrypt_data(data_dict):
     return cipher_suite.encrypt(json_str.encode('utf-8')).decode('utf-8')
 
 def decrypt_data(encrypted_str):
-    """Dešifruje podatke. Ako podatak još nije šifrovan, vraća ga normalno."""
+    """Sigurno dešifruje ili parsira JSON. NIKADA ne baca izuzetak — svaka ruta koja
+    čita nešto iz baze (KYC, comms_settings, company, permissions) pucala bi ako
+    Fernet ne uspe (npr. rotacija ključa) i JSON ne uspe (npr. plain string).
+
+    Pravilo: ako je payload {} ili [], vrati odgovarajući prazan kontejner;
+    ako je čist string, vrati ga kao string; ako je None, vrati {}."""
+    if encrypted_str is None or encrypted_str == '':
+        return {}
+    # 1) Pokušaj Fernet
     try:
-        decrypted_bytes = cipher_suite.decrypt(encrypted_str.encode('utf-8'))
-        return json.loads(decrypted_bytes.decode('utf-8'))
-    except (InvalidToken, TypeError, ValueError):
+        raw = cipher_suite.decrypt(encrypted_str.encode('utf-8') if isinstance(encrypted_str, str) else encrypted_str)
+        try:
+            return json.loads(raw.decode('utf-8'))
+        except (json.JSONDecodeError, ValueError):
+            return raw.decode('utf-8', errors='replace')
+    except (InvalidToken, TypeError, ValueError, AttributeError):
+        pass
+    # 2) Pokušaj direktan JSON
+    try:
         return json.loads(encrypted_str)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    # 3) Fallback: vrati kao string (ako je uopšte string) ili prazan dict
+    return encrypted_str if isinstance(encrypted_str, str) else {}
 
 def is_safe_file_content(file_stream, filename):
     """Čita sirove hex bajtove da spreči maliciozne skripte maskirane u slike."""

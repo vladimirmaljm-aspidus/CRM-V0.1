@@ -381,3 +381,233 @@ def serve_portal_uploads(filename):
     if denied: return denied
     log_audit('DOWNLOAD', 'portal', f'KYC/portal document downloaded: {secure_filename(filename)}', is_suspicious=False)
     return send_from_directory(current_app.config['PORTAL_UPLOAD_FOLDER'], secure_filename(filename))
+
+
+# ==========================================================
+#  PROFILE CHANGE REQUESTS — admin lista / odobrenje / odbijanje
+# ==========================================================
+
+@portal_bp.route('/api/portal/admin/profile_requests', methods=['GET'])
+@login_required
+def admin_list_profile_requests():
+    """Vraća sve pending zahteve za izmenu partnerskog profila (email, telefon, adresa)."""
+    denied = require_portal_admin()
+    if denied: return denied
+    status_filter = request.args.get('status')  # 'pending', 'approved', 'rejected', ili None za sve
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    conn_m = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        cp = conn_p.cursor()
+        if status_filter:
+            cp.execute("SELECT id, partner_id, data, status, submitted_at, reviewed_at FROM profile_change_requests WHERE status=? ORDER BY submitted_at DESC", (status_filter,))
+        else:
+            cp.execute("SELECT id, partner_id, data, status, submitted_at, reviewed_at FROM profile_change_requests ORDER BY submitted_at DESC")
+        rows = cp.fetchall()
+        cm = conn_m.cursor()
+        cm.execute("SELECT id, data FROM partners")
+        partners_map = {}
+        for pr in cm.fetchall():
+            pd = safe_parse(pr[1])
+            partners_map[pr[0]] = {
+                'name': pd.get('companyName', 'Unknown'),
+                'currentEmail': pd.get('contact', {}).get('email') or pd.get('email', ''),
+                'currentPhone': pd.get('contact', {}).get('phone') or pd.get('phone', ''),
+                'currentPerson': pd.get('contact', {}).get('person', ''),
+                'currentStreet': pd.get('address', {}).get('street', ''),
+                'currentCity': pd.get('address', {}).get('city', ''),
+                'currentCountry': pd.get('address', {}).get('country', '')
+            }
+    finally:
+        conn_p.close(); conn_m.close()
+
+    result = []
+    for r in rows:
+        pinfo = partners_map.get(r[1], {'name': 'Unknown'})
+        result.append({
+            "id": r[0], "partner_id": r[1], "partner_name": pinfo.get('name'),
+            "current": {k: v for k, v in pinfo.items() if k.startswith('current')},
+            "changes": json.loads(r[2]) if r[2] else {},
+            "status": r[3], "submitted_at": r[4], "reviewed_at": r[5]
+        })
+    return jsonify(result)
+
+
+@portal_bp.route('/api/portal/admin/profile_requests/<req_id>/review', methods=['POST'])
+@login_required
+def admin_review_profile_request(req_id):
+    """Odobrava ili odbija zahtev za izmenu profila. Na odobrenje primenjuje
+    tražene izmene na partnerski profil u CRM bazi i beleži audit trag."""
+    denied = require_portal_admin()
+    if denied: return denied
+    action = (request.get_json(silent=True) or {}).get('action', '').lower()
+    if action not in ('approve', 'reject'):
+        return jsonify({"error": "INVALID_ACTION"}), 400
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    try:
+        cp = conn_p.cursor()
+        cp.execute("SELECT partner_id, data, status FROM profile_change_requests WHERE id=?", (req_id,))
+        row = cp.fetchone()
+        if not row:
+            return jsonify({"error": "REQUEST_NOT_FOUND"}), 404
+        if row[2] != 'pending':
+            return jsonify({"error": "ALREADY_REVIEWED"}), 400
+        partner_id = row[0]
+        changes = json.loads(row[1]) if row[1] else {}
+        now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        reviewer = session.get('username', 'admin')
+
+        if action == 'approve':
+            # Primeni na partner zapis
+            conn_m = sqlite3.connect(DB_FILE, timeout=30.0)
+            try:
+                cm = conn_m.cursor()
+                cm.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
+                prow = cm.fetchone()
+                if not prow:
+                    return jsonify({"error": "PARTNER_NOT_FOUND"}), 404
+                partner = safe_parse(prow[0])
+                if 'contact' not in partner: partner['contact'] = {}
+                if 'address' not in partner: partner['address'] = {}
+                summary = []
+                if 'email' in changes:
+                    old = partner.get('contact', {}).get('email') or partner.get('email', '')
+                    partner['contact']['email'] = changes['email']; partner['email'] = changes['email']
+                    summary.append(f"email: {old} → {changes['email']}")
+                if 'phone' in changes:
+                    old = partner.get('contact', {}).get('phone') or partner.get('phone', '')
+                    partner['contact']['phone'] = changes['phone']; partner['phone'] = changes['phone']
+                    summary.append(f"phone: {old} → {changes['phone']}")
+                if 'contactPerson' in changes:
+                    old = partner.get('contact', {}).get('person', '')
+                    partner['contact']['person'] = changes['contactPerson']
+                    summary.append(f"person: {old} → {changes['contactPerson']}")
+                if 'street' in changes:
+                    partner['address']['street'] = changes['street']
+                    summary.append(f"street → {changes['street']}")
+                if 'city' in changes:
+                    partner['address']['city'] = changes['city']
+                    summary.append(f"city → {changes['city']}")
+                if 'country' in changes:
+                    partner['address']['country'] = changes['country']
+                    summary.append(f"country → {changes['country']}")
+                cm.execute("UPDATE partners SET data=? WHERE id=?", (json.dumps(partner), partner_id))
+                conn_m.commit()
+            finally:
+                conn_m.close()
+            cp.execute("UPDATE profile_change_requests SET status='approved', reviewed_at=?, reviewed_by=? WHERE id=?", (now_iso, reviewer, req_id))
+            conn_p.commit()
+            log_audit('APPROVE', 'portal', f"Approved profile change for partner {partner_id}: {', '.join(summary)}", is_suspicious=False)
+            return jsonify({"status": "success", "message": "Zahtev odobren i primenjen.", "applied": changes})
+        else:
+            cp.execute("UPDATE profile_change_requests SET status='rejected', reviewed_at=?, reviewed_by=? WHERE id=?", (now_iso, reviewer, req_id))
+            conn_p.commit()
+            log_audit('REJECT', 'portal', f"Rejected profile change request {req_id} for partner {partner_id}", is_suspicious=False)
+            return jsonify({"status": "success", "message": "Zahtev odbijen."})
+    finally:
+        conn_p.close()
+
+
+# ==========================================================
+#  PDF DOWNLOAD IZ PORTALA — sa obaveznim audit tragom
+# ==========================================================
+
+@portal_bp.route('/api/portal/document/<token>/<doc_id>', methods=['GET'])
+def portal_download_document(token, doc_id):
+    """Klijent portala preuzima svoj dokument (ponuda/faktura/dogovor). Svaki
+    download se beleži u audit dnevnik sa nazivom firme i datumom, kako bi u
+    slučaju spora postojao trag da je klijent preuzeo dokument."""
+    auth_header = request.headers.get('X-Portal-Auth')
+    if not verify_portal_session(token, auth_header):
+        return jsonify({"error": "UNAUTHORIZED"}), 401
+
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        partner_id, partner = find_partner_by_token(c, token, enforce_active=True)
+        if not partner_id:
+            return jsonify({"error": "FORBIDDEN"}), 403
+
+        # Dokument mora pripadati OVOM partneru (sprečava enumeraciju tuđih doc_id-eva).
+        c.execute("SELECT data FROM shared_documents WHERE id=?", (doc_id,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "DOCUMENT_NOT_FOUND"}), 404
+        doc = safe_parse(row[0])
+        if doc.get('partnerId') != partner_id:
+            log_audit('SECURITY', 'portal', f'Blocked cross-partner document access attempt: doc {doc_id} by {partner_id}', is_suspicious=True)
+            return jsonify({"error": "FORBIDDEN"}), 403
+    finally:
+        conn.close()
+
+    file_url = doc.get('fileUrl') or ''
+    # file_url je oblika '/uploads/<uuid>.pdf' — preuzmi fajl iz odgovarajućeg foldera
+    filename = os.path.basename(file_url)
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        return jsonify({"error": "INVALID_FILE"}), 400
+
+    # Odaberi folder na osnovu prefiksa; podržava i /portal_uploads/ i /uploads/
+    if file_url.startswith('/portal_uploads/'):
+        folder = current_app.config['PORTAL_UPLOAD_FOLDER']
+    else:
+        folder = current_app.config['UPLOAD_FOLDER']
+
+    company = partner.get('companyName', 'Unknown')
+    log_audit(
+        'DOWNLOAD', 'portal',
+        f"Client '{company}' downloaded document '{doc.get('fileName', safe_name)}' (type: {doc.get('docType', 'Document')}) via portal",
+        is_suspicious=False
+    )
+    return send_from_directory(folder, safe_name, as_attachment=True, download_name=doc.get('fileName') or safe_name)
+
+
+# ==========================================================
+#  CRM DASHBOARD: brojači pending stavki iz portala (za notifikacije)
+# ==========================================================
+
+@portal_bp.route('/api/portal/admin/pending_counts', methods=['GET'])
+@login_required
+def admin_portal_pending_counts():
+    """Vraća brojeve pending stavki iz portala (KYC, roba, izmene profila, RFQ)
+    kako bi CRM dashboard prikazao admin badge/upozorenja."""
+    denied = require_portal_admin()
+    if denied: return denied
+
+    counts = {"kyc": 0, "products": 0, "profile_requests": 0, "rfqs": 0}
+    try:
+        conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+        cp = conn_p.cursor()
+        # KYC: broj partnera koji imaju bar 1 nepregledanu prijavu (nema explicit 'reviewed' zastavice u schemi;
+        # tretiramo najsvežiju prijavu po partneru kao aktivnu — ovde vraćamo ukupan broj submisija bez merge-a).
+        cp.execute("SELECT COUNT(*) FROM kyc_submissions")
+        counts["kyc"] = cp.fetchone()[0] or 0
+        cp.execute("SELECT COUNT(*) FROM portal_products WHERE status='pending'")
+        counts["products"] = cp.fetchone()[0] or 0
+        try:
+            cp.execute("SELECT COUNT(*) FROM profile_change_requests WHERE status='pending'")
+            counts["profile_requests"] = cp.fetchone()[0] or 0
+        except sqlite3.OperationalError:
+            counts["profile_requests"] = 0
+        conn_p.close()
+    except Exception:
+        pass
+
+    # RFQ (potraživnje) iz portala u glavnoj bazi
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        c = conn.cursor()
+        c.execute("SELECT data FROM demands")
+        rfq_pending = 0
+        for r in c.fetchall():
+            d = safe_parse(r[0])
+            if d.get('source') == 'B2B Portal' and d.get('status') == 'pending':
+                rfq_pending += 1
+        counts["rfqs"] = rfq_pending
+        conn.close()
+    except Exception:
+        pass
+
+    counts["total"] = sum(counts.values())
+    return jsonify(counts)

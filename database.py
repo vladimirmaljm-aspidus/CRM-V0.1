@@ -78,6 +78,9 @@ def init_db():
             # Kreiranje tabela
             c2.execute('''CREATE TABLE IF NOT EXISTS kyc_submissions (id TEXT PRIMARY KEY, partner_id TEXT, token TEXT, data TEXT, submitted_at TEXT)''')
             c2.execute('''CREATE TABLE IF NOT EXISTS portal_products (id TEXT PRIMARY KEY, partner_id TEXT, data TEXT, status TEXT, created_at TEXT)''')
+            # Zahtevi partnera za izmenu sopstvenih podataka (email, telefon, adresa...).
+            # Ne primenjuju se direktno — admin ih odobrava, tek onda idu u partner profil.
+            c2.execute('''CREATE TABLE IF NOT EXISTS profile_change_requests (id TEXT PRIMARY KEY, partner_id TEXT, data TEXT, status TEXT, submitted_at TEXT, reviewed_at TEXT, reviewed_by TEXT)''')
             
             # KREIRANJE INDEKSA (Ključno za optimizaciju i brzinu kada sistem ima mnogo upita)
             c2.execute('''CREATE INDEX IF NOT EXISTS idx_kyc_token ON kyc_submissions(token)''')
