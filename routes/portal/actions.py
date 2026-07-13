@@ -297,6 +297,42 @@ def submit_kyc(token):
     log_audit('EDIT', 'portal', f"Partner {clean_data.get('companyName')} payload securely encrypted inside air-gapped vault", is_suspicious=False)
     return jsonify({"status": "success", "message": "KYC Data securely submitted to Vault."})
 
+@portal_bp.route('/api/portal/admin/submissions/<partner_id>', methods=['GET'])
+@login_required
+def get_kyc_submissions_by_partner(partner_id):
+    """Vraca sve KYC prijave za konkretnog partnera (najnovija prva). Ranije ovaj
+    endpoint nije postojao, pa je frontend kyc_compliance.js dobijao 404 kad
+    god bi admin kliknuo 'KYC Review' na partnerskoj kartici — otud utisak da
+    KYC podaci nisu vidljivi. Sada radi kako treba."""
+    denied = require_portal_admin()
+    if denied: return denied
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    try:
+        cp = conn_p.cursor()
+        cp.execute(
+            "SELECT id, partner_id, data, submitted_at FROM kyc_submissions WHERE partner_id=? ORDER BY submitted_at DESC",
+            (partner_id,)
+        )
+        rows = cp.fetchall()
+    finally:
+        conn_p.close()
+
+    subs = []
+    for r in rows:
+        try:
+            data = decrypt_data(r[2])
+        except Exception:
+            data = {}
+        subs.append({
+            "id": r[0],
+            "partner_id": r[1],
+            "data": data if isinstance(data, dict) else {},
+            "submitted_at": r[3]
+        })
+    return jsonify(subs)
+
+
 @portal_bp.route('/api/portal/admin/submissions/all', methods=['GET'])
 @login_required
 def get_all_kyc_submissions():

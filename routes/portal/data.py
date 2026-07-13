@@ -42,9 +42,17 @@ def get_portal_data(token):
         safe_partner = {
             "id": partner_id, 
             "companyName": partner.get("companyName"),
-            "contactPerson": partner.get("contact", {}).get("person", ""), 
+            "contactPerson": partner.get("contact", {}).get("person", ""),
             "kycStatus": partner.get("kyc", {}).get("status", "pending"),
+            "kycReviewNote": partner.get("kyc", {}).get("reviewNote", ""),
+            "kycReviewedAt": partner.get("kyc", {}).get("reviewedAt", ""),
             "email": partner.get("contact", {}).get("email") or partner.get("email", ""),
+            "phone": partner.get("contact", {}).get("phone") or partner.get("phone", ""),
+            "address": {
+                "street": partner.get("address", {}).get("street", ""),
+                "city": partner.get("address", {}).get("city", ""),
+                "country": partner.get("address", {}).get("country", ""),
+            },
             "permissions": permissions
         }
         
