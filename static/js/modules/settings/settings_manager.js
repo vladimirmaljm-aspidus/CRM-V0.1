@@ -127,6 +127,20 @@ const SettingsManager = {
                                     <input type="file" name="companyStamp" class="text-xs text-slate-500 w-full" accept="image/*" />
                                 </div>
                             </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+                                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                    <label class="block text-sm font-bold text-slate-800 mb-2">${tLang('Primarna boja portala/PDF-a', 'Primary color (Portal &amp; PDF)')}</label>
+                                    <div class="flex items-center gap-3">
+                                        <input type="color" name="brandColor" value="${escapeHtml(state.company.brandColor || '#2563eb')}" class="w-16 h-10 rounded border border-slate-300 cursor-pointer">
+                                        <input type="text" name="brandColorHex" value="${escapeHtml(state.company.brandColor || '#2563eb')}" class="flex-1 bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono" placeholder="#2563eb">
+                                    </div>
+                                    <p class="text-xs text-slate-500 mt-2">${tLang('Prikazuje se u B2B portalu klijenta i na PDF dokumentima.', 'Applied to the client B2B portal and PDF documents.')}</p>
+                                </div>
+                                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                    <label class="block text-sm font-bold text-slate-800 mb-2">${tLang('Web adresa firme', 'Company Website')}</label>
+                                    <input type="text" name="companyWebsite" value="${escapeHtml(state.company.website || '')}" class="w-full bg-slate-50 border border-slate-200 rounded-md px-4 py-2.5 text-sm outline-none" placeholder="https://example.com">
+                                </div>
+                            </div>
                         </div>
 
                         <div id="tab-system" class="settings-pane hidden max-w-4xl mx-auto space-y-8">
@@ -596,6 +610,11 @@ const SettingsManager = {
             state.settings.vatRate = parseFloat(fd.get('vatRate')) || 5; state.settings.paymentWarningDays = parseInt(fd.get('paymentWarningDays') || 7, 10);
             state.settings.defaultOfferNotes = fd.get('defaultOfferNotes') || ''; state.settings.defaultInvoiceNotes = fd.get('defaultInvoiceNotes') || '';
             state.company.name = fd.get('companyName'); state.company.address = fd.get('companyAddress'); state.company.taxId = fd.get('companyTax'); state.company.regNumber = fd.get('companyReg');
+            // Prilagodljiv brending: primarna boja za portal i PDF. Prihvata #RRGGBB, ignoriše nevalidne unose.
+            const bc = (fd.get('brandColorHex') || fd.get('brandColor') || '').trim();
+            if (bc && /^#[0-9a-fA-F]{6}$/.test(bc)) state.company.brandColor = bc;
+            const site = (fd.get('companyWebsite') || '').trim();
+            if (site) state.company.website = site;
             
             if (typeof uploadFileToServer === 'function') {
                 const logoFile = fd.get('companyLogo'); if(logoFile && logoFile.size > 0){ try{ if(state.company.logoDataUrl) await deleteFileFromServer(state.company.logoDataUrl); const logoUrl = await uploadFileToServer(logoFile); if (logoUrl) state.company.logoDataUrl = logoUrl; } catch(err){} }

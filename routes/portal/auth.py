@@ -1,9 +1,7 @@
 import json
 import secrets
 import time
-import smtplib
 import sqlite3
-from email.mime.text import MIMEText
 from flask import request, jsonify, abort
 from config import DB_FILE
 from utils import log_audit, login_required, decrypt_data
@@ -122,46 +120,20 @@ def send_otp(token):
         client_email = partner.get('contact', {}).get('email') or partner.get('email')
         otp = create_portal_otp(token)
 
+        # Profesionalan mejl (HTML šablon sa logom firme + confidentiality footer).
         email_sent = False
-        c.execute("SELECT value FROM settings WHERE key='comms_settings'")
-        smtp_row = c.fetchone()
-
-        if smtp_row and client_email:
-            settings = decrypt_data(smtp_row[0])
-            if isinstance(settings, dict):
-                smtp_server = settings.get('smtpServer')
-                smtp_port = int(settings.get('smtpPort', 587))
-                smtp_user = settings.get('smtpUser')
-                smtp_pass = settings.get('smtpPass')
-                smtp_security = settings.get('smtpSecurity', 'tls')
-                sender_name = settings.get('senderName', 'Aspidus CRM')
-                sender_email = settings.get('senderEmail', smtp_user)
-
-                if smtp_server and smtp_user and smtp_pass:
-                    try:
-                        email_body = (
-                            f"Your security code for Aspidus B2B Portal is / Vaš sigurnosni kod za pristup Aspidus B2B Portalu je: {otp}\n\n"
-                            f"This code expires in 5 minutes. / Ovaj kod ističe za 5 minuta."
-                        )
-                        msg = MIMEText(email_body, 'plain')
-                        msg['Subject'] = f"{sender_name} - B2B Portal OTP Security Code"
-                        msg['From'] = f"{sender_name} <{sender_email}>"
-                        msg['To'] = client_email
-
-                        if smtp_security == 'ssl' or smtp_port == 465:
-                            server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=15)
-                        else:
-                            server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
-                            if smtp_security != 'none':
-                                server.starttls()
-
-                        server.login(smtp_user, smtp_pass)
-                        server.send_message(msg)
-                        server.quit()
-                        email_sent = True
-                        log_audit('COMMUNICATION', 'portal', f'OTP sent via Email to {client_email}', is_suspicious=False)
-                    except Exception as e:
-                        print("SMTP Error sending OTP:", e)
+        if client_email:
+            try:
+                from utils_email import send_portal_otp
+                portal_url = request.url_root.rstrip('/') + f"/portal/{token}"
+                ok, err = send_portal_otp(client_email, partner.get('companyName', ''), otp, portal_url)
+                if ok:
+                    email_sent = True
+                    log_audit('COMMUNICATION', 'portal', f'OTP sent via professional email to {client_email}', is_suspicious=False)
+                else:
+                    log_audit('ERROR', 'portal', f'OTP email send failed to {client_email}: {err}', is_suspicious=False)
+            except Exception as e:
+                log_audit('ERROR', 'portal', f'OTP email send exception: {e}', is_suspicious=False)
 
         print(f"\n========================================================")
         print(f"🔒 B2B PORTAL LOGIN OTP CODE: {otp} (For: {partner.get('companyName')})")

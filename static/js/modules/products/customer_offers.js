@@ -463,6 +463,22 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
             savedOfferData = offerObj;
         }
         await saveSingleItem('offers', offerObj);
+
+        // Automatski generiši PDF na serveru i sačuvaj u vault (klijent u portalu
+        // odmah može da preuzme). Radi se u pozadini — greška ne blokira save.
+        try {
+            fetch(`/api/offers/${offerObj.id}/generate_pdf`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            }).then(r => r.ok ? r.json() : null).then(d => {
+                if (d && d.documentId) {
+                    offerObj.documentId = d.documentId;
+                    // Osveži tabelu ako je vidljiva
+                    if (typeof renderOffersView === 'function' && document.getElementById('offers-container-marker')) renderOffersView();
+                }
+            }).catch(() => {});
+        } catch (e) { /* silent */ }
+
         if (typeof renderOffersView === 'function' && document.getElementById('offers-container-marker')) renderOffersView();
         return true;
     }
@@ -650,14 +666,34 @@ function renderOffersView() {
                 }
 
                 const custName = Utils.getPartnerNameById(offer.customerId);
+                const canConvert = (typeof hasPerm === 'function') ? hasPerm('offers_to_deal', 'view') || (state.user && state.user.permissions && state.user.permissions.offers_to_deal) : true;
+                const canForce = (typeof hasPerm === 'function') ? (state.user && (state.user.role === 'admin' || (state.user.permissions && state.user.permissions.offers_to_deal_force))) : true;
+                const clientAccepted = offer.clientStatus === 'accepted';
+                const converted = !!offer.convertedDealId;
+
+                let statusBadge = '';
+                if (converted) statusBadge = `<span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200 font-semibold ml-2">→ DEAL</span>`;
+                else if (clientAccepted) statusBadge = `<span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold ml-2">✓ ACCEPTED</span>`;
+                else if (offer.clientStatus === 'declined') statusBadge = `<span class="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200 font-semibold ml-2">✕ DECLINED</span>`;
+
+                let convertBtn = '';
+                if (!converted && (state.user?.role === 'admin' || (state.user?.permissions && state.user.permissions.offers_to_deal))) {
+                    if (clientAccepted) {
+                        convertBtn = `<button class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-convert-offer="${offer.id}" data-force="false">➜ ${Utils.t('offer.createDeal') || 'Kreiraj dil'}</button>`;
+                    } else if (canForce) {
+                        convertBtn = `<button class="bg-amber-500 hover:bg-amber-600 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-convert-offer="${offer.id}" data-force="true">➜ ${Utils.t('offer.createDealForce') || 'Kreiraj dil (bez portala)'}</button>`;
+                    }
+                }
+
                 return `
                 <tr class="hover:bg-slate-50 transition-colors">
-                  <td class="p-5 font-black text-slate-900">${Utils.escapeHtml(offer.offerNo)}</td>
+                  <td class="p-5 font-black text-slate-900">${Utils.escapeHtml(offer.offerNo)}${statusBadge}</td>
                   <td class="p-5 text-slate-500 font-bold">${new Date(offer.date).toLocaleDateString(currentLang)}</td>
                   <td class="p-5 font-black text-blue-700">${Utils.escapeHtml(custName)}</td>
                   <td class="p-5 font-bold text-slate-600">${Utils.escapeHtml(prodName)}</td>
                   <td class="p-5 font-black text-emerald-600 text-lg">${Utils.formatCurrency(totalVal, offer.currency)}</td>
                   <td class="p-5 text-right whitespace-nowrap">
+                      ${convertBtn}
                       <button class="bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" onclick="document.dispatchEvent(new CustomEvent('createCustomerOffer', {detail: {savedOfferId: '${offer.id}'}}))">Otvori / Uredi</button>
                       <button class="bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors" onclick="if(confirm('${Utils.t('misc.confirmDelete') || 'Obrisati?'}')){ deleteItemFromServer('offers', '${offer.id}').then(() => { state.data.offers = state.data.offers.filter(o=>o.id!=='${offer.id}'); renderOffersView(); }) }">🗑️</button>
                   </td>
@@ -666,4 +702,42 @@ function renderOffersView() {
         </tbody>
     </table>`;
     main.appendChild(container);
+
+    // Konverzija ponude u dil (poziva backend)
+    container.querySelectorAll('[data-convert-offer]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const offerId = e.currentTarget.dataset.convertOffer;
+            const force = e.currentTarget.dataset.force === 'true';
+            const srLang = Utils.getLang() === 'sr';
+            const msg = force
+                ? (srLang ? 'PAŽNJA: Klijent nije potvrdio ovu ponudu preko portala.\nDa li ste sigurni da želite da napravite dil bez njegove potvrde?' : 'WARNING: Client has not confirmed via portal.\nAre you sure you want to create the deal without client confirmation?')
+                : (srLang ? 'Kreirati dil iz ove ponude?' : 'Create deal from this offer?');
+            if (!confirm(msg)) return;
+            e.currentTarget.disabled = true;
+            try {
+                const res = await fetch(`/api/deals/from_offer/${offerId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert((srLang ? 'Dil kreiran uspešno. ID: ' : 'Deal created successfully. ID: ') + data.dealId);
+                    if (typeof loadFromStorage === 'function') await loadFromStorage();
+                    renderOffersView();
+                } else if (data.error === 'CLIENT_HAS_NOT_ACCEPTED') {
+                    alert(srLang ? 'Klijent nije prihvatio ponudu preko portala. Zatražite ga da uđe u portal i klikne "Prihvatam", ili koristite "Bez portala" opciju (traži posebnu dozvolu).' : 'Client has not accepted via portal.');
+                    e.currentTarget.disabled = false;
+                } else if (data.error === 'ALREADY_CONVERTED') {
+                    alert(srLang ? 'Ova ponuda je već konvertovana u dil.' : 'This offer is already converted to a deal.');
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown'));
+                    e.currentTarget.disabled = false;
+                }
+            } catch (err) {
+                alert('Network error');
+                e.currentTarget.disabled = false;
+            }
+        });
+    });
 }

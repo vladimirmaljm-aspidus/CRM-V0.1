@@ -193,6 +193,18 @@ function showProductForm(id = null) {
                           ${(typeof CERTIFICATES !== 'undefined' ? CERTIFICATES : []).map(c => `<label class="inline-flex items-center text-xs bg-white px-3 py-1.5 rounded-full cursor-pointer hover:bg-blue-50 border border-slate-200 text-slate-700 font-bold transition-colors shadow-sm"><input type="checkbox" name="offer_cert" value="${c}" class="mr-2 w-4 h-4 text-blue-600 focus:ring-blue-500 rounded-sm border-slate-300"> ${c}</label>`).join('')}
                       </div>
                   </div>
+                  <!-- VARIJANTA PO DOBAVLJAČU/ZEMLJI: svaki supply offer može imati sopstvenu spec,
+                       pakovanje i mini-COA, jer ista roba iz različitih zemalja često ima potpuno
+                       drugačije parametre kvaliteta i pakovanja. -->
+                  <div class="pt-4 border-t border-slate-200 bg-blue-50/30 -mx-6 -mb-4 px-6 pb-4 rounded-b-xl">
+                      <p class="text-[10px] font-black text-blue-800 uppercase tracking-widest mb-3">${tLang('Karakteristike za OVOG dobavljača/porekla', 'Variant-specific characteristics')}</p>
+                      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+                          <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">${tLang('Pakovanje', 'Packaging')}</label><input id="offer-packaging" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-sm outline-none" placeholder="npr. 50kg PP" /></div>
+                          <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">${tLang('Težina paketa (kg)', 'Package weight (kg)')}</label><input id="offer-package-weight" type="number" step="0.01" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-sm outline-none font-mono" /></div>
+                          <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">${tLang('Lead time', 'Lead time')}</label><input id="offer-leadtime" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-sm outline-none" placeholder="npr. 15-20 dana" /></div>
+                      </div>
+                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">${tLang('Specifikacija ove varijante', 'Variant specification')}</label><textarea id="offer-spec" rows="2" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-sm outline-none" placeholder="${tLang('npr. Polarizacija ≥99.7%, boja ICUMSA 45, vlaga ≤0.04%', 'e.g. Polarization ≥99.7%, ICUMSA 45, moisture ≤0.04%')}"></textarea></div>
+                  </div>
                   <div class="flex justify-end mt-4 gap-3 pt-4 border-t border-slate-200">
                       <button type="button" id="cancel-offer-edit" class="bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 font-bold px-6 py-2 rounded-lg text-xs shadow-sm transition-colors hidden">${tLang('Odustani', 'Cancel')}</button>
                       <button type="button" id="add-offer" class="bg-blue-600 hover:bg-blue-700 text-white font-black px-8 py-2 rounded-lg text-xs shadow-md tracking-wider uppercase transition-transform transform hover:-translate-y-0.5">💾 ${Utils.t('actions.save')}</button>
@@ -391,6 +403,11 @@ function showProductForm(id = null) {
             currentEditOfferIndex = parseInt(e.currentTarget.dataset.index, 10);
             const o = item.supplyOffers[currentEditOfferIndex];
             document.getElementById('offer-supplier').value = o.supplierId || ''; document.getElementById('offer-qty').value = o.quantity || 0; document.getElementById('offer-moq').value = o.moq || ''; document.getElementById('offer-price').value = o.price || 0; document.getElementById('offer-currency').value = o.currency || 'USD'; document.getElementById('offer-unit').value = o.unit || ''; document.getElementById('offer-incoterm').value = o.incoterm || ''; document.getElementById('offer-country').value = o.country || ''; document.getElementById('offer-validUntil').value = o.validUntil || '';
+            // Varijantno specifična polja
+            document.getElementById('offer-packaging').value = o.packaging || '';
+            document.getElementById('offer-package-weight').value = o.packageWeight || '';
+            document.getElementById('offer-leadtime').value = o.leadTime || '';
+            document.getElementById('offer-spec').value = o.spec || '';
             
             const currentCerts = o.certificates ? o.certificates.split(', ') : [];
             document.querySelectorAll('input[name="offer_cert"]').forEach(cb => { cb.checked = currentCerts.includes(cb.value); });
@@ -411,14 +428,20 @@ function showProductForm(id = null) {
     document.getElementById('add-offer').addEventListener('click', () => {
         const supId = document.getElementById('offer-supplier').value; const qty = parseFloat(document.getElementById('offer-qty').value) || 0; const moq = parseFloat(document.getElementById('offer-moq').value) || null; const price = parseFloat(document.getElementById('offer-price').value) || 0; const currency = document.getElementById('offer-currency').value; const unit = document.getElementById('offer-unit').value; const country = document.getElementById('offer-country').value.trim(); const incoterm = document.getElementById('offer-incoterm').value; const validUntil = document.getElementById('offer-validUntil').value;
         const certificates = Array.from(document.querySelectorAll('input[name="offer_cert"]:checked')).map(cb => cb.value).join(', ');
-        
+        // Varijantno specifična polja - svaka varijanta ima svoju spec/pakovanje/lead time
+        const packaging = document.getElementById('offer-packaging')?.value.trim() || '';
+        const packageWeight = parseFloat(document.getElementById('offer-package-weight')?.value) || null;
+        const leadTime = document.getElementById('offer-leadtime')?.value.trim() || '';
+        const spec = document.getElementById('offer-spec')?.value.trim() || '';
+
         if(!supId || !price || !country) return alert(tLang('Dobavljač, Cena i Poreklo su obavezni!', 'Supplier, Price, and Country are required!'));
-        
+
         if (currentEditOfferIndex >= 0) {
             const o = item.supplyOffers[currentEditOfferIndex];
             if (o.price !== price || o.incoterm !== incoterm) { o.history = o.history || []; o.history.push({ price: o.price, currency: o.currency, incoterm: o.incoterm, date: new Date().toISOString() }); }
             o.supplierId = supId; o.quantity = qty; o.moq = moq; o.price = price; o.currency = currency; o.unit = unit; o.country = country; o.incoterm = incoterm; o.validUntil = validUntil; o.certificates = certificates;
-        } else item.supplyOffers.push({ supplierId: supId, quantity: qty, moq, price, currency, unit, country, incoterm, validUntil, certificates, history: [] });
+            o.packaging = packaging; o.packageWeight = packageWeight; o.leadTime = leadTime; o.spec = spec;
+        } else item.supplyOffers.push({ supplierId: supId, quantity: qty, moq, price, currency, unit, country, incoterm, validUntil, certificates, packaging, packageWeight, leadTime, spec, history: [] });
         
         document.getElementById('cancel-offer-edit').click(); refreshOffers();
     });

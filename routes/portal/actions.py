@@ -320,22 +320,33 @@ def get_all_kyc_submissions():
 @portal_bp.route('/api/portal/admin/submissions/approve/<sub_id>', methods=['POST'])
 @login_required
 def approve_kyc_submission(sub_id):
+    """Odobrava KYC podnesak i MERGE-uje sve podatke u partner profil (banking,
+    directors, UBOs, AML, fajlovi, tax/reg brojevi, adresa). Dodatno prihvata
+    riskLevel i notes iz forme i beleži ih u partner.kyc + partner.activities.
+    Šalje email potvrdu klijentu (profesionalni šablon)."""
     denied = require_portal_admin()
     if denied: return denied
+
+    payload = request.get_json(silent=True) or {}
+    risk_level = str(payload.get('riskLevel', 'medium')).strip()
+    notes = str(payload.get('notes', '')).strip()[:2000]
+
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     cp = conn_p.cursor()
     cp.execute("SELECT partner_id, data FROM kyc_submissions WHERE id=?", (sub_id,))
     row = cp.fetchone()
-    
+
     if not row:
         conn_p.close()
         return jsonify({"error": "Submission not found"}), 404
-        
+
     partner_id = row[0]
     kyc_data = decrypt_data(row[1])
-    
-    # Mark as approved in portal DB
+
+    # Označi kao odobreno u portal bazi (za istoriju)
     if 'status' not in kyc_data: kyc_data['status'] = 'approved'
+    kyc_data['reviewedAt'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    kyc_data['reviewedBy'] = session.get('username', 'admin')
     cp.execute("UPDATE kyc_submissions SET data=? WHERE id=?", (encrypt_data(kyc_data), sub_id))
     conn_p.commit()
     conn_p.close()
@@ -344,35 +355,190 @@ def approve_kyc_submission(sub_id):
     cm = conn_m.cursor()
     cm.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
     p_row = cm.fetchone()
-    
+
+    if not p_row:
+        conn_m.close()
+        return jsonify({"error": "Partner not found"}), 404
+
+    partner = safe_parse(p_row[0])
+    partner['companyName'] = kyc_data.get('companyName') or partner.get('companyName')
+    partner['taxId'] = kyc_data.get('taxId') or partner.get('taxId')
+    partner['regNo'] = kyc_data.get('regNo') or partner.get('regNo')
+    partner['website'] = kyc_data.get('website') or partner.get('website')
+    partner['industry'] = kyc_data.get('industry') or partner.get('industry')
+
+    if 'address' not in partner or not isinstance(partner['address'], dict): partner['address'] = {}
+    if kyc_data.get('regAddr'): partner['address']['street'] = kyc_data.get('regAddr')
+    if kyc_data.get('opAddr'): partner['address']['operationalAddress'] = kyc_data.get('opAddr')
+
+    if 'banking' not in partner or not isinstance(partner['banking'], dict): partner['banking'] = {}
+    if kyc_data.get('bankName'): partner['banking']['bankName'] = kyc_data.get('bankName')
+    if kyc_data.get('bankIban'): partner['banking']['iban'] = kyc_data.get('bankIban')
+    if kyc_data.get('bankSwift'): partner['banking']['swift'] = kyc_data.get('bankSwift')
+    if kyc_data.get('bankAddr'): partner['banking']['bankAddress'] = kyc_data.get('bankAddr')
+    if kyc_data.get('corrBank'): partner['banking']['correspondentBank'] = kyc_data.get('corrBank')
+
+    if 'kyc' not in partner or not isinstance(partner['kyc'], dict): partner['kyc'] = {}
+    partner['kyc']['status'] = 'approved'
+    partner['kyc']['riskLevel'] = risk_level
+    partner['kyc']['notes'] = notes
+    partner['kyc']['reviewedAt'] = kyc_data['reviewedAt']
+    partner['kyc']['reviewedBy'] = kyc_data['reviewedBy']
+    partner['kyc']['directors'] = kyc_data.get('directors', [])
+    partner['kyc']['ubos'] = kyc_data.get('ubos', [])
+    partner['kyc']['aml'] = kyc_data.get('aml', {})
+    partner['kyc']['files'] = kyc_data.get('files', {})
+    partner['kyc']['turnover'] = kyc_data.get('turnover')
+    partner['kyc']['sourceOfFunds'] = kyc_data.get('sourceOfFunds')
+    partner['kyc']['submitterName'] = kyc_data.get('submitterName')
+    partner['kyc']['submitterTitle'] = kyc_data.get('submitterTitle')
+
+    # Aktivnost za audit trag u CRM-u
+    if 'activities' not in partner or not isinstance(partner['activities'], list): partner['activities'] = []
+    partner['activities'].insert(0, {
+        'id': uuid.uuid4().hex,
+        'date': kyc_data['reviewedAt'],
+        'type': 'KYC Approved',
+        'note': f"KYC odobren by {kyc_data['reviewedBy']}. Risk: {risk_level}." + (f" Notes: {notes}" if notes else "")
+    })
+
+    cm.execute("UPDATE partners SET data=? WHERE id=?", (json.dumps(partner), partner_id))
+    conn_m.commit()
+    conn_m.close()
+    log_audit('APPROVE', 'kyc', f"KYC merged into CRM for {partner.get('companyName')} (risk: {risk_level})", is_suspicious=False)
+
+    # Profesionalan email klijentu
+    client_email = partner.get('contact', {}).get('email') or partner.get('email')
+    if client_email:
+        try:
+            from utils_email import send_kyc_approved
+            token = partner.get('portalToken', '')
+            portal_url = request.url_root.rstrip('/') + f"/portal/{token}" if token else request.url_root
+            send_kyc_approved(client_email, partner.get('companyName', ''), portal_url)
+        except Exception as e:
+            log_audit('ERROR', 'kyc', f"Failed to send KYC approval email: {e}", is_suspicious=False)
+
+    return jsonify({"status": "success", "message": "KYC data merged to CRM profile.", "kyc": partner.get('kyc', {})})
+
+
+@portal_bp.route('/api/portal/admin/submissions/request_update/<sub_id>', methods=['POST'])
+@login_required
+def request_kyc_update(sub_id):
+    """Označava KYC kao 'update_requested' — klijent u portalu vidi banner sa
+    porukom da admin traži dopunu podataka. Šalje email sa razlogom."""
+    denied = require_portal_admin()
+    if denied: return denied
+
+    payload = request.get_json(silent=True) or {}
+    note = str(payload.get('notes', '')).strip()[:2000]
+    risk_level = str(payload.get('riskLevel', 'medium')).strip()
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    cp = conn_p.cursor()
+    cp.execute("SELECT partner_id, data FROM kyc_submissions WHERE id=?", (sub_id,))
+    row = cp.fetchone()
+    if not row:
+        conn_p.close()
+        return jsonify({"error": "Submission not found"}), 404
+    partner_id = row[0]
+    kyc_data = decrypt_data(row[1])
+    kyc_data['status'] = 'update_requested'
+    kyc_data['reviewNote'] = note
+    kyc_data['reviewedAt'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    kyc_data['reviewedBy'] = session.get('username', 'admin')
+    cp.execute("UPDATE kyc_submissions SET data=? WHERE id=?", (encrypt_data(kyc_data), sub_id))
+    conn_p.commit()
+    conn_p.close()
+
+    # Update partner.kycStatus za portal banner
+    conn_m = sqlite3.connect(DB_FILE, timeout=30.0)
+    cm = conn_m.cursor()
+    cm.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
+    p_row = cm.fetchone()
+    partner = None
     if p_row:
         partner = safe_parse(p_row[0])
-        partner['companyName'] = kyc_data.get('companyName') or partner.get('companyName')
-        partner['taxId'] = kyc_data.get('taxId') or partner.get('taxId')
-        partner['regNo'] = kyc_data.get('regNo') or partner.get('regNo')
-        partner['website'] = kyc_data.get('website') or partner.get('website')
-        
-        if 'address' not in partner: partner['address'] = {}
-        partner['address']['street'] = kyc_data.get('regAddr') or partner['address'].get('street')
-        
-        if 'banking' not in partner: partner['banking'] = {}
-        partner['banking']['bankName'] = kyc_data.get('bankName')
-        partner['banking']['iban'] = kyc_data.get('bankIban')
-        partner['banking']['swift'] = kyc_data.get('bankSwift')
-
-        if 'kyc' not in partner: partner['kyc'] = {}
-        partner['kyc']['status'] = 'approved'
-        partner['kyc']['directors'] = kyc_data.get('directors', [])
-        partner['kyc']['ubos'] = kyc_data.get('ubos', [])
-        partner['kyc']['aml'] = kyc_data.get('aml', {})
-        partner['kyc']['files'] = kyc_data.get('files', {}) # DODATO: Trajno čuvanje fajlova u CRM profilu
-        
+        if 'kyc' not in partner or not isinstance(partner['kyc'], dict): partner['kyc'] = {}
+        partner['kyc']['status'] = 'update_requested'
+        partner['kyc']['reviewNote'] = note
+        partner['kyc']['riskLevel'] = risk_level
+        if 'activities' not in partner or not isinstance(partner['activities'], list): partner['activities'] = []
+        partner['activities'].insert(0, {
+            'id': uuid.uuid4().hex,
+            'date': kyc_data['reviewedAt'],
+            'type': 'KYC Update Requested',
+            'note': note or 'Additional information required.'
+        })
         cm.execute("UPDATE partners SET data=? WHERE id=?", (json.dumps(partner), partner_id))
         conn_m.commit()
-        log_audit('APPROVE', 'kyc', f"Merged KYC submission into CRM profile for {partner.get('companyName')}", is_suspicious=False)
-        
     conn_m.close()
-    return jsonify({"status": "success", "message": "KYC Data safely merged to official CRM profile."})
+
+    log_audit('EDIT', 'kyc', f"KYC update requested for {(partner or {}).get('companyName', partner_id)}: {note[:100]}", is_suspicious=False)
+
+    # Email klijentu
+    client_email = (partner or {}).get('contact', {}).get('email') or (partner or {}).get('email') if partner else None
+    if client_email:
+        try:
+            from utils_email import send_kyc_update_requested
+            token = (partner or {}).get('portalToken', '') if partner else ''
+            portal_url = request.url_root.rstrip('/') + f"/portal/{token}" if token else request.url_root
+            send_kyc_update_requested(client_email, (partner or {}).get('companyName', ''), portal_url, note)
+        except Exception as e:
+            log_audit('ERROR', 'kyc', f"Failed to send KYC update-requested email: {e}", is_suspicious=False)
+
+    return jsonify({"status": "success", "message": "Client notified — additional information requested."})
+
+
+@portal_bp.route('/api/portal/admin/submissions/reject/<sub_id>', methods=['POST'])
+@login_required
+def reject_kyc_submission(sub_id):
+    """Odbija KYC. Ne merge-uje podatke; partner.kycStatus = 'rejected'."""
+    denied = require_portal_admin()
+    if denied: return denied
+
+    payload = request.get_json(silent=True) or {}
+    note = str(payload.get('notes', '')).strip()[:2000]
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    cp = conn_p.cursor()
+    cp.execute("SELECT partner_id, data FROM kyc_submissions WHERE id=?", (sub_id,))
+    row = cp.fetchone()
+    if not row:
+        conn_p.close()
+        return jsonify({"error": "Submission not found"}), 404
+    partner_id = row[0]
+    kyc_data = decrypt_data(row[1])
+    kyc_data['status'] = 'rejected'
+    kyc_data['reviewNote'] = note
+    kyc_data['reviewedAt'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    kyc_data['reviewedBy'] = session.get('username', 'admin')
+    cp.execute("UPDATE kyc_submissions SET data=? WHERE id=?", (encrypt_data(kyc_data), sub_id))
+    conn_p.commit()
+    conn_p.close()
+
+    conn_m = sqlite3.connect(DB_FILE, timeout=30.0)
+    cm = conn_m.cursor()
+    cm.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
+    p_row = cm.fetchone()
+    partner = None
+    if p_row:
+        partner = safe_parse(p_row[0])
+        if 'kyc' not in partner or not isinstance(partner['kyc'], dict): partner['kyc'] = {}
+        partner['kyc']['status'] = 'rejected'
+        partner['kyc']['reviewNote'] = note
+        if 'activities' not in partner or not isinstance(partner['activities'], list): partner['activities'] = []
+        partner['activities'].insert(0, {
+            'id': uuid.uuid4().hex,
+            'date': kyc_data['reviewedAt'],
+            'type': 'KYC Rejected',
+            'note': note or 'KYC rejected.'
+        })
+        cm.execute("UPDATE partners SET data=? WHERE id=?", (json.dumps(partner), partner_id))
+        conn_m.commit()
+    conn_m.close()
+
+    log_audit('REJECT', 'kyc', f"KYC rejected for {(partner or {}).get('companyName', partner_id)}", is_suspicious=True)
+    return jsonify({"status": "success", "message": "KYC submission rejected."})
 
 @portal_bp.route('/portal_uploads/<filename>')
 @login_required
@@ -561,6 +727,63 @@ def portal_download_document(token, doc_id):
         is_suspicious=False
     )
     return send_from_directory(folder, safe_name, as_attachment=True, download_name=doc.get('fileName') or safe_name)
+
+
+# ==========================================================
+#  PORTAL: prihvatanje ponude od strane klijenta
+# ==========================================================
+
+@portal_bp.route('/api/portal/offers/accept/<token>/<offer_id>', methods=['POST'])
+def portal_accept_offer(token, offer_id):
+    """Klijent u portalu potvrđuje prihvatanje ponude. Ponuda dobija status
+    'client_accepted' + timestamp. Admin u CRM-u tada može jednim klikom
+    ('Kreiraj dil') da konvertuje ponudu u dil."""
+    auth_header = request.headers.get('X-Portal-Auth')
+    if not verify_portal_session(token, auth_header):
+        return jsonify({"error": "UNAUTHORIZED"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    action = str(payload.get('action', 'accept')).lower()  # accept, decline
+    note = str(payload.get('note', '')).strip()[:500]
+
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        partner_id, partner = find_partner_by_token(c, token, enforce_active=True)
+        if not partner_id:
+            return jsonify({"error": "FORBIDDEN"}), 403
+
+        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+        offer = safe_parse(row[0])
+        # Ponuda mora pripadati OVOM partneru
+        if offer.get('customerId') != partner_id:
+            log_audit('SECURITY', 'portal', f'Blocked cross-partner offer accept attempt: offer {offer_id} by {partner_id}', is_suspicious=True)
+            return jsonify({"error": "FORBIDDEN"}), 403
+
+        now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        if action == 'accept':
+            offer['clientStatus'] = 'accepted'
+            offer['clientAcceptedAt'] = now_iso
+            offer['clientNote'] = note
+            log_action = 'APPROVE'
+        elif action == 'decline':
+            offer['clientStatus'] = 'declined'
+            offer['clientDeclinedAt'] = now_iso
+            offer['clientNote'] = note
+            log_action = 'REJECT'
+        else:
+            return jsonify({"error": "INVALID_ACTION"}), 400
+
+        c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(offer), offer_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    log_audit(log_action, 'portal', f"Client '{partner.get('companyName')}' {action}ed offer {offer.get('offerNo', offer_id)}", is_suspicious=False)
+    return jsonify({"status": "success", "clientStatus": offer.get('clientStatus'), "at": offer.get('clientAcceptedAt') or offer.get('clientDeclinedAt')})
 
 
 # ==========================================================

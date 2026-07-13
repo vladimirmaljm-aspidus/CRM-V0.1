@@ -169,29 +169,120 @@ function renderOffers() {
         container.innerHTML = `<div class="panel p-10 text-center"><p class="text-slate-500 text-sm">${t('no_offers')}</p></div>`;
         return;
     }
-    container.innerHTML = offers.map(o => `
+    container.innerHTML = offers.map(o => {
+        const statusMap = {
+            'accepted': `<span class="badge badge-success">✓ ${t('offer_accepted') || 'Accepted'}</span>`,
+            'declined': `<span class="badge badge-danger">✕ ${t('offer_declined') || 'Declined'}</span>`
+        };
+        const clientStatusBadge = statusMap[o?.clientStatus] || '';
+        const canAct = !o?.clientStatus;
+        return `
         <div class="panel overflow-hidden">
             <div class="px-6 py-4 border-b border-slate-100 flex justify-between items-center">
                 <div>
                     <h3 class="text-base font-semibold text-slate-900">${safeText(o?.productName || 'Product')}</h3>
-                    <p class="text-[10px] text-slate-400 font-semibold tracking-widest uppercase mt-1">${t('offer_no')}: ${safeText(o?.offerNo || 'N/A')}</p>
+                    <p class="text-[10px] text-slate-400 font-semibold tracking-widest uppercase mt-1">${t('offer_no')}: ${safeText(o?.offerNo || 'N/A')}${o?.date ? ' · ' + new Date(o.date).toLocaleDateString() : ''}</p>
                 </div>
                 <div class="text-right">
                     <p class="text-xl font-bold text-emerald-600">${o?.price || 0} ${safeText(o?.currency || '')}</p>
                     <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-widest">/ ${safeText(o?.unit || '')}</p>
+                    ${clientStatusBadge ? `<div class="mt-2">${clientStatusBadge}</div>` : ''}
                 </div>
             </div>
-            <div class="px-6 py-4 grid grid-cols-2 md:grid-cols-4 gap-6 bg-slate-50/50">
+            <div class="px-6 py-4 grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-50/50">
                 <div><p class="label">${t('qty')}</p><p class="text-sm font-medium text-slate-800">${o?.quantity || 0} ${safeText(o?.unit || '')}</p></div>
                 <div><p class="label">${t('incoterm')}</p><p class="text-sm font-medium text-slate-800">${safeText(o?.incoterm || 'N/A')}</p></div>
                 <div><p class="label">${t('valid')}</p><p class="text-sm font-medium text-red-600">${o?.validUntil ? new Date(o.validUntil).toLocaleDateString() : 'N/A'}</p></div>
-                <div class="flex items-center justify-end">
-                    ${o?.documentId ? `<button class="btn btn-ghost small text-xs" onclick="downloadPortalDocument('${safeText(o.documentId)}')">${t('btn_download_pdf')}</button>` : ''}
+                <div><p class="label">${t('hs_code') || 'HS Code'}</p><p class="text-sm font-mono font-medium text-slate-800">${safeText(o?.hsCode || o?.productHsCode || 'N/A')}</p></div>
+                ${o?.packaging ? `<div class="col-span-2"><p class="label">${t('packaging') || 'Packaging'}</p><p class="text-sm font-medium text-slate-800">${safeText(o.packaging)}</p></div>` : ''}
+                ${o?.paymentTerms ? `<div class="col-span-2"><p class="label">${t('payment_terms') || 'Payment Terms'}</p><p class="text-sm font-medium text-slate-800">${safeText(o.paymentTerms)}</p></div>` : ''}
+                ${o?.pol || o?.pod ? `<div class="col-span-2"><p class="label">${t('shipping') || 'Shipping'}</p><p class="text-sm font-medium text-slate-800">${safeText(o?.pol || 'TBA')} → ${safeText(o?.pod || 'TBA')}</p></div>` : ''}
+                ${o?.detailedSpec || o?.productSpec ? `<div class="col-span-4"><p class="label">${t('specification') || 'Specification'}</p><p class="text-sm text-slate-700 whitespace-pre-wrap">${safeText(o?.detailedSpec || o?.productSpec)}</p></div>` : ''}
+            </div>
+            <div class="px-6 py-3 border-t border-slate-100 flex justify-between items-center gap-2">
+                <div class="flex gap-2">
+                    ${o?.documentId ? `<button class="btn btn-ghost small text-xs" onclick="downloadPortalDocument('${safeText(o.documentId)}')">${t('btn_download_pdf') || 'Download PDF'}</button>` : ''}
+                    <button class="btn btn-ghost small text-xs" onclick="showOfferDetail('${safeText(o.id)}')">${t('view_details') || 'View Details'}</button>
+                </div>
+                <div class="flex gap-2">
+                    ${canAct ? `
+                        <button class="btn btn-danger small text-xs" onclick="respondToOffer('${safeText(o.id)}', 'decline')">${t('offer_decline') || 'Decline'}</button>
+                        <button class="btn btn-primary small text-xs" onclick="respondToOffer('${safeText(o.id)}', 'accept')">${t('offer_accept') || 'Accept Offer'}</button>
+                    ` : ''}
                 </div>
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 }
+
+// Poziv API-ja za accept/decline
+async function respondToOffer(offerId, action) {
+    const confirmMsg = action === 'accept'
+        ? (t('confirm_accept_offer') || 'Confirm acceptance of this offer? Your account manager will contact you to finalize the deal.')
+        : (t('confirm_decline_offer') || 'Are you sure you want to decline this offer?');
+    if (!confirm(confirmMsg)) return;
+
+    const note = action === 'decline' ? (prompt(t('decline_reason') || 'Optional reason (visible to admin):', '') || '') : '';
+    try {
+        const res = await fetch(`/api/portal/offers/accept/${TOKEN}/${offerId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
+            body: JSON.stringify({ action, note })
+        });
+        if (res.ok) {
+            showToast(action === 'accept' ? (t('msg_offer_accepted') || 'Offer accepted. Thank you!') : (t('msg_offer_declined') || 'Offer declined.'), 'success');
+            loadPortalData();
+        } else {
+            showToast(t('err_generic'), 'error');
+        }
+    } catch (e) { showToast(t('err_network'), 'error'); }
+}
+
+// Detaljan prikaz ponude (modal)
+function showOfferDetail(offerId) {
+    const o = (portalData?.offers || []).find(x => x.id === offerId);
+    if (!o) return;
+    // Otvori u istom stilu kao product/RFQ modal
+    let modal = document.getElementById('offer-detail-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'offer-detail-modal';
+        modal.className = 'fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden items-center justify-center p-4';
+        document.body.appendChild(modal);
+    }
+    modal.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-3xl w-full max-h-[92vh] overflow-hidden flex flex-col">
+      <div class="flex justify-between items-center border-b border-slate-100 px-6 py-4">
+        <div>
+          <h3 class="text-lg font-semibold text-slate-900">${safeText(o.productName)}</h3>
+          <p class="text-xs text-slate-400 mt-0.5">${t('offer_no')}: ${safeText(o.offerNo)} · ${o.date ? new Date(o.date).toLocaleDateString() : ''}</p>
+        </div>
+        <button class="icon-btn" onclick="closeOfferDetail()">✕</button>
+      </div>
+      <div class="p-6 overflow-y-auto flex-1 space-y-5">
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div><p class="label">${t('price')}</p><p class="text-lg font-bold text-emerald-600">${o.price || 0} ${safeText(o.currency || '')} / ${safeText(o.unit || '')}</p></div>
+          <div><p class="label">${t('qty')}</p><p class="text-sm font-medium">${safeText(o.quantity || '')} ${safeText(o.unit || '')}</p></div>
+          <div><p class="label">${t('incoterm')}</p><p class="text-sm font-medium">${safeText(o.incoterm || 'N/A')}</p></div>
+          <div><p class="label">${t('valid')}</p><p class="text-sm font-medium">${o.validUntil ? new Date(o.validUntil).toLocaleDateString() : 'N/A'}</p></div>
+          <div><p class="label">${t('hs_code') || 'HS Code'}</p><p class="text-sm font-mono">${safeText(o.hsCode || o.productHsCode || 'N/A')}</p></div>
+          <div><p class="label">${t('origin') || 'Origin'}</p><p class="text-sm">${safeText(o.origin || o.productOrigin || 'N/A')}</p></div>
+        </div>
+        ${o.packaging ? `<div><p class="label">${t('packaging') || 'Packaging'}</p><p class="text-sm">${safeText(o.packaging)}</p></div>` : ''}
+        ${o.paymentTerms ? `<div><p class="label">${t('payment_terms') || 'Payment Terms'}</p><p class="text-sm">${safeText(o.paymentTerms)}</p></div>` : ''}
+        ${o.leadTime ? `<div><p class="label">${t('lead_time') || 'Lead Time'}</p><p class="text-sm">${safeText(o.leadTime)}</p></div>` : ''}
+        ${(o.pol || o.pod) ? `<div><p class="label">${t('shipping') || 'Shipping'}</p><p class="text-sm">${safeText(o.pol || 'TBA')} → ${safeText(o.pod || 'TBA')}${o.vessel ? ' · ' + safeText(o.vessel) : ''}</p></div>` : ''}
+        ${o.detailedSpec || o.productSpec ? `<div><p class="label">${t('specification') || 'Specification'}</p><pre class="text-sm text-slate-700 whitespace-pre-wrap font-sans bg-slate-50 border border-slate-200 rounded-lg p-3">${safeText(o.detailedSpec || o.productSpec)}</pre></div>` : ''}
+        ${o.notes ? `<div><p class="label">${t('notes') || 'Notes'}</p><p class="text-sm italic">${safeText(o.notes)}</p></div>` : ''}
+      </div>
+      <div class="p-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-2">
+        ${o.documentId ? `<button class="btn btn-ghost" onclick="downloadPortalDocument('${safeText(o.documentId)}'); closeOfferDetail();">${t('btn_download_pdf') || 'Download PDF'}</button>` : ''}
+        <button class="btn btn-ghost" onclick="closeOfferDetail()">${t('close') || 'Close'}</button>
+      </div>
+    </div>`;
+    modal.classList.remove('hidden'); modal.classList.add('flex');
+}
+function closeOfferDetail() { const m = document.getElementById('offer-detail-modal'); if (m) { m.classList.add('hidden'); m.classList.remove('flex'); } }
 
 // ==========================================================
 //  RFQ

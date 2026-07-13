@@ -228,9 +228,21 @@ function showUserForm(user = null) {
         } else if (id === 'products') {
             advancedHtml = `
                 <label class="inline-flex items-center cursor-pointer text-[11px] font-black text-amber-800 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 px-2 py-1.5 rounded transition-colors hover:bg-amber-200 pt-1">
-                    <input type="checkbox" name="perm_products_view_prices" ${perms['products_view_prices'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-amber-600 focus:ring-amber-500 border-amber-400"> 
+                    <input type="checkbox" name="perm_products_view_prices" ${perms['products_view_prices'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-amber-600 focus:ring-amber-500 border-amber-400">
                     ${tLang('Cene Dobavljača', 'Supplier Catalog Prices')}
                 </label>`;
+        } else if (id === 'offers') {
+            advancedHtml = `
+                <div class="flex flex-col gap-3 pt-1">
+                    <label class="inline-flex items-center cursor-pointer text-[11px] font-black text-emerald-800 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 border border-emerald-300 dark:border-emerald-700 px-2 py-1.5 rounded transition-colors hover:bg-emerald-200">
+                        <input type="checkbox" name="perm_offers_to_deal" ${perms['offers_to_deal'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-emerald-600 focus:ring-emerald-500 border-emerald-400">
+                        ${tLang('Konverzija ponude u dil', 'Convert Offer → Deal')}
+                    </label>
+                    <label class="inline-flex items-center cursor-pointer text-[11px] font-black text-orange-800 dark:text-orange-400 bg-orange-100 dark:bg-orange-900/30 border border-orange-300 dark:border-orange-700 px-2 py-1.5 rounded transition-colors hover:bg-orange-200">
+                        <input type="checkbox" name="perm_offers_to_deal_force" ${perms['offers_to_deal_force'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-orange-600 focus:ring-orange-500 border-orange-400">
+                        ${tLang('Konverzija BEZ potvrde klijenta (force)', 'Force conversion (bypass portal accept)')}
+                    </label>
+                </div>`;
         } else if (id === 'finances') {
             advancedHtml = `
                 <label class="inline-flex items-center cursor-pointer text-[11px] font-black text-emerald-800 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 border border-emerald-300 dark:border-emerald-700 px-2 py-1.5 rounded transition-colors hover:bg-emerald-200 pt-1">
@@ -383,6 +395,8 @@ function showUserForm(user = null) {
         if (fd.get('perm_deals_view_costs')) payload.permissions['deals_view_costs'] = true;
         if (fd.get('perm_deals_approve')) payload.permissions['deals_approve'] = true;
         if (fd.get('perm_use_company_stamp')) payload.permissions['use_company_stamp'] = true;
+        if (fd.get('perm_offers_to_deal')) payload.permissions['offers_to_deal'] = true;
+        if (fd.get('perm_offers_to_deal_force')) payload.permissions['offers_to_deal_force'] = true;
         if (fd.get('perm_partners_kyc')) payload.permissions['partners_kyc'] = true;
         if (fd.get('perm_products_view_prices')) payload.permissions['products_view_prices'] = true;
         if (fd.get('perm_finances_export')) payload.permissions['finances_export'] = true;

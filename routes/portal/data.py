@@ -56,7 +56,15 @@ def get_portal_data(token):
         
         company_data = decrypt_data(comp_row[0]) if comp_row else {}
         company = company_data if isinstance(company_data, dict) else {}
-        safe_company = { "name": company.get("name", "Aspidus DMCC"), "logoUrl": company.get("logoUrl", "") }
+        safe_company = {
+            "name": company.get("name", "Aspidus"),
+            # Frontend CRM cuva logo u logoDataUrl (settings modal); podržavamo oba naziva.
+            "logoUrl": company.get("logoUrl") or company.get("logoDataUrl") or "",
+            "brandColor": company.get("brandColor", "#2563eb"),
+            "address": company.get("address", ""),
+            "taxId": company.get("taxId", ""),
+            "website": company.get("website", "")
+        }
         
         c.execute("SELECT data FROM deals")
         safe_deals = []
@@ -81,22 +89,50 @@ def get_portal_data(token):
                     }
                 })
             
+        # Ucitaj pun katalog proizvoda za enrichment ponude detaljima (HS code, spec, pakovanje...)
+        c.execute("SELECT data FROM products")
+        products_full_map = {}
+        for pr in c.fetchall():
+            pd = safe_parse(pr[0])
+            if isinstance(pd, dict) and pd.get('id'):
+                products_full_map[pd['id']] = pd
+
         c.execute("SELECT data FROM offers")
         safe_offers = []
         for o_row in c.fetchall():
             off = safe_parse(o_row[0])
             if off.get('customerId') == partner_id:
+                # Enrichment: iz proizvoda ubaci HS code, spec, origin - klijent vidi pun opis ponude.
+                pid = off.get("productId")
+                prod = products_full_map.get(pid, {}) if pid else {}
+                supply = (prod.get('supplyOffers') or [{}])[0] if prod else {}
+                # Ako je konvertovana ili klijent vec odgovorio, nose relevantne meta.
                 safe_offers.append({
                     "id": off.get("id"),
-                    "offerNo": off.get("offerNo"), 
-                    "date": off.get("date"), 
+                    "offerNo": off.get("offerNo"),
+                    "date": off.get("date"),
                     "validUntil": off.get("validUntil"),
-                    "productName": products_map.get(off.get("productId"), "Commodity"), 
+                    "productName": products_map.get(pid, "Commodity"),
                     "quantity": off.get("quantity"),
-                    "unit": off.get("unit"), 
-                    "price": off.get("sellingPrice") or off.get("price"), 
-                    "currency": off.get("currency"), 
-                    "incoterm": off.get("incoterm")
+                    "unit": off.get("unit"),
+                    "price": off.get("sellingPrice") or off.get("price"),
+                    "currency": off.get("currency"),
+                    "incoterm": off.get("incoterm"),
+                    "hsCode": off.get("hsCode") or prod.get('hsCode'),
+                    "productSpec": prod.get('detailedSpec') or prod.get('shortDescription'),
+                    "detailedSpec": off.get('detailedSpec') or prod.get('detailedSpec'),
+                    "packaging": off.get("packaging") or prod.get('packaging'),
+                    "paymentTerms": off.get("paymentTerms"),
+                    "pol": off.get("pol"), "pod": off.get("pod"),
+                    "vessel": off.get("vessel"),
+                    "leadTime": off.get("leadTime") or supply.get('leadTime') if supply else None,
+                    "origin": off.get("origin") or supply.get('country') if supply else None,
+                    "productOrigin": supply.get('country') if supply else None,
+                    "notes": off.get("notes"),
+                    "documentId": off.get("documentId") or off.get("pdfDocumentId"),
+                    "clientStatus": off.get("clientStatus"),
+                    "clientAcceptedAt": off.get("clientAcceptedAt"),
+                    "convertedDealId": off.get("convertedDealId")
                 })
                 
         c.execute("SELECT data FROM demands")
