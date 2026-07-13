@@ -220,14 +220,53 @@ window.reviewKYC = async function(partnerId) {
         };
 
         const currentKyc = partner.kyc || {};
+        const tLangKY = (sr, en) => Utils.getLang() === 'sr' ? sr : en;
         const subDate = latest.submitted_at ? new Date(latest.submitted_at).toLocaleString(Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US') : 'Unknown';
+
+        // Prikaz trenutnog statusa i istorije prijava (kad je klijent poslao vise puta)
+        const statusBadge = (() => {
+            const st = currentKyc.status || latest.data?.status;
+            const map = {
+                'approved': { c: 'bg-emerald-100 text-emerald-800 border-emerald-300', l: tLangKY('ODOBRENO', 'APPROVED') },
+                'rejected': { c: 'bg-red-100 text-red-800 border-red-300', l: tLangKY('ODBIJENO', 'REJECTED') },
+                'update_requested': { c: 'bg-amber-100 text-amber-800 border-amber-300', l: tLangKY('TRAŽENA DOPUNA', 'UPDATE REQUESTED') },
+                'pending': { c: 'bg-blue-100 text-blue-800 border-blue-300', l: tLangKY('NA ČEKANJU', 'PENDING') }
+            };
+            const s = map[st] || map['pending'];
+            return `<span class="inline-block px-2.5 py-1 text-[10px] font-black uppercase tracking-widest border rounded-full shadow-sm ${s.c}">${s.l}</span>`;
+        })();
+
+        // Ako je zatražena dopuna, prikaži razlog
+        const reviewNoteBlock = (currentKyc.status === 'update_requested' && currentKyc.reviewNote) ? `
+            <div class="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg mb-5 shadow-sm">
+                <p class="text-[10px] font-black text-amber-800 uppercase tracking-widest mb-1">⚠️ ${tLangKY('Zahtev za dopunu', 'Update requested')}</p>
+                <p class="text-sm text-amber-900 leading-relaxed">${Utils.escapeHtml(currentKyc.reviewNote)}</p>
+                ${currentKyc.reviewedAt ? `<p class="text-[10px] text-amber-700 mt-2 font-bold">${tLangKY('Traženo', 'Requested at')}: ${new Date(currentKyc.reviewedAt).toLocaleString(Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US')}</p>` : ''}
+            </div>` : '';
+
+        // Istorija svih prijava (ako ih ima više)
+        const historyBlock = submissions.length > 1 ? `
+            <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-5">
+                <p class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">📜 ${tLangKY('Istorija prijava', 'Submission history')} (${submissions.length})</p>
+                <div class="space-y-1 max-h-32 overflow-y-auto">
+                    ${submissions.map((s, i) => {
+                        const dt = s.submitted_at ? new Date(s.submitted_at).toLocaleString(Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US') : '—';
+                        const st = s.data?.status || 'pending';
+                        const stColor = st === 'approved' ? 'text-emerald-700' : (st === 'rejected' ? 'text-red-700' : (st === 'update_requested' ? 'text-amber-700' : 'text-slate-600'));
+                        return `<p class="text-xs ${i === 0 ? 'font-black text-slate-800' : 'text-slate-500'}">${i === 0 ? '▶ ' : '  '}${dt} <span class="ml-2 ${stColor} font-bold">[${st}]</span>${i === 0 ? ' ' + tLangKY('(najnovija)', '(latest)') : ''}</p>`;
+                    }).join('')}
+                </div>
+            </div>` : '';
 
         const html = `
         <div class="flex flex-col md:flex-row h-[85vh] bg-slate-50 rounded-b-2xl overflow-hidden">
             <div class="flex-1 overflow-y-auto custom-scrollbar p-6 md:p-8 border-r border-slate-200">
-                <div class="flex justify-between items-center mb-8 border-b border-slate-200 pb-5">
+                <div class="flex justify-between items-center mb-6 border-b border-slate-200 pb-5">
                     <div>
-                        <h3 class="text-2xl font-black text-slate-900 tracking-tight">${Utils.t('kyc.dossier')}</h3>
+                        <div class="flex items-center gap-3 mb-1">
+                            <h3 class="text-2xl font-black text-slate-900 tracking-tight">${Utils.t('kyc.dossier')}</h3>
+                            ${statusBadge}
+                        </div>
                         <p class="text-xs font-bold text-slate-500 uppercase tracking-widest mt-1">${Utils.escapeHtml(partner.companyName)}</p>
                     </div>
                     <div class="text-right bg-white p-3 rounded-lg border border-slate-200 shadow-sm">
@@ -235,6 +274,9 @@ window.reviewKYC = async function(partnerId) {
                         <p class="text-sm font-bold text-blue-600">${subDate}</p>
                     </div>
                 </div>
+
+                ${reviewNoteBlock}
+                ${historyBlock}
 
                 <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm mb-6">
                     <h4 class="font-black text-slate-800 uppercase text-[10px] tracking-widest mb-5 pb-3 border-b border-slate-100 flex items-center gap-2">🏢 ${Utils.t('kyc.corpData')}</h4>

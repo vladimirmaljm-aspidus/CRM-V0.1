@@ -328,9 +328,17 @@ async function loadPortalData() {
 
         renderKycStatusLine();
 
-        // KYC banner (update requested/expired)
+        // KYC banner (update requested/expired) + prikaz razloga koji je admin uneo.
+        // Klijent mora jasno videti šta se traži, ne samo "action required".
         if (portalData?.partner?.kycStatus === 'update_requested' || portalData?.partner?.kycStatus === 'expired') {
             const b = document.getElementById('update-request-banner'); if (b) b.classList.remove('hidden');
+            const note = portalData?.partner?.kycReviewNote;
+            const descEl = document.getElementById('lbl-update-req-desc');
+            if (descEl && note) {
+                descEl.textContent = (currentLang === 'sr'
+                    ? 'Administrator traži sledeće dopune: '
+                    : 'Administrator requested the following updates: ') + note;
+            }
         }
 
         // Directors/UBOs — ensure at least one row exists
