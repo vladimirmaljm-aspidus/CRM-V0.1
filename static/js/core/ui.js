@@ -241,6 +241,21 @@ function checkAllNotifications(){
   if(state.data.recurringExpenses) {
       state.data.recurringExpenses.forEach(re => { const diff = Math.ceil((new Date(now.getFullYear(), now.getMonth(), Math.min(re.dayOfMonth, 28)) - now)/(1000*60*60*24)); if(diff <= 3 && diff > 0) state.notifications.push({ type:'recurring', message: `${t('notifications.reminder')}: ${escapeHtml(re.description)} (${diff}d)` }); });
   }
+
+  // Notifikacije o pending stavkama iz B2B portala (KYC, roba, izmene profila, RFQ).
+  // Zove server-side endpoint i dopisuje u istu listu — vidljivo adminu i korisnicima sa partners_edit.
+  if (state.user && (state.user.role === 'admin' || (state.user.permissions && state.user.permissions.partners_edit))) {
+      fetch('/api/portal/admin/pending_counts').then(r => r.ok ? r.json() : null).then(counts => {
+          if (!counts) return;
+          const tLang = (sr, en) => Utils.getLang() === 'sr' ? sr : en;
+          if (counts.kyc > 0)               state.notifications.push({ type: 'portal_kyc', message: tLang(`KYC prijave sa portala čekaju pregled: ${counts.kyc}`, `KYC submissions awaiting review: ${counts.kyc}`), goto: 'portal_kyc' });
+          if (counts.products > 0)          state.notifications.push({ type: 'portal_products', message: tLang(`Nova roba sa portala na odobrenje: ${counts.products}`, `New products from partners awaiting approval: ${counts.products}`), goto: 'portal_products' });
+          if (counts.profile_requests > 0)  state.notifications.push({ type: 'portal_profile', message: tLang(`Zahtevi za izmenu profila: ${counts.profile_requests}`, `Profile change requests: ${counts.profile_requests}`), goto: 'portal_profile' });
+          if (counts.rfqs > 0)              state.notifications.push({ type: 'portal_rfq', message: tLang(`Novi RFQ zahtevi sa portala: ${counts.rfqs}`, `New RFQs from portal: ${counts.rfqs}`), goto: 'demands' });
+          updateNotificationCounter();
+      }).catch(() => {});
+  }
+
   updateNotificationCounter();
 }
 
@@ -252,10 +267,166 @@ function updateNotificationCounter(){
 }
 
 function showNotificationsModal(){
-  const listHtml = state.notifications.length ? state.notifications.map(n=> n.dealId ? `<li class="mb-2 hover:bg-[var(--hover-bg)] p-2 rounded transition-colors"><a href="#" class="notification-link font-medium text-blue-500" data-deal-id="${n.dealId}">${escapeHtml(n.message)}</a></li>` : `<li class="mb-2 p-2 border-b border-theme text-main">${escapeHtml(n.message)}</li>`).join('') : `<li class="text-muted p-4 text-center border-2 border-dashed rounded-lg">${t('notifications.noNotifications')}</li>`;
-  openModal(t('notifications.title'), `<div><h4 class="font-bold mb-4 text-xl text-accent border-b border-theme pb-2">${t('notifications.title')}</h4><ul>${listHtml}</ul></div>`, null);
-  document.querySelectorAll('.notification-link').forEach(link => { link.addEventListener('click', (e) => { e.preventDefault(); closeModal(); state.currentView = 'deals'; render(); if(typeof showDealForm==='function') showDealForm({dealId: e.currentTarget.dataset.dealId}); }); });
+  const listHtml = state.notifications.length ? state.notifications.map(n => {
+      const cls = 'notification-item block p-3 rounded-lg hover:bg-[var(--hover-bg)] cursor-pointer border border-transparent hover:border-[var(--border)] transition-colors mb-1.5';
+      let attrs = '';
+      if (n.dealId) attrs = `data-deal-id="${escapeHtml(n.dealId)}"`;
+      else if (n.goto) attrs = `data-goto="${escapeHtml(n.goto)}"`;
+      const icon = { 'portal_kyc': '🛡️', 'portal_products': '📦', 'portal_profile': '👤', 'portal_rfq': '📝', 'payment': '💳', 'oldPartner': '⏳', 'oldDemand': '🔎', 'productAvailable': '🎯', 'recurring': '🔁' }[n.type] || '•';
+      return `<div class="${cls}" ${attrs}>
+        <span class="mr-2">${icon}</span><span class="text-sm text-main">${escapeHtml(n.message)}</span>
+      </div>`;
+  }).join('') : `<div class="text-[var(--muted)] p-6 text-center border-2 border-dashed border-[var(--border)] rounded-xl text-sm">${t('notifications.noNotifications')}</div>`;
+  openModal(t('notifications.title'), `<div class="space-y-1">${listHtml}</div>`, null);
+  document.querySelectorAll('.notification-item').forEach(link => {
+      link.addEventListener('click', (e) => {
+          const dealId = e.currentTarget.dataset.dealId;
+          const goto = e.currentTarget.dataset.goto;
+          closeModal();
+          if (dealId) {
+              state.currentView = 'deals'; render();
+              if (typeof showDealForm === 'function') showDealForm({ dealId });
+          } else if (goto === 'demands') {
+              state.currentView = 'demands'; render();
+          } else if (goto === 'portal_profile' && typeof showPortalPendingModal === 'function') {
+              showPortalPendingModal('profile_requests');
+          } else if (goto === 'portal_kyc' && typeof showPortalPendingModal === 'function') {
+              showPortalPendingModal('kyc');
+          } else if (goto === 'portal_products' && typeof showPortalPendingModal === 'function') {
+              showPortalPendingModal('products');
+          }
+      });
+  });
 }
+
+// ==========================================================
+//  ADMIN: pregled i odobravanje pending stavki iz portala
+// ==========================================================
+async function showPortalPendingModal(kind) {
+    const srLang = Utils.getLang() === 'sr';
+    const titles = {
+        'profile_requests': srLang ? '👤 Zahtevi za izmenu profila (Portal)' : '👤 Profile Change Requests (Portal)',
+        'kyc': srLang ? '🛡️ KYC prijave sa portala' : '🛡️ KYC Submissions (Portal)',
+        'products': srLang ? '📦 Nova roba sa portala' : '📦 New Products from Portal'
+    };
+    openModal(titles[kind] || 'Portal', `<div class="p-8 text-center text-[var(--muted)] text-sm">${srLang ? 'Učitavanje…' : 'Loading…'}</div>`, null);
+
+    let html = '';
+    if (kind === 'profile_requests') {
+        const res = await fetch('/api/portal/admin/profile_requests?status=pending');
+        const list = res.ok ? await res.json() : [];
+        if (list.length === 0) {
+            html = `<div class="p-8 text-center text-[var(--muted)] text-sm">${srLang ? 'Nema zahteva na čekanju.' : 'No pending requests.'}</div>`;
+        } else {
+            html = list.map(r => {
+                const changes = Object.entries(r.changes || {}).filter(([k]) => k !== 'note').map(([k, v]) => {
+                    const oldKey = 'current' + k.charAt(0).toUpperCase() + k.slice(1);
+                    const oldVal = r.current?.[oldKey] || '—';
+                    return `<div class="text-xs text-slate-600 mb-1"><span class="font-semibold text-slate-800">${escapeHtml(k)}:</span> <s class="text-red-500">${escapeHtml(oldVal)}</s> → <strong class="text-emerald-700">${escapeHtml(v)}</strong></div>`;
+                }).join('');
+                return `<div class="p-4 border border-[var(--border)] rounded-lg mb-3 bg-white">
+                    <div class="flex justify-between items-start mb-2">
+                        <div><h4 class="font-semibold text-sm text-main">${escapeHtml(r.partner_name)}</h4><p class="text-[10px] text-[var(--muted)] uppercase tracking-wide">${r.submitted_at ? new Date(r.submitted_at).toLocaleString() : ''}</p></div>
+                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 font-semibold">${srLang ? 'NA ČEKANJU' : 'PENDING'}</span>
+                    </div>
+                    ${changes}
+                    ${r.changes?.note ? `<div class="text-xs italic text-slate-500 mt-2 p-2 bg-slate-50 rounded">"${escapeHtml(r.changes.note)}"</div>` : ''}
+                    <div class="flex gap-2 mt-3 justify-end">
+                        <button class="btn btn-ghost small text-xs" data-req="${escapeHtml(r.id)}" data-action="reject">${srLang ? 'Odbij' : 'Reject'}</button>
+                        <button class="btn btn-primary small text-xs" data-req="${escapeHtml(r.id)}" data-action="approve">${srLang ? 'Odobri i primeni' : 'Approve & apply'}</button>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+    } else if (kind === 'kyc') {
+        // Postojeci endpoint /api/portal/admin/submissions/all
+        const res = await fetch('/api/portal/admin/submissions/all');
+        const list = res.ok ? await res.json() : [];
+        if (list.length === 0) {
+            html = `<div class="p-8 text-center text-[var(--muted)] text-sm">${srLang ? 'Nema KYC prijava.' : 'No KYC submissions.'}</div>`;
+        } else {
+            html = list.map(s => `
+                <div class="p-4 border border-[var(--border)] rounded-lg mb-3 bg-white">
+                    <div class="flex justify-between items-start mb-1">
+                        <div><h4 class="font-semibold text-sm text-main">${escapeHtml(s.partner_name)}</h4><p class="text-[10px] text-[var(--muted)] uppercase">${s.submitted_at ? new Date(s.submitted_at).toLocaleString() : ''}</p></div>
+                        <div class="flex gap-2">
+                            <button class="btn btn-primary small text-xs" data-kyc="${escapeHtml(s.id)}" data-partner="${escapeHtml(s.partner_id)}">${srLang ? 'Otvori u KYC modulu' : 'Open in KYC'}</button>
+                        </div>
+                    </div>
+                    <div class="text-xs text-slate-600">${escapeHtml(s.data?.companyName || '')} · ${escapeHtml(s.data?.taxId || '')}</div>
+                </div>
+            `).join('');
+        }
+    } else if (kind === 'products') {
+        const res = await fetch('/api/portal/admin/products');
+        const list = res.ok ? await res.json() : [];
+        const pending = list.filter(p => p.status === 'pending');
+        if (pending.length === 0) {
+            html = `<div class="p-8 text-center text-[var(--muted)] text-sm">${srLang ? 'Nema robe na čekanju.' : 'No products awaiting approval.'}</div>`;
+        } else {
+            html = pending.map(p => {
+                const off = (p.data.supplyOffers && p.data.supplyOffers[0]) || {};
+                return `
+                <div class="p-4 border border-[var(--border)] rounded-lg mb-3 bg-white">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h4 class="font-semibold text-sm text-main">${escapeHtml(p.data.name || '')}</h4>
+                            <p class="text-xs text-[var(--muted)] mt-0.5">${escapeHtml(p.partner_name)} · ${escapeHtml(p.data.sku || '')}</p>
+                            <p class="text-xs text-emerald-700 mt-1 font-semibold">${off.price || 0} ${escapeHtml(off.currency || '')} / ${escapeHtml(off.unit || '')}</p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button class="btn btn-ghost small text-xs" data-prod="${escapeHtml(p.id)}" data-action="reject">${srLang ? 'Odbij' : 'Reject'}</button>
+                            <button class="btn btn-primary small text-xs" data-prod="${escapeHtml(p.id)}" data-action="approve">${srLang ? 'Odobri' : 'Approve'}</button>
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+    }
+
+    // Ubaci HTML u modal body
+    const body = document.getElementById('modal-body');
+    if (body) body.innerHTML = `<div>${html}</div>`;
+
+    // Event handlers
+    document.querySelectorAll('[data-req]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const req = e.currentTarget.dataset.req;
+            const action = e.currentTarget.dataset.action;
+            if (!confirm(action === 'approve' ? (srLang ? 'Odobriti i primeniti izmene?' : 'Approve and apply changes?') : (srLang ? 'Odbiti zahtev?' : 'Reject request?'))) return;
+            const r = await fetch(`/api/portal/admin/profile_requests/${req}/review`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action }) });
+            if (r.ok) {
+                showPortalPendingModal('profile_requests');
+                if (typeof loadFromStorage === 'function') await loadFromStorage();
+                checkAllNotifications();
+            } else {
+                alert(srLang ? 'Greška.' : 'Error.');
+            }
+        });
+    });
+    document.querySelectorAll('[data-prod]').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const pid = e.currentTarget.dataset.prod;
+            const action = e.currentTarget.dataset.action;
+            if (!confirm(action === 'approve' ? (srLang ? 'Odobriti ovaj proizvod?' : 'Approve this product?') : (srLang ? 'Odbiti proizvod?' : 'Reject product?'))) return;
+            const r = await fetch(`/api/portal/admin/products/review/${pid}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action }) });
+            if (r.ok) {
+                showPortalPendingModal('products');
+                if (typeof loadFromStorage === 'function') await loadFromStorage();
+                checkAllNotifications();
+            }
+        });
+    });
+    document.querySelectorAll('[data-kyc]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const partnerId = e.currentTarget.dataset.partner;
+            closeModal();
+            if (typeof reviewKYC === 'function') { reviewKYC(partnerId); }
+            else if (partnerId) { state.currentView = 'partnerDetail'; state.detailViewId = partnerId; render(); }
+        });
+    });
+}
+window.showPortalPendingModal = showPortalPendingModal;
 
 // === KREIRANJE OFFLINE BANERA ===
 function showOfflineBanner() {

@@ -133,47 +133,99 @@ def get_portal_data(token):
         
         cp.execute("SELECT id, data, status, created_at FROM portal_products WHERE partner_id=? ORDER BY created_at DESC", (partner_id,))
         my_products = [{"id": p_row[0], "data": safe_parse(p_row[1]), "status": p_row[2], "created_at": p_row[3]} for p_row in cp.fetchall()]
-        
+
+        # Moji zahtevi za izmenu profila
+        my_profile_requests = []
+        try:
+            cp.execute("SELECT id, data, status, submitted_at, reviewed_at FROM profile_change_requests WHERE partner_id=? ORDER BY submitted_at DESC LIMIT 10", (partner_id,))
+            my_profile_requests = [
+                {"id": r[0], "changes": safe_parse(r[1]), "status": r[2], "submitted_at": r[3], "reviewed_at": r[4]}
+                for r in cp.fetchall()
+            ]
+        except Exception:
+            pass
+
         conn_p.close()
-            
+
+        # Meta o promenama od klijentovog poslednjeg pogleda (za badge "novo").
+        # Klijent u browseru pamti last_seen; server samo vraća sirove timestamp-ove.
         return jsonify({
-            "partner": safe_partner, 
-            "company": safe_company, 
-            "deals": sorted(safe_deals, key=lambda x: x.get('createdAt') or '', reverse=True), 
+            "partner": safe_partner,
+            "company": safe_company,
+            "deals": sorted(safe_deals, key=lambda x: x.get('createdAt') or '', reverse=True),
             "offers": sorted(safe_offers, key=lambda x: x.get('date') or '', reverse=True),
             "my_demands": sorted(my_demands, key=lambda x: x.get('date') or '', reverse=True),
             "documents": documents,
             "latest_kyc": latest_kyc,
-            "my_products": my_products
+            "my_products": my_products,
+            "my_profile_requests": my_profile_requests
         })
     finally:
         if conn: conn.close()
 
+import re as _re
+import uuid as _uuid
+from datetime import datetime as _dt, timezone as _tz
+
+_EMAIL_RE = _re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 @portal_bp.route('/api/portal/profile/update/<token>', methods=['POST'])
-def update_portal_profile(token):
+def submit_profile_change_request(token):
+    """Klijent portala predlaže izmenu svojih kontakt podataka (email, telefon,
+    kontakt osoba, adresa). Izmena se NE primenjuje odmah — čuva se kao 'pending'
+    zahtev; admin je odobrava iz CRM-a, tek onda se preslikava u partner profil.
+    Time se sprečava da klijent bez nadzora promeni komunikacione kanale."""
     auth_header = request.headers.get('X-Portal-Auth')
     if not verify_portal_session(token, auth_header): abort(401)
 
-    data = request.get_json(silent=True) or {}
-    new_email = str(data.get('email', '')).strip()[:150]
-    # Osnovna validacija formata e-maila (sprečava upis smeća/injekcija)
-    if not new_email or '@' not in new_email or '.' not in new_email.split('@')[-1]:
-        return jsonify({"error": "Valid email is required"}), 400
+    payload = request.get_json(silent=True) or {}
+
+    # Sanitizacija i validacija — samo dozvoljena polja
+    email = str(payload.get('email', '')).strip()[:150]
+    phone = str(payload.get('phone', '')).strip()[:50]
+    person = str(payload.get('contactPerson', '')).strip()[:150]
+    street = str(payload.get('street', '')).strip()[:200]
+    city = str(payload.get('city', '')).strip()[:100]
+    country = str(payload.get('country', '')).strip()[:100]
+    note = str(payload.get('note', '')).strip()[:500]
+
+    if email and not _EMAIL_RE.match(email):
+        return jsonify({"error": "INVALID_EMAIL_FORMAT"}), 400
+    if not any([email, phone, person, street, city, country]):
+        return jsonify({"error": "NO_CHANGES_PROVIDED"}), 400
 
     conn = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
         c = conn.cursor()
         partner_id, partner_record = find_partner_by_token(c, token, enforce_active=True)
-        if not partner_record: return jsonify({"error": "Partner not found"}), 404
-
-        old_email = partner_record.get('contact', {}).get('email') or partner_record.get('email', 'N/A')
-        if 'contact' not in partner_record: partner_record['contact'] = {}
-        partner_record['contact']['email'] = partner_record['email'] = new_email
-        
-        c.execute("UPDATE partners SET data=? WHERE id=?", (json.dumps(partner_record), partner_id))
-        conn.commit()
-        log_audit('EDIT', 'portal', f"Partner updated contact email from {old_email} to {new_email}", is_suspicious=False)
-        return jsonify({"status": "success", "message": "Profile updated successfully"})
+        if not partner_record:
+            return jsonify({"error": "Partner not found"}), 404
     finally:
         if conn: conn.close()
+
+    changes = {}
+    if email: changes['email'] = email
+    if phone: changes['phone'] = phone
+    if person: changes['contactPerson'] = person
+    if street: changes['street'] = street
+    if city: changes['city'] = city
+    if country: changes['country'] = country
+    if note: changes['note'] = note
+
+    req_id = _uuid.uuid4().hex
+    now_iso = _dt.now(_tz.utc).isoformat().replace('+00:00', 'Z')
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    try:
+        conn_p.execute('PRAGMA journal_mode=WAL;')
+        conn_p.execute(
+            "INSERT INTO profile_change_requests (id, partner_id, data, status, submitted_at) VALUES (?, ?, ?, ?, ?)",
+            (req_id, partner_id, json.dumps(changes), 'pending', now_iso)
+        )
+        conn_p.commit()
+    finally:
+        conn_p.close()
+
+    log_audit('CREATE', 'portal', f'Profile change request submitted by partner {partner_id}: {list(changes.keys())}', is_suspicious=False)
+    return jsonify({"status": "success", "message": "Zahtev je poslat administratoru na odobrenje.", "request_id": req_id})
