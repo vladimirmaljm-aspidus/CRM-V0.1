@@ -322,3 +322,209 @@ def save_data(key):
         return jsonify({"error": f"Critical error. ({str(e)})"}), 500
     finally:
         if conn: conn.close()
+
+# ==========================================================
+#  OFFERS: konverzija ponude u dil / fakturu
+# ==========================================================
+
+@data_bp.route('/api/deals/from_offer/<offer_id>', methods=['POST'])
+@login_required
+def create_deal_from_offer(offer_id):
+    """Kreira novi dil iz postojeće ponude. Podržava dva režima:
+    1. Klijent je već prihvatio ponudu preko portala (clientStatus='accepted') → svako
+       sa 'offers_to_deal' permisijom može da klikne 'Kreiraj dil'.
+    2. Klijent nema portal ili admin želi da bypass-uje (payload.force=true) → samo
+       admin ili korisnik sa 'offers_to_deal_force' permisijom sme (jer preskače
+       klijentovu potvrdu).
+    Bez ovih permisija radnik NE vidi dugme (kontroliše se frontend hasPerm)."""
+    role = session.get('role')
+    payload = request.get_json(silent=True) or {}
+    force = bool(payload.get('force', False))
+
+    # Provera permisija
+    perms = {}
+    if role != 'admin':
+        conn_p = get_db_connection()
+        try:
+            cp = conn_p.cursor()
+            cp.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+            prow = cp.fetchone()
+        finally:
+            conn_p.close()
+        perms = decrypt_data(prow[0]) if prow and prow[0] else {}
+        if not perms.get('offers_to_deal', False):
+            log_audit('SECURITY', 'offers', f'Prevented unauthorized offer→deal conversion (offer {offer_id})', is_suspicious=True)
+            return jsonify({"error": "UNAUTHORIZED"}), 403
+        if force and not perms.get('offers_to_deal_force', False):
+            log_audit('SECURITY', 'offers', f'Prevented forced offer→deal without client approval (offer {offer_id})', is_suspicious=True)
+            return jsonify({"error": "FORCE_NOT_ALLOWED"}), 403
+
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute('BEGIN TRANSACTION;')
+        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
+        row = c.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+        offer = decrypt_data(row[0])
+        if not isinstance(offer, dict): offer = json.loads(row[0]) if isinstance(row[0], str) else {}
+
+        # Ako klijent nije prihvatio i nije force, blokiraj
+        client_accepted = offer.get('clientStatus') == 'accepted'
+        if not client_accepted and not force:
+            conn.rollback()
+            return jsonify({"error": "CLIENT_HAS_NOT_ACCEPTED", "message": "Klijent nije potvrdio ponudu preko portala. Koristite 'force' za override."}), 409
+
+        # Ako je ponuda vec konvertovana, sprecavamo duplu konverziju
+        if offer.get('convertedDealId'):
+            existing_deal_id = offer['convertedDealId']
+            conn.rollback()
+            return jsonify({"error": "ALREADY_CONVERTED", "dealId": existing_deal_id}), 409
+
+        # Kreiraj dil iz ponude
+        deal_id = str(uuid.uuid4())
+        now_iso = None
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            now_iso = _dt.now(_tz.utc).isoformat().replace('+00:00', 'Z')
+        except Exception:
+            pass
+
+        first_item = (offer.get('items') or [{}])[0] if isinstance(offer.get('items'), list) else {}
+        deal = {
+            'id': deal_id,
+            'contractId': f"D-{offer.get('offerNo', '')}",
+            'buyerId': offer.get('customerId'),
+            'buyerName': '',
+            'productId': offer.get('productId') or first_item.get('productId'),
+            'quantity': offer.get('quantity') or first_item.get('quantity'),
+            'unit': offer.get('unit') or first_item.get('unit'),
+            'sellingPrice': offer.get('sellingPrice') or first_item.get('price'),
+            'sellingCurrency': offer.get('currency'),
+            'incoterm': offer.get('incoterm'),
+            'logistics': {
+                'pol': offer.get('pol', ''),
+                'pod': offer.get('pod', ''),
+                'vessel': offer.get('vessel', ''),
+                'packaging': offer.get('packaging', '')
+            },
+            'paymentTerms': offer.get('paymentTerms'),
+            'status': 'negotiation',
+            'createdAt': now_iso,
+            'sourceOfferId': offer_id,
+            'items': offer.get('items') or [],
+            'ownerId': session.get('user_id', 'SYSTEM'),
+            'sharedWith': []
+        }
+
+        # Uzmi ime kupca iz partners tabele
+        c.execute("SELECT data FROM partners WHERE id=?", (offer.get('customerId'),))
+        p_row = c.fetchone()
+        if p_row:
+            p_data = decrypt_data(p_row[0])
+            if isinstance(p_data, dict):
+                deal['buyerName'] = p_data.get('companyName', '')
+
+        c.execute("INSERT INTO deals (id, data) VALUES (?, ?)", (deal_id, json.dumps(deal)))
+
+        # Označi ponudu kao konvertovanu
+        offer['convertedDealId'] = deal_id
+        offer['convertedAt'] = now_iso
+        c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(offer), offer_id))
+        conn.commit()
+
+        forced_msg = " (FORCED — client had not accepted via portal)" if (force and not client_accepted) else ""
+        log_audit('CREATE', 'deals', f"Created deal {deal_id} from offer {offer.get('offerNo', offer_id)}{forced_msg}", is_suspicious=False)
+        return jsonify({"status": "success", "dealId": deal_id, "deal": deal})
+    except Exception as e:
+        if conn: conn.rollback()
+        log_audit('ERROR', 'offers', f'offer→deal conversion failed: {e}', is_suspicious=True)
+        return jsonify({"error": f"Internal error: {e}"}), 500
+    finally:
+        if conn: conn.close()
+
+
+@data_bp.route('/api/offers/<offer_id>/generate_pdf', methods=['POST'])
+@login_required
+def generate_offer_pdf_endpoint(offer_id):
+    """Generise (i cuva u vault) profesionalan PDF ponude. Klijent u portalu tada
+    moze da preuzme dokument preko standardnog /api/portal/document/... koji
+    audit-loguje download.
+
+    Permisija: admin ili neko sa offers_edit."""
+    role = session.get('role')
+    if role != 'admin':
+        conn_p = get_db_connection()
+        try:
+            cp = conn_p.cursor()
+            cp.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+            prow = cp.fetchone()
+        finally:
+            conn_p.close()
+        perms = decrypt_data(prow[0]) if prow and prow[0] else {}
+        if not (perms.get('offers_edit') or perms.get('offers_view_all')):
+            log_audit('SECURITY', 'offers', 'Prevented unauthorized PDF generation', is_suspicious=True)
+            return jsonify({"error": "UNAUTHORIZED"}), 403
+
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+        offer = decrypt_data(row[0])
+        if not isinstance(offer, dict): offer = json.loads(row[0]) if isinstance(row[0], str) else {}
+    finally:
+        conn.close()
+
+    try:
+        from pdf_generator import save_offer_pdf_to_vault
+    except Exception as e:
+        return jsonify({"error": f"PDF_MODULE_UNAVAILABLE: {e}"}), 500
+
+    doc_id, file_url = save_offer_pdf_to_vault(offer)
+    if not doc_id:
+        return jsonify({"error": "PDF_GENERATION_FAILED"}), 500
+
+    # Poveži ponudu sa dokumentom kako bi klijent u portalu imao dugme download
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
+        row = c.fetchone()
+        if row:
+            of = decrypt_data(row[0])
+            if not isinstance(of, dict): of = json.loads(row[0]) if isinstance(row[0], str) else {}
+            of['documentId'] = doc_id
+            of['pdfFileUrl'] = file_url
+            of['pdfGeneratedAt'] = datetime.utcnow().isoformat() + 'Z' if False else __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat().replace('+00:00', 'Z')
+            c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(of), offer_id))
+            conn.commit()
+    finally:
+        conn.close()
+
+    log_audit('CREATE', 'offers', f'Generated PDF for offer {offer_id} → vault doc {doc_id}', is_suspicious=False)
+
+    # Pokušaj email obaveštenje klijentu
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT data FROM partners WHERE id=?", (offer.get('customerId'),))
+        prow = c.fetchone()
+        conn.close()
+        if prow:
+            pdata = decrypt_data(prow[0])
+            if isinstance(pdata, dict):
+                email = pdata.get('contact', {}).get('email') or pdata.get('email')
+                token = pdata.get('portalToken', '')
+                portal_url = request.url_root.rstrip('/') + f"/portal/{token}" if token else request.url_root
+                if email:
+                    from utils_email import send_new_offer
+                    send_new_offer(email, pdata.get('companyName', ''), offer.get('offerNo', ''), portal_url)
+    except Exception:
+        pass
+
+    return jsonify({"status": "success", "documentId": doc_id, "fileUrl": file_url})

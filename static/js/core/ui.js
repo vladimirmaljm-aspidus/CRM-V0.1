@@ -128,8 +128,82 @@ function render() {
       main.innerHTML = `<div class="p-10 text-center"><h2 class="text-xl text-red-500 font-bold">Došlo je do greške u prikazu modula. Osvježite stranicu.</h2></div>`;
   }
   
+  applyPermissionUIGating();
   updateNotificationCounter();
 }
+
+// ==========================================================
+//  UI Permission Gating
+// ==========================================================
+// Cilj: korisnik bez određene permisije NE VIDI dugmiće/opcije koje ne sme da koristi.
+// Način rada:
+//   1. Elementi u iscrtavanju mogu imati atribut data-req-perm="modul:action" (npr. "deals:edit").
+//   2. Ova funkcija ih traži i skriva (display:none) ako trenutni korisnik nema tu permisiju.
+//   3. Dodatno, sistematski krije klasične "edit"/"delete"/"add" tastere za module za koje user
+//      nema odgovarajuću permisiju - detekcija po sadržaju view-a (currentView).
+function applyPermissionUIGating() {
+    if (!state.user) return;
+
+    // 1. Elementi sa eksplicitnim data-req-perm
+    document.querySelectorAll('[data-req-perm]').forEach(el => {
+        const spec = el.getAttribute('data-req-perm') || '';
+        // Format: "modul:action" ili "modul:action,modul:action" (bilo koji od navedenih)
+        const parts = spec.split(',').map(s => s.trim()).filter(Boolean);
+        let allowed = parts.length === 0;
+        for (const p of parts) {
+            const [mod, act] = p.split(':');
+            if (mod && act && typeof hasPerm === 'function' && hasPerm(mod, act)) { allowed = true; break; }
+            // Podržava i "flag:permName" za direktnu proveru state.user.permissions[permName]
+            if (mod === 'flag' && act && state.user.permissions && state.user.permissions[act]) { allowed = true; break; }
+        }
+        el.style.display = allowed ? '' : 'none';
+    });
+
+    // 2. Ako korisnik NEMA odgovarajuće edit/delete/view-costs permisije za modul,
+    //    ukloni klasične dugmiće iz kartica/tabele. Ovo je "fail-safe" u slučaju da
+    //    modul ne označava dugmiće sa data-req-perm.
+    const view = state.currentView;
+    const gate = (selector, mod, act) => {
+        if (typeof hasPerm === 'function' && !hasPerm(mod, act)) {
+            document.querySelectorAll(selector).forEach(el => { el.style.display = 'none'; });
+        }
+    };
+
+    if (view === 'deals') {
+        gate('.edit-deal, [data-action="edit-deal"]', 'deals', 'edit');
+        gate('.del-deal, [data-action="delete-deal"]', 'deals', 'delete');
+    }
+    if (view === 'products') {
+        gate('.edit-product, [data-action="edit-product"]', 'products', 'edit');
+        gate('.del-product, [data-action="delete-product"]', 'products', 'delete');
+    }
+    if (view === 'partners' || view === 'partnerDetail') {
+        gate('.edit-partner, [data-action="edit-partner"]', 'partners', 'edit');
+        gate('.del-partner, [data-action="delete-partner"]', 'partners', 'delete');
+    }
+    if (view === 'offers') {
+        gate('.edit-offer, [data-action="edit-offer"]', 'offers', 'edit');
+        gate('.del-offer, [data-action="delete-offer"]', 'offers', 'delete');
+    }
+    if (view === 'demands') {
+        gate('.edit-demand, [data-action="edit-demand"]', 'products', 'edit');
+        gate('.del-demand, [data-action="delete-demand"]', 'products', 'delete');
+    }
+}
+// Izloži za dinamički kreirane modale
+window.applyPermissionUIGating = applyPermissionUIGating;
+
+// Reapply gating na svaki modal open (dodaje se posle openModal poziva)
+(function() {
+    const origOpen = window.openModal;
+    if (typeof origOpen === 'function') {
+        window.openModal = function() {
+            const r = origOpen.apply(this, arguments);
+            setTimeout(applyPermissionUIGating, 30);
+            return r;
+        };
+    }
+})();
 
 function showProfileModal() {
     const srLang = Utils.getLang() === 'sr';

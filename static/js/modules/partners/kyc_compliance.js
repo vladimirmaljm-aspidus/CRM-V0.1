@@ -364,42 +364,55 @@ window.reviewKYC = async function(partnerId) {
         window.submitKycDecision = async function(decisionStatus) {
             const form = document.getElementById('kyc-action-form');
             const fd = new FormData(form);
-            
-            partner.kyc = {
-                status: decisionStatus,
-                riskLevel: fd.get('riskLevel'),
-                notes: fd.get('notes'),
-                lastChecked: new Date().toISOString()
+            const riskLevel = fd.get('riskLevel');
+            const notes = fd.get('notes');
+
+            // Poziva pravi server endpoint koji MERGE-uje sve KYC podatke
+            // (banking, directors, UBOs, AML, files) u partner profil i šalje email
+            // obaveštenje klijentu (profesionalni šablon). Ranije se pozivao samo
+            // saveSingleItem što lokalno menja partnera bez merge-a KYC podataka.
+            const endpointMap = {
+                'approved': `/api/portal/admin/submissions/approve/${latest.id}`,
+                'update_requested': `/api/portal/admin/submissions/request_update/${latest.id}`,
+                'rejected': `/api/portal/admin/submissions/reject/${latest.id}`
             };
+            const url = endpointMap[decisionStatus];
+            if (!url) { alert('Unknown action'); return; }
 
-            const statusLabel = {
-                'approved': 'APPROVED',
-                'rejected': 'REJECTED',
-                'update_requested': 'UPDATE_REQUESTED'
-            }[decisionStatus];
-
-            partner.activities = partner.activities || [];
-            partner.activities.unshift({
-                id: Utils.generateId(),
-                date: new Date().toISOString(),
-                type: 'Compliance Review',
-                note: `KYC Status updated to: ${statusLabel}, Risk: ${fd.get('riskLevel').toUpperCase()}`
-            });
+            const btn = document.activeElement;
+            if (btn) { btn.disabled = true; btn.dataset.original = btn.innerHTML; btn.innerHTML = '⏳ ...'; }
 
             try {
-                const btn = document.activeElement;
-                if(btn) { btn.disabled = true; btn.innerText = `⏳ ...`; }
-
-                if (typeof saveSingleItem === 'function') {
-                    await saveSingleItem('partners', partner);
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ riskLevel, notes })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    alert('Error: ' + (data.error || 'Unknown'));
+                    if (btn && btn.dataset.original) { btn.disabled = false; btn.innerHTML = btn.dataset.original; }
+                    return;
                 }
+
+                // Osvezi lokalno stanje (server je vec sacuvao sve u partner profil)
+                if (typeof loadFromStorage === 'function') await loadFromStorage();
+
+                const statusLabel = {
+                    'approved': (Utils.getLang() === 'sr' ? 'ODOBRENO' : 'APPROVED'),
+                    'rejected': (Utils.getLang() === 'sr' ? 'ODBIJENO' : 'REJECTED'),
+                    'update_requested': (Utils.getLang() === 'sr' ? 'TRAŽENA DOPUNA' : 'UPDATE REQUESTED')
+                }[decisionStatus];
+
                 Utils.closeModal();
                 if (typeof renderPartnersView === 'function') renderPartnersView();
                 if (typeof renderPartnerDetailView === 'function' && state.currentView === 'partnerDetail') renderPartnerDetailView(partner.id);
-                if (typeof UI !== 'undefined' && UI.showNotification) UI.showNotification(`${Utils.t('kyc.statusUpdated')} ${statusLabel}`);
+                if (typeof checkAllNotifications === 'function') checkAllNotifications();
+                alert(`${Utils.t('kyc.statusUpdated')} ${statusLabel}`);
             } catch (e) {
-                console.error("Error:", e);
+                console.error('Error:', e);
                 alert(Utils.t('kyc.saveError'));
+                if (btn && btn.dataset.original) { btn.disabled = false; btn.innerHTML = btn.dataset.original; }
             }
         };
 

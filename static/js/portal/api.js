@@ -294,6 +294,18 @@ async function loadPortalData() {
         }
         document.getElementById('partner-name').textContent = portalData?.partner?.companyName || '—';
 
+        // Prilagodljiv brending: firma podešava svoju primarnu boju u company.brandColor.
+        // Primenjuje se na CSS varijablu koju koriste dugmad i tab-ovi.
+        if (portalData?.company?.brandColor) {
+            const bc = portalData.company.brandColor;
+            const root = document.documentElement;
+            root.style.setProperty('--p-accent', bc);
+            // Blago tamnija hover varijanta - approksimacija
+            root.style.setProperty('--p-accent-hover', bc);
+            // Naslov browsera
+            try { document.title = `${portalData.company.name || 'Aspidus'} — B2B Portal`; } catch(e) {}
+        }
+
         // KYC form pre-fill from latest submission
         if (portalData?.latest_kyc) {
             const lk = portalData.latest_kyc;
