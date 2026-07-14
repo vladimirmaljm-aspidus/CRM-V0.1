@@ -30,7 +30,7 @@ const dict = {
         // Documents
         'docs_title': 'Document Vault', 'docs_desc': 'Download your official offers, invoices and contracts. Every download is logged.',
         'th_doc_date': 'Date', 'th_doc_type': 'Type', 'th_doc_name': 'File', 'th_doc_action': 'Action',
-        'no_docs': 'No documents available yet.', 'btn_download': 'Download', 'btn_download_pdf': 'Download PDF',
+        'no_docs': 'No documents available yet.', 'btn_download': 'View', 'btn_download_pdf': 'View / Download PDF',
         // KYC
         'kyc_title': 'Compliance & KYC', 'kyc_desc': 'Securely submit corporate data. Encrypted in an air-gapped vault.',
         'kyc_current_status': 'Current Status',
