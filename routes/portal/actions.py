@@ -399,20 +399,26 @@ def approve_kyc_submission(sub_id):
     partner = safe_parse(p_row[0])
     partner['companyName'] = kyc_data.get('companyName') or partner.get('companyName')
     partner['taxId'] = kyc_data.get('taxId') or partner.get('taxId')
-    partner['regNo'] = kyc_data.get('regNo') or partner.get('regNo')
-    partner['website'] = kyc_data.get('website') or partner.get('website')
+    partner['regNumber'] = kyc_data.get('regNo') or partner.get('regNumber')
     partner['industry'] = kyc_data.get('industry') or partner.get('industry')
 
-    if 'address' not in partner or not isinstance(partner['address'], dict): partner['address'] = {}
-    if kyc_data.get('regAddr'): partner['address']['street'] = kyc_data.get('regAddr')
-    if kyc_data.get('opAddr'): partner['address']['operationalAddress'] = kyc_data.get('opAddr')
+    if 'contact' not in partner or not isinstance(partner['contact'], dict): partner['contact'] = {}
+    if kyc_data.get('website'): partner['contact']['website'] = kyc_data['website']
+    if kyc_data.get('contactPhone'): partner['contact']['phone'] = kyc_data['contactPhone']
 
-    if 'banking' not in partner or not isinstance(partner['banking'], dict): partner['banking'] = {}
-    if kyc_data.get('bankName'): partner['banking']['bankName'] = kyc_data.get('bankName')
-    if kyc_data.get('bankIban'): partner['banking']['iban'] = kyc_data.get('bankIban')
-    if kyc_data.get('bankSwift'): partner['banking']['swift'] = kyc_data.get('bankSwift')
-    if kyc_data.get('bankAddr'): partner['banking']['bankAddress'] = kyc_data.get('bankAddr')
-    if kyc_data.get('corrBank'): partner['banking']['correspondentBank'] = kyc_data.get('corrBank')
+    if 'address' not in partner or not isinstance(partner['address'], dict): partner['address'] = {}
+    if kyc_data.get('regAddr'): partner['address']['street'] = kyc_data['regAddr']
+    if kyc_data.get('city'): partner['address']['city'] = kyc_data['city']
+    if kyc_data.get('country'): partner['address']['country'] = kyc_data['country']
+    if kyc_data.get('zip'): partner['address']['zip'] = kyc_data['zip']
+    if kyc_data.get('opAddr'): partner['address']['operationalAddress'] = kyc_data['opAddr']
+
+    if 'bank' not in partner or not isinstance(partner['bank'], dict): partner['bank'] = {}
+    if kyc_data.get('bankName'): partner['bank']['name'] = kyc_data['bankName']
+    if kyc_data.get('bankIban'): partner['bank']['accountNumber'] = kyc_data['bankIban']
+    if kyc_data.get('bankSwift'): partner['bank']['swift'] = kyc_data['bankSwift']
+    if kyc_data.get('bankAddr'): partner['bank']['bankAddress'] = kyc_data['bankAddr']
+    if kyc_data.get('corrBank'): partner['bank']['correspondentBank'] = kyc_data['corrBank']
 
     if 'kyc' not in partner or not isinstance(partner['kyc'], dict): partner['kyc'] = {}
     partner['kyc']['status'] = 'approved'

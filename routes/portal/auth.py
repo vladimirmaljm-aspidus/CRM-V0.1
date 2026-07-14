@@ -24,14 +24,29 @@ def generate_portal_link(partner_id):
         if not row: return jsonify({"error": "Partner not found"}), 404
 
         partner = safe_parse(row[0])
+        is_new_token = False
         if 'portalToken' not in partner or not partner['portalToken']:
             partner['portalToken'] = secrets.token_urlsafe(32)
-            partner['isPortalActive'] = True # Inicijalni status za Kill Switch
+            partner['isPortalActive'] = True
+            is_new_token = True
             c.execute('UPDATE partners SET data=? WHERE id=?', (json.dumps(partner), partner_id))
             conn.commit()
             action_log = ('EDIT', 'partners', f'Generated secure B2B portal token for partner ID: {partner_id}', False)
 
-        return jsonify({"status": "success", "token": partner['portalToken'], "isPortalActive": partner.get('isPortalActive', True)})
+        token = partner['portalToken']
+        portal_url = request.url_root.rstrip('/') + f"/portal/{token}"
+
+        if is_new_token:
+            client_email = partner.get('contact', {}).get('email') or partner.get('email')
+            if client_email:
+                try:
+                    from utils_email import send_portal_welcome
+                    send_portal_welcome(client_email, partner.get('companyName', ''), portal_url)
+                    log_audit('COMMUNICATION', 'portal', f'Welcome email sent to {client_email} for partner {partner_id}', is_suspicious=False)
+                except Exception as e:
+                    log_audit('ERROR', 'portal', f'Failed to send welcome email: {e}', is_suspicious=False)
+
+        return jsonify({"status": "success", "token": token, "isPortalActive": partner.get('isPortalActive', True)})
     finally:
         if conn: conn.close()
         if action_log:

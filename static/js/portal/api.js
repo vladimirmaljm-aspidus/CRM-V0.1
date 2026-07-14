@@ -302,7 +302,9 @@ if (kycForm) {
                 partner_id: portalData?.partner?.id,
                 companyName: g('kyc-comp-name'), regNo: g('kyc-reg-no'), taxId: g('kyc-tax-id'),
                 website: g('kyc-website'), industry: g('kyc-industry'),
+                contactPhone: g('kyc-contact-phone'),
                 regAddr: g('kyc-reg-addr'), opAddr: g('kyc-op-addr'),
+                city: g('kyc-city'), country: g('kyc-country'), zip: g('kyc-zip'),
                 bankName: g('kyc-bank-name'), bankIban: g('kyc-bank-iban'), bankSwift: g('kyc-bank-swift'),
                 bankAddr: g('kyc-bank-addr'), corrBank: g('kyc-corr-bank'),
                 turnover: g('kyc-turnover'), sourceOfFunds: g('kyc-sof'),
@@ -360,7 +362,9 @@ async function loadPortalData() {
             loadPortalData(); return;
         }
         if (!res.ok) {
-            document.getElementById('loading-state').innerHTML = `<div class="text-center"><p class="text-red-600 font-semibold">${t('err_access_denied')}</p><p class="text-xs text-slate-500 mt-2">HTTP ${res.status}</p></div>`;
+            const errData = await res.json().catch(() => ({}));
+            const errMsg = errData.error || t('err_access_denied');
+            document.getElementById('loading-state').innerHTML = `<div class="text-center"><p class="text-red-600 font-semibold">${errMsg}</p><p class="text-xs text-slate-500 mt-2">${res.status === 403 ? 'Your portal access may have been revoked. Please contact your account manager.' : 'HTTP ' + res.status}</p></div>`;
             return;
         }
         portalData = await res.json();
@@ -390,7 +394,9 @@ async function loadPortalData() {
             const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
             set('kyc-comp-name', lk.companyName); set('kyc-reg-no', lk.regNo); set('kyc-tax-id', lk.taxId);
             set('kyc-website', lk.website); set('kyc-industry', lk.industry);
+            set('kyc-contact-phone', lk.contactPhone);
             set('kyc-reg-addr', lk.regAddr); set('kyc-op-addr', lk.opAddr);
+            set('kyc-city', lk.city); set('kyc-country', lk.country); set('kyc-zip', lk.zip);
             set('kyc-bank-name', lk.bankName); set('kyc-bank-iban', lk.bankIban); set('kyc-bank-swift', lk.bankSwift);
             set('kyc-bank-addr', lk.bankAddr); set('kyc-corr-bank', lk.corrBank);
             set('kyc-turnover', lk.turnover); set('kyc-sof', lk.sourceOfFunds);
@@ -424,7 +430,7 @@ async function loadPortalData() {
         fillProfile();
         renderNotifications();
 
-        if (typeof applyPermissions === 'function') applyPermissions(portalData?.permissions || []);
+        if (typeof applyPermissions === 'function') applyPermissions(portalData?.partner?.permissions || []);
     } catch (e) {
         console.error(e);
         document.getElementById('loading-state').innerHTML = `<div class="text-center"><p class="text-red-600 font-semibold">${t('err_access_denied')}</p></div>`;

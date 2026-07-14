@@ -90,7 +90,9 @@ const dict = {
         'track_stage_payment': 'Payment Processing', 'track_stage_shipped': 'Shipped', 'track_stage_delivered': 'Delivered',
         'notif_title': 'Notifications', 'notif_empty': 'No notifications', 'notif_mark_read': 'Mark all as read',
         'search_placeholder': 'Search…', 'filter_all': 'All', 'filter_pending': 'Pending', 'filter_accepted': 'Accepted', 'filter_declined': 'Declined',
-        'download_all': 'Download all', 'export_history': 'Export history (CSV)'
+        'download_all': 'Download all', 'export_history': 'Export history (CSV)',
+        // KYC new fields
+        'kyc_contact_phone': 'Contact Phone', 'kyc_city': 'City', 'kyc_country': 'Country', 'kyc_zip': 'ZIP / Postal Code'
     }
 };
 
@@ -143,6 +145,8 @@ function updateStaticText() {
     setText('lbl-profile-street', T.profile_street); setText('lbl-profile-city', T.profile_city); setText('lbl-profile-country', T.profile_country);
     setText('lbl-profile-note', T.profile_note); setText('btn-save-profile', T.btn_save_profile);
     setText('lbl-profile-history', T.profile_history);
+    // KYC new fields
+    setText('lbl-kyc-phone', T.kyc_contact_phone); setText('lbl-kyc-city', T.kyc_city); setText('lbl-kyc-country', T.kyc_country); setText('lbl-kyc-zip', T.kyc_zip);
     // OTP
     setText('lbl-otp-title', T.otp_title); setText('lbl-otp-desc', T.otp_desc); setText('lbl-enter-code', T.enter_code); setText('btn-verify-otp', T.verify_btn);
     setText('lbl-uploading-docs', T.uploading);

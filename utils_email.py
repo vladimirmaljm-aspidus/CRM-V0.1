@@ -278,6 +278,74 @@ def send_new_document(recipient, company_name_for_client, doc_type, file_name, p
     return _send(recipient, subject, _html_wrap(subject, body, company, cta_url=portal_url, cta_label="Access Document"), f"New document available: {file_name}")
 
 
+def send_portal_welcome(recipient, company_name_for_client, portal_url):
+    _smtp, company = _get_smtp_settings()
+    brand = _brand_pieces(company)
+    subject = f"[{brand['name']}] Welcome to Your B2B Client Portal"
+    body = f"""
+      <p style="margin:0 0 12px 0;font-size:16px;color:#101828;">Dear {company_name_for_client or 'Client'},</p>
+      <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#344054;">
+        We are pleased to welcome you to our secure B2B client portal. This portal provides you with direct access to manage your business relationship with {brand['name']}.
+      </p>
+
+      <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:20px;margin:16px 0;">
+        <div style="font-size:12px;color:#0369a1;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:12px;">Getting Started</div>
+        <table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:collapse;">
+          <tr>
+            <td style="padding:8px 12px;font-size:13px;color:#344054;line-height:1.5;border-bottom:1px solid #e0f2fe;">
+              <strong style="color:#0369a1;">Step 1.</strong> Click the button below to access your portal. A one-time verification code will be sent to this email.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-size:13px;color:#344054;line-height:1.5;border-bottom:1px solid #e0f2fe;">
+              <strong style="color:#0369a1;">Step 2.</strong> Complete your <strong>KYC (Know Your Customer)</strong> form under the Compliance tab. This is required before we can proceed with offers and contracts.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-size:13px;color:#344054;line-height:1.5;border-bottom:1px solid #e0f2fe;">
+              <strong style="color:#0369a1;">Step 3.</strong> Upload the required corporate documents: trade license, passports of directors/UBOs, and certificate of incorporation.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 12px;font-size:13px;color:#344054;line-height:1.5;">
+              <strong style="color:#0369a1;">Step 4.</strong> Once your KYC is approved, you will have full access to offers, shipment tracking, and document exchange.
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <div style="background:#f4f6f9;border:1px solid #e7eaef;border-radius:10px;padding:16px;margin:16px 0;">
+        <div style="font-size:12px;color:#667085;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">Portal Features</div>
+        <ul style="margin:0;padding:0 0 0 18px;font-size:13px;color:#344054;line-height:1.8;">
+          <li>View and accept commercial offers</li>
+          <li>Track shipments and contracts in real time</li>
+          <li>Access and download official documents (offers, invoices, contracts)</li>
+          <li>Submit requests for quotation (RFQ)</li>
+          <li>Manage your product catalog</li>
+          <li>Update your company profile securely</li>
+        </ul>
+      </div>
+
+      <p style="margin:0 0 8px 0;font-size:13px;color:#344054;">
+        All data submitted through the portal is encrypted and stored securely. Document downloads are logged for compliance and audit purposes.
+      </p>
+      <p style="margin:0;font-size:13px;color:#667085;">
+        If you have any questions, please contact your account manager.
+      </p>
+    """
+    html = _html_wrap(subject, body, company, cta_url=portal_url, cta_label="Access Your Portal")
+    plain = (
+        f"Welcome to {brand['name']} B2B Portal.\n\n"
+        f"Your portal link: {portal_url}\n\n"
+        "Steps:\n1. Open the link and enter the verification code sent to your email.\n"
+        "2. Complete the KYC form under the Compliance tab.\n"
+        "3. Upload corporate documents (trade license, passports, incorporation cert).\n"
+        "4. Once approved, you'll have full access to offers, tracking, and documents.\n\n"
+        "For questions, contact your account manager."
+    )
+    return _send(recipient, subject, html, plain)
+
+
 def send_profile_change_approved(recipient, company_name_for_client, changes_summary, portal_url):
     _smtp, company = _get_smtp_settings()
     subject = f"[{_brand_pieces(company)['name']}] Profile Update Confirmed"
