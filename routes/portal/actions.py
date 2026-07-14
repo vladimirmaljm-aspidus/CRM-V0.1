@@ -780,10 +780,39 @@ def portal_download_document(token, doc_id):
             }
         )
 
-    # PUT #2: legacy file na disku
     file_url = doc.get('fileUrl') or ''
     if not file_url:
+        # Ni sourceOfferId, ni fileUrl — nema od čega da napravimo dokument.
         return jsonify({"error": "DOCUMENT_NOT_FOUND"}), 404
+
+    # PUT #2: INLINE data URI (legacy admin jsPDF flow — client generiše PDF
+    # u browser-u i šalje ceo base64 kao 'fileUrl'). Ovo je bio slom razlog za
+    # "document not found": os.path.basename na 'data:application/pdf;base64,…'
+    # ne daje ništa korisno, pa je send_from_directory pucao 404. Sad
+    # dekodiramo base64 payload direktno i streamujemo bytes.
+    if file_url.startswith('data:'):
+        try:
+            import base64 as _b64
+            header, _, payload = file_url.partition(',')
+            if not payload or ';base64' not in header:
+                return jsonify({"error": "INVALID_FILE"}), 400
+            pdf_bytes = _b64.b64decode(payload)
+        except Exception as e:
+            log_audit('ERROR', 'portal', f'Failed to decode inline PDF for doc {doc_id}: {e}', is_suspicious=True)
+            return jsonify({"error": "INVALID_FILE"}), 400
+        log_audit('DOWNLOAD', 'portal',
+                  f"Client '{company}' {action_kind.lower()}ed document '{file_name}' (type: {doc.get('docType', 'Document')}, inline) via portal",
+                  is_suspicious=False)
+        from flask import Response
+        return Response(
+            pdf_bytes, mimetype='application/pdf',
+            headers={
+                'Content-Disposition': f'{"inline" if inline else "attachment"}; filename="{file_name}"',
+                'Cache-Control': 'private, no-store',
+            }
+        )
+
+    # PUT #3: legacy file na disku
     filename = os.path.basename(file_url)
     safe_name = secure_filename(filename)
     if not safe_name:
@@ -792,6 +821,32 @@ def portal_download_document(token, doc_id):
         folder = current_app.config['PORTAL_UPLOAD_FOLDER']
     else:
         folder = current_app.config['UPLOAD_FOLDER']
+
+    # Ako je fileUrl reference na disk fajl a fajl ne postoji, ali imamo
+    # sourceOfferId, pokušajmo regen kao fallback (dokument je verovatno
+    # obrisan pri čišćenju/rebuild-u okruženja).
+    disk_path = os.path.join(folder, safe_name)
+    if not os.path.exists(disk_path) and doc.get('sourceOfferId'):
+        from pdf_generator import regenerate_offer_pdf_by_id
+        pdf_bytes = regenerate_offer_pdf_by_id(doc['sourceOfferId'])
+        if pdf_bytes:
+            log_audit('DOWNLOAD', 'portal',
+                      f"Client '{company}' {action_kind.lower()}ed document '{file_name}' (fallback regen) via portal",
+                      is_suspicious=False)
+            from flask import Response
+            return Response(
+                pdf_bytes, mimetype='application/pdf',
+                headers={
+                    'Content-Disposition': f'{"inline" if inline else "attachment"}; filename="{file_name}"',
+                    'Cache-Control': 'private, no-store',
+                }
+            )
+
+    if not os.path.exists(disk_path):
+        log_audit('ERROR', 'portal',
+                  f"Client '{company}' tried to access doc {doc_id} but file missing: {file_url}",
+                  is_suspicious=True)
+        return jsonify({"error": "DOCUMENT_NOT_FOUND"}), 404
 
     log_audit('DOWNLOAD', 'portal',
               f"Client '{company}' {action_kind.lower()}ed document '{file_name}' (type: {doc.get('docType', 'Document')}) via portal",
