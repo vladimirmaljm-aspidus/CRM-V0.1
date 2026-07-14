@@ -77,8 +77,7 @@ function renderDashboard() {
     setTxt('stat-rfqs', pendingRfqs);
     const kycEl = document.getElementById('stat-kyc');
     if (kycEl) {
-        const labels = { 'pending': 'Pending', 'approved': 'Approved', 'update_requested': 'Update Needed', 'expired': 'Expired', 'rejected': 'Rejected' };
-        kycEl.textContent = labels[kycStatus] || kycStatus;
+        kycEl.textContent = t(`kyc_status_${kycStatus}`) !== `kyc_status_${kycStatus}` ? t(`kyc_status_${kycStatus}`) : kycStatus;
     }
 
     // Tab counters
@@ -481,15 +480,9 @@ function renderKycStatusLine() {
     const line = document.getElementById('kyc-status-line'); if (!line) return;
     const status = portalData?.partner?.kycStatus;
     if (!status) { line.classList.add('hidden'); return; }
-    const label = {
-        'pending': 'Pending Review',
-        'approved': 'Approved',
-        'rejected': 'Rejected',
-        'update_requested': 'Update Requested',
-        'expired': 'Expired'
-    }[status] || status;
+    const label = t(`kyc_status_${status}`) !== `kyc_status_${status}` ? t(`kyc_status_${status}`) : status;
     line.classList.remove('hidden');
-    line.innerHTML = `<span class="badge ${statusColors[status] || statusColors['default']}">${t('kyc_current_status')}: ${label}</span>`;
+    line.innerHTML = `<span class="badge ${statusColors[status] || statusColors['default']}">${t('kyc_current_status')}: ${safeText(label)}</span>`;
 }
 
 // ==========================================================

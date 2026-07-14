@@ -65,6 +65,9 @@
         .row-hover:hover { background: var(--p-hover); }
         .icon-btn { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--p-muted); transition: all 0.15s ease; cursor: pointer; }
         .icon-btn:hover { background: var(--p-hover); color: var(--p-text); }
+        .lang-btn { background: var(--p-panel); color: var(--p-muted); cursor: pointer; transition: all 0.15s ease; border: none; }
+        .lang-btn:hover { background: var(--p-hover); color: var(--p-text); }
+        .lang-btn.active { background: var(--p-accent); color: #fff; }
         .toast { position: fixed; top: 20px; right: 20px; background: var(--p-panel); border: 1px solid var(--p-border); border-radius: 10px; padding: 12px 18px; box-shadow: 0 10px 25px rgba(16,24,40,0.1); z-index: 300; font-size: 0.9rem; max-width: 380px; }
         .toast.toast-success { border-left: 4px solid var(--p-success); }
         .toast.toast-error { border-left: 4px solid var(--p-danger); }
@@ -118,6 +121,10 @@
                 </div>
             </div>
             <div class="flex items-center gap-4">
+                <div class="flex items-center rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold" id="lang-toggle">
+                    <button type="button" id="lang-btn-en" class="lang-btn px-2.5 py-1.5" onclick="setPortalLanguage('en')">EN</button>
+                    <button type="button" id="lang-btn-sr" class="lang-btn px-2.5 py-1.5" onclick="setPortalLanguage('sr')">SR</button>
+                </div>
                 <div class="text-right hidden md:block">
                     <p class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider" id="lbl-welcome">Welcome</p>
                     <p class="text-sm font-semibold text-slate-800" id="partner-name">—</p>
@@ -566,6 +573,7 @@
     </script>
     <script src="/static/js/portal/i18n.js"></script>
     <script src="/static/js/portal/ui.js"></script>
+    <script>initPortalLanguage();</script>
     <script src="/static/js/portal/api.js"></script>
 </body>
 </html>

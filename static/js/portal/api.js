@@ -266,6 +266,20 @@ if (kycForm) {
     });
 }
 
+// KYC banner (update requested/expired) + prikaz razloga koji je admin uneo.
+// Klijent mora jasno videti šta se traži, ne samo "action required".
+function renderUpdateRequestBanner() {
+    const b = document.getElementById('update-request-banner'); if (!b) return;
+    const status = portalData?.partner?.kycStatus;
+    if (status !== 'update_requested' && status !== 'expired') { b.classList.add('hidden'); return; }
+    b.classList.remove('hidden');
+    const note = portalData?.partner?.kycReviewNote;
+    const descEl = document.getElementById('lbl-update-req-desc');
+    if (descEl) {
+        descEl.textContent = note ? (t('update_req_note_prefix') + note) : t('update_req_desc');
+    }
+}
+
 async function loadPortalData() {
     if (!authKey) {
         document.getElementById('loading-state').classList.add('hidden');
@@ -326,21 +340,6 @@ async function loadPortalData() {
             const el = document.getElementById('kyc-comp-name'); if (el && !el.value) el.value = portalData?.partner?.companyName || '';
         }
 
-        renderKycStatusLine();
-
-        // KYC banner (update requested/expired) + prikaz razloga koji je admin uneo.
-        // Klijent mora jasno videti šta se traži, ne samo "action required".
-        if (portalData?.partner?.kycStatus === 'update_requested' || portalData?.partner?.kycStatus === 'expired') {
-            const b = document.getElementById('update-request-banner'); if (b) b.classList.remove('hidden');
-            const note = portalData?.partner?.kycReviewNote;
-            const descEl = document.getElementById('lbl-update-req-desc');
-            if (descEl && note) {
-                descEl.textContent = (currentLang === 'sr'
-                    ? 'Administrator traži sledeće dopune: '
-                    : 'Administrator requested the following updates: ') + note;
-            }
-        }
-
         // Directors/UBOs — ensure at least one row exists
         const dc = document.getElementById('directors-container'); if (dc && dc.children.length === 0) addDirector();
         const uc = document.getElementById('ubos-container'); if (uc && uc.children.length === 0) addUBO();
@@ -350,6 +349,8 @@ async function loadPortalData() {
         document.getElementById('portal-content').classList.remove('hidden');
 
         updateStaticText();
+        renderKycStatusLine();
+        renderUpdateRequestBanner();
         renderDashboard();
         renderDeals();
         renderOffers();
