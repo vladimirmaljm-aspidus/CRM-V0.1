@@ -65,9 +65,29 @@
         .row-hover:hover { background: var(--p-hover); }
         .icon-btn { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--p-muted); transition: all 0.15s ease; cursor: pointer; }
         .icon-btn:hover { background: var(--p-hover); color: var(--p-text); }
-        .lang-btn { background: var(--p-panel); color: var(--p-muted); cursor: pointer; transition: all 0.15s ease; border: none; }
-        .lang-btn:hover { background: var(--p-hover); color: var(--p-text); }
-        .lang-btn.active { background: var(--p-accent); color: #fff; }
+        .notif-panel { position: absolute; top: 100%; right: 0; margin-top: 8px; width: 360px; max-width: 90vw; background: var(--p-panel); border: 1px solid var(--p-border); border-radius: 12px; box-shadow: 0 10px 30px rgba(16,24,40,0.12); z-index: 200; max-height: 480px; display: flex; flex-direction: column; }
+        .notif-item { padding: 12px 16px; border-bottom: 1px solid var(--p-border); transition: background 0.15s ease; cursor: pointer; }
+        .notif-item:last-child { border-bottom: none; }
+        .notif-item:hover { background: var(--p-hover); }
+        .notif-item.unread { background: var(--p-accent-soft); }
+        .notif-item.unread:hover { background: #e0ebff; }
+        .timeline-stage { flex: 1; position: relative; text-align: center; }
+        .timeline-stage .dot { width: 22px; height: 22px; border-radius: 50%; background: var(--p-border-strong); margin: 0 auto 6px; border: 3px solid var(--p-panel); position: relative; z-index: 1; transition: all 0.2s ease; }
+        .timeline-stage.active .dot { background: var(--p-accent); box-shadow: 0 0 0 4px var(--p-accent-soft); }
+        .timeline-stage.done .dot { background: var(--p-success); }
+        .timeline-stage.done .dot::after { content: '\2713'; color: #fff; font-size: 12px; font-weight: bold; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+        .timeline-stage .lbl { font-size: 10px; font-weight: 600; color: var(--p-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+        .timeline-stage.active .lbl, .timeline-stage.done .lbl { color: var(--p-text); }
+        .timeline-bar { position: absolute; top: 10px; left: 50%; right: -50%; height: 3px; background: var(--p-border); z-index: 0; }
+        .timeline-stage.done .timeline-bar { background: var(--p-success); }
+        .timeline-stage:last-child .timeline-bar { display: none; }
+        .search-input { width: 100%; padding: 8px 12px 8px 34px; background: var(--p-panel); border: 1px solid var(--p-border-strong); border-radius: 8px; font-size: 0.85rem; color: var(--p-text); }
+        .search-input:focus { outline: none; border-color: var(--p-accent); box-shadow: 0 0 0 3px rgba(37,99,235,0.15); }
+        .search-wrap { position: relative; }
+        .search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--p-muted); pointer-events: none; }
+        .chip { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 600; background: var(--p-hover); color: var(--p-muted); cursor: pointer; border: 1px solid var(--p-border); }
+        .chip.active { background: var(--p-accent); color: #fff; border-color: var(--p-accent); }
+        .chip:hover:not(.active) { background: var(--p-border); }
         .toast { position: fixed; top: 20px; right: 20px; background: var(--p-panel); border: 1px solid var(--p-border); border-radius: 10px; padding: 12px 18px; box-shadow: 0 10px 25px rgba(16,24,40,0.1); z-index: 300; font-size: 0.9rem; max-width: 380px; }
         .toast.toast-success { border-left: 4px solid var(--p-success); }
         .toast.toast-error { border-left: 4px solid var(--p-danger); }
@@ -112,7 +132,7 @@
     <div id="portal-content" class="hidden max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
 
         <!-- HEADER -->
-        <header class="panel px-6 py-4 mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
+        <header class="panel px-6 py-4 mb-6 flex flex-col md:flex-row justify-between items-center gap-4 relative">
             <div class="flex items-center gap-4">
                 <img id="comp-logo" src="" alt="" class="h-10 hidden">
                 <div>
@@ -121,10 +141,11 @@
                 </div>
             </div>
             <div class="flex items-center gap-4">
-                <div class="flex items-center rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold" id="lang-toggle">
-                    <button type="button" id="lang-btn-en" class="lang-btn px-2.5 py-1.5" onclick="setPortalLanguage('en')">EN</button>
-                    <button type="button" id="lang-btn-sr" class="lang-btn px-2.5 py-1.5" onclick="setPortalLanguage('sr')">SR</button>
-                </div>
+                <!-- NOTIFICATIONS BELL -->
+                <button id="btn-notifications" type="button" class="icon-btn relative" onclick="toggleNotificationsPanel()" title="Notifications">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+                    <span id="notif-count" class="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full min-w-[16px] h-[16px] px-1 flex items-center justify-center hidden">0</span>
+                </button>
                 <div class="text-right hidden md:block">
                     <p class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider" id="lbl-welcome">Welcome</p>
                     <p class="text-sm font-semibold text-slate-800" id="partner-name">—</p>
@@ -133,6 +154,14 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
                     <span id="lbl-logout">Logout</span>
                 </button>
+            </div>
+            <!-- NOTIFICATIONS PANEL (hidden by default, toggled from bell) -->
+            <div id="notif-panel" class="notif-panel hidden">
+                <div class="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+                    <h4 class="text-sm font-semibold text-slate-900">Notifications</h4>
+                    <button type="button" class="text-xs text-blue-600 hover:underline font-medium" onclick="markAllNotificationsRead()">Mark all read</button>
+                </div>
+                <div id="notif-body" class="overflow-y-auto custom-scrollbar flex-1"></div>
             </div>
         </header>
 
@@ -202,6 +231,38 @@
                 </div>
             </div>
 
+            <!-- FINANCIAL SUMMARY -->
+            <div class="panel p-6">
+                <h3 class="text-base font-semibold text-slate-900 mb-4">Financial Summary</h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                    <div>
+                        <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Total Business Volume</p>
+                        <p id="fin-total-spend" class="text-lg font-bold text-slate-900 mt-1">—</p>
+                    </div>
+                    <div>
+                        <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Open Offers Value</p>
+                        <p id="fin-open-offers" class="text-lg font-bold text-emerald-600 mt-1">—</p>
+                    </div>
+                    <div>
+                        <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Completed Deals</p>
+                        <p id="fin-completed-deals" class="text-lg font-bold text-blue-600 mt-1">0</p>
+                    </div>
+                    <div>
+                        <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Documents Available</p>
+                        <p id="fin-doc-count" class="text-lg font-bold text-slate-900 mt-1">0</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ACTIVE SHIPMENT TIMELINE -->
+            <div class="panel p-6" id="dash-timeline-wrap">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-base font-semibold text-slate-900">Active Shipment Progress</h3>
+                    <button class="text-xs font-semibold text-blue-600 hover:underline" onclick="switchTab('shipments')">Open shipments →</button>
+                </div>
+                <div id="dash-timeline" class="text-sm text-slate-400">No active shipments.</div>
+            </div>
+
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div class="panel p-6">
                     <div class="flex items-center justify-between mb-4">
@@ -224,7 +285,21 @@
         <div id="tab-shipments" class="tab-content hidden space-y-4"><div id="deals-container" class="space-y-4"></div></div>
 
         <!-- OFFERS -->
-        <div id="tab-offers" class="tab-content hidden space-y-4"><div id="offers-container" class="space-y-4"></div></div>
+        <div id="tab-offers" class="tab-content hidden space-y-4">
+            <div class="panel p-4 flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
+                <div class="search-wrap flex-1 max-w-md">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+                    <input type="text" id="offers-search" class="search-input" placeholder="Search offers by product, offer no…" oninput="renderOffers()">
+                </div>
+                <div class="flex gap-2 flex-wrap">
+                    <span class="chip active" data-filter="all" onclick="setOffersFilter(this,'all')">All</span>
+                    <span class="chip" data-filter="pending" onclick="setOffersFilter(this,'pending')">Pending</span>
+                    <span class="chip" data-filter="accepted" onclick="setOffersFilter(this,'accepted')">Accepted</span>
+                    <span class="chip" data-filter="declined" onclick="setOffersFilter(this,'declined')">Declined</span>
+                </div>
+            </div>
+            <div id="offers-container" class="space-y-4"></div>
+        </div>
 
         <!-- RFQ -->
         <div id="tab-rfq" class="tab-content hidden">
@@ -243,9 +318,27 @@
         <!-- DOCUMENTS -->
         <div id="tab-documents" class="tab-content hidden">
             <div class="panel p-6">
-                <div class="pb-4 mb-5 border-b border-slate-100">
-                    <h2 class="text-lg font-semibold text-slate-900" id="lbl-docs-title">Document Vault</h2>
-                    <p class="text-sm text-slate-500 mt-0.5" id="lbl-docs-desc">Download your official offers, invoices and contracts. Every download is logged.</p>
+                <div class="pb-4 mb-5 border-b border-slate-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                    <div>
+                        <h2 class="text-lg font-semibold text-slate-900" id="lbl-docs-title">Document Vault</h2>
+                        <p class="text-sm text-slate-500 mt-0.5" id="lbl-docs-desc">Download your official offers, invoices and contracts. Every download is logged.</p>
+                    </div>
+                    <button type="button" class="btn btn-ghost" onclick="exportDocumentsHistory()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M12 3v14m-5-5l5 5 5-5M5 21h14"/></svg>
+                        <span>Export history (CSV)</span>
+                    </button>
+                </div>
+                <div class="flex flex-col md:flex-row gap-3 md:items-center mb-4">
+                    <div class="search-wrap flex-1 max-w-md">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+                        <input type="text" id="docs-search" class="search-input" placeholder="Search documents by name or type…" oninput="renderDocuments()">
+                    </div>
+                    <div class="flex gap-2 flex-wrap">
+                        <span class="chip active" data-doc-filter="all" onclick="setDocsFilter(this,'all')">All</span>
+                        <span class="chip" data-doc-filter="OFFER" onclick="setDocsFilter(this,'OFFER')">Offers</span>
+                        <span class="chip" data-doc-filter="INVOICE" onclick="setDocsFilter(this,'INVOICE')">Invoices</span>
+                        <span class="chip" data-doc-filter="CONTRACT" onclick="setDocsFilter(this,'CONTRACT')">Contracts</span>
+                    </div>
                 </div>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left text-sm">
@@ -565,7 +658,6 @@
     <script>
         const TOKEN = "{{ token }}";
         let portalData = null;
-        let currentLang = 'en';
         let authKey = sessionStorage.getItem(`portal_auth_${TOKEN}`);
         let otpRequested = false;
         let uploadedCertUrls = [];
@@ -573,7 +665,6 @@
     </script>
     <script src="/static/js/portal/i18n.js"></script>
     <script src="/static/js/portal/ui.js"></script>
-    <script>initPortalLanguage();</script>
     <script src="/static/js/portal/api.js"></script>
 </body>
 </html>

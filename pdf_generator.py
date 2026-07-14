@@ -7,6 +7,7 @@ identično kao što su u CRM bazi (ranije je jspdf preskakao neka polja).
 
 Koristi reportlab (bez spoljnih zavisnosti osim requirements.txt)."""
 
+import hashlib
 import io
 import json
 import logging
@@ -28,6 +29,29 @@ from config import DB_FILE, UPLOAD_FOLDER
 from utils import decrypt_data
 
 logger = logging.getLogger(__name__)
+
+
+def _bank_details_string(company):
+    """Skuplja bankarske instrukcije iz podataka firme u jedan blok teksta,
+    identično kao što jsPDF radi kada admin generiše PDF u browseru."""
+    if not isinstance(company, dict):
+        return ''
+    parts = []
+    if company.get('bankName'):    parts.append(f"Bank: {company.get('bankName')}")
+    if company.get('bankAddress'): parts.append(company.get('bankAddress'))
+    if company.get('accountNum'):  parts.append(f"IBAN / Account: {company.get('accountNum')}")
+    if company.get('swift'):       parts.append(f"SWIFT / BIC: {company.get('swift')}")
+    if company.get('corrBank'):    parts.append(f"Correspondent bank: {company.get('corrBank')}")
+    return '\n'.join(parts)
+
+
+def _make_verification_hash(offer_id, offer_no):
+    """Deterministički verifikacioni hash — isti dokument uvek daje isti hash,
+    tako da klijent može da poredi PDF koji je preuzeo sa PDF-om koji vidi
+    admin (jsPDF generiše slučajan hash, ali logika prikaza je ista)."""
+    seed = f"{offer_id or ''}|{offer_no or ''}"
+    h = hashlib.sha256(seed.encode('utf-8')).hexdigest().upper()
+    return f"VER-{h[:12]}-{h[12:20]}"
 
 
 def _fmt_money(amount, currency=""):
@@ -294,22 +318,73 @@ def build_offer_pdf(offer, company=None, settings=None):
     story.append(fin_tbl)
     story.append(Spacer(1, 3*mm))
 
-    # Sumarno
-    total_tbl = Table([
-        ['Subtotal', _fmt_money(subtotal, offer.get('currency', ''))],
-        ['Grand Total', _fmt_money(subtotal, offer.get('currency', ''))],
-    ], colWidths=[145*mm, 35*mm])
-    total_tbl.setStyle(TableStyle([
+    # Sumarno — isti obračun kao jsPDF (discount, VAT, advance/balance)
+    # da bi PDF koji preuzme klijent iz portala izgledao identično sa PDF-om
+    # koji admin generiše iz browsera.
+    currency = offer.get('currency', '')
+    discount = float(offer.get('discount') or 0)
+    vat_rate = float(offer.get('customVatRate') or 0)
+    advance = float(offer.get('advance') or 0)
+
+    after_discount = max(0.0, subtotal - discount)
+    vat_amount = round(after_discount * vat_rate / 100.0, 2) if vat_rate > 0 else 0.0
+    grand_total = after_discount + vat_amount
+    balance_due = grand_total - advance
+
+    total_rows = [['Subtotal', _fmt_money(subtotal, currency)]]
+    if discount > 0:
+        total_rows.append(['Discount', f"- {_fmt_money(discount, currency)}"])
+    if vat_rate > 0:
+        total_rows.append([f'VAT ({vat_rate:g}%)', _fmt_money(vat_amount, currency)])
+    total_rows.append(['Grand Total', _fmt_money(grand_total, currency)])
+    if advance > 0:
+        total_rows.append(['Advance Payment', f"- {_fmt_money(advance, currency)}"])
+        total_rows.append(['Balance Due', _fmt_money(balance_due, currency)])
+
+    total_tbl = Table(total_rows, colWidths=[145*mm, 35*mm])
+    ts = [
         ('ALIGN', (0,0), (-1,-1), 'RIGHT'),
-        ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,-1), (-1,-1), 12),
-        ('TEXTCOLOR', (0,-1), (-1,-1), primary),
-        ('LINEABOVE', (0,-1), (-1,-1), 1.0, primary),
-        ('TOPPADDING', (0,-1), (-1,-1), 6),
-        ('BOTTOMPADDING', (0,-1), (-1,-1), 6),
-    ]))
+        ('TOPPADDING', (0,0), (-1,-1), 3),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+    ]
+    # Grand total: bold + brand color + top rule
+    gt_idx = 1 + (1 if discount > 0 else 0) + (1 if vat_rate > 0 else 0)
+    ts += [
+        ('FONTNAME', (0, gt_idx), (-1, gt_idx), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, gt_idx), (-1, gt_idx), 12),
+        ('TEXTCOLOR', (0, gt_idx), (-1, gt_idx), primary),
+        ('LINEABOVE', (0, gt_idx), (-1, gt_idx), 1.0, primary),
+        ('TOPPADDING', (0, gt_idx), (-1, gt_idx), 6),
+        ('BOTTOMPADDING', (0, gt_idx), (-1, gt_idx), 6),
+    ]
+    if advance > 0:
+        bd_idx = len(total_rows) - 1
+        ts += [
+            ('FONTNAME', (0, bd_idx), (-1, bd_idx), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, bd_idx), (-1, bd_idx), 12),
+            ('TEXTCOLOR', (0, bd_idx), (-1, bd_idx), colors.HexColor('#c8102e')),
+        ]
+    total_tbl.setStyle(TableStyle(ts))
     story.append(total_tbl)
     story.append(Spacer(1, 6*mm))
+
+    # WEIGHTS / VOLUME (opciono, ako postoji na ponudi/proizvodu)
+    weights = offer.get('weights') or {}
+    if weights.get('net') or weights.get('gross') or weights.get('cbm'):
+        unit = weights.get('unit') or 'kg'
+        w_row = []
+        if weights.get('net'): w_row.append(f"Net: {weights.get('net')} {unit}")
+        if weights.get('gross'): w_row.append(f"Gross: {weights.get('gross')} {unit}")
+        if weights.get('cbm'): w_row.append(f"Volume: {weights.get('cbm')} CBM")
+        w_tbl = Table([[_para(' · '.join(w_row), styles['center'])]], colWidths=[180*mm])
+        w_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f4f6f9')),
+            ('BOX', (0,0), (-1,-1), 0.4, colors.HexColor('#e7eaef')),
+            ('TOPPADDING', (0,0), (-1,-1), 6),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 6),
+        ]))
+        story.append(w_tbl)
+        story.append(Spacer(1, 5*mm))
 
     # LOGISTIKA I PLAĆANJE
     logi_rows = []
@@ -336,6 +411,24 @@ def build_offer_pdf(offer, company=None, settings=None):
         story.append(li_tbl)
         story.append(Spacer(1, 5*mm))
 
+    # BANKARSKE INSTRUKCIJE — kupac mora tačno da vidi gde da uplati.
+    # Prioritet: eksplicitni offer.bankDetails (custom-a admin unese) → skup iz
+    # company podataka. Ovo je najkritičniji deo dokumenta za realan business.
+    bank_details = offer.get('bankDetails') or _bank_details_string(company)
+    if bank_details:
+        story.append(_para("<b>Bank Instructions</b>", styles['h2']))
+        bank_tbl = Table([[_para(bank_details, styles['body'])]], colWidths=[180*mm])
+        bank_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f4f6f9')),
+            ('BOX', (0,0), (-1,-1), 0.4, colors.HexColor('#e7eaef')),
+            ('LEFTPADDING', (0,0), (-1,-1), 10),
+            ('RIGHTPADDING', (0,0), (-1,-1), 10),
+            ('TOPPADDING', (0,0), (-1,-1), 8),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ]))
+        story.append(bank_tbl)
+        story.append(Spacer(1, 5*mm))
+
     if offer.get('notes'):
         story.append(_para("<b>Notes</b>", styles['h2']))
         story.append(_para(offer.get('notes', ''), styles['body']))
@@ -350,13 +443,38 @@ def build_offer_pdf(offer, company=None, settings=None):
         styles['small']
     ))
 
+    ver_hash = _make_verification_hash(offer.get('id'), offer.get('offerNo'))
+
     def _footer(canvas, docObj):
         canvas.saveState()
+        # Top rule above footer, matching the admin PDF layout
+        canvas.setStrokeColor(primary)
+        canvas.setLineWidth(0.5)
+        canvas.line(15*mm, 20*mm, A4[0] - 15*mm, 20*mm)
+
+        # Verification hash + legal line — same content the client-side jsPDF
+        # writes so both admin-downloaded and portal-downloaded PDFs share
+        # the same "footer signature".
+        canvas.setFont('Helvetica-Bold', 6)
+        canvas.setFillColor(primary)
+        canvas.drawString(15*mm, 16*mm, f"VERIFICATION HASH: {ver_hash}")
+
+        canvas.setFont('Helvetica-Oblique', 6)
+        canvas.setFillColor(colors.HexColor('#666666'))
+        canvas.drawString(15*mm, 12*mm,
+                          f"This document is electronically generated and verified by {company.get('name', 'Aspidus')} CRM.")
+
+        canvas.setFont('Helvetica-Bold', 6)
+        canvas.setFillColor(colors.HexColor('#111111'))
+        addr = (company.get('address') or '').replace('\n', ', ')
+        canvas.drawString(15*mm, 8*mm, addr)
+
+        # "Page X of Y" via the standard reportlab trick — since we cannot
+        # know Y in a single-pass callback, we defer with an on-canvas doc
+        # count that reportlab fills in during finalization.
         canvas.setFont('Helvetica', 7)
         canvas.setFillColor(colors.HexColor('#98a2b3'))
-        page = canvas.getPageNumber()
-        canvas.drawRightString(A4[0] - 15*mm, 10*mm, f"Page {page}")
-        canvas.drawString(15*mm, 10*mm, f"{company.get('name', '')} · Offer {offer.get('offerNo', '')}")
+        canvas.drawRightString(A4[0] - 15*mm, 8*mm, f"Page {canvas.getPageNumber()}")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)

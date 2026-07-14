@@ -5,9 +5,11 @@ poslat iz sistema koristi ISTU strukturu: header sa firmom → poruka → footer
 sa confidentiality disclaimerom. Ako SMTP nije podešen ili poziv padne,
 funkcija se blago vraća bez izuzetka i loguje razlog u audit."""
 
+import base64
 import logging
 import smtplib
 import sqlite3
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -91,8 +93,13 @@ def _html_wrap(subject_line, body_html, company, cta_url=None, cta_label=None):
 </body></html>"""
 
 
-def _send(recipient, subject, html_body, plain_body):
-    """Šalje mejl. Vraća (ok, error_msg)."""
+def _send(recipient, subject, html_body, plain_body, attachments=None):
+    """Šalje mejl. Vraća (ok, error_msg).
+
+    attachments: opciona lista dict-ova [{'filename': str, 'data': bytes}].
+    Podržava PDF-ove i druge binarne fajlove — koristi se iz admin-ovog
+    'Send Email' modala za slanje ponuda/faktura klijentu.
+    """
     smtp, company = _get_smtp_settings()
     if not smtp:
         return False, "SMTP_NOT_CONFIGURED"
@@ -108,12 +115,31 @@ def _send(recipient, subject, html_body, plain_body):
     if not (server_host and user and pw and recipient):
         return False, "SMTP_INCOMPLETE_OR_NO_RECIPIENT"
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"{sender_name} <{sender_email}>"
-    msg["To"] = recipient
-    msg.attach(MIMEText(plain_body or subject, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    # Ako ima priloga → koristimo "mixed" outer + "alternative" za text/html.
+    # Ovo je RFC-preporučen redosled za HTML mejl sa attachmentima.
+    if attachments:
+        msg = MIMEMultipart("mixed")
+        msg["Subject"] = subject
+        msg["From"] = f"{sender_name} <{sender_email}>"
+        msg["To"] = recipient
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(plain_body or subject, "plain", "utf-8"))
+        alt.attach(MIMEText(html_body, "html", "utf-8"))
+        msg.attach(alt)
+        for att in attachments:
+            data = att.get("data"); filename = att.get("filename", "document.pdf")
+            if not data:
+                continue
+            part = MIMEApplication(data, Name=filename)
+            part["Content-Disposition"] = f'attachment; filename="{filename}"'
+            msg.attach(part)
+    else:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{sender_name} <{sender_email}>"
+        msg["To"] = recipient
+        msg.attach(MIMEText(plain_body or subject, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
         if security == "ssl" or server_port == 465:
@@ -129,6 +155,36 @@ def _send(recipient, subject, html_body, plain_body):
     except Exception as e:
         logger.error(f"SMTP send failed to {recipient}: {e}")
         return False, str(e)
+
+
+# ==========================================================
+#  Public helper — koristi se iz admin comms rute
+# ==========================================================
+def send_branded_admin_message(recipient, subject, message_text, attachments=None):
+    """Šalje admin-inicirani mejl (npr. ponuda kupcu iz 'Send Email' modala)
+    ISTIM brendovanim šablonom kao portal notifikacije. Ovo je bilo tačka
+    inkonzistentnosti — ranije su portal notifikacije bile profesionalne HTML,
+    a admin-ovi mejlovi običan tekst bez branding-a.
+
+    message_text: slobodan tekst koji je admin uneo (u modalu). Automatski se
+    escape-uje i pretvara u paragrafe (svaka linija = novi paragraf).
+    """
+    _smtp, company = _get_smtp_settings()
+
+    def _escape(s):
+        return (str(s or "").replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;"))
+
+    paragraphs = [
+        f'<p style="margin:0 0 12px 0;font-size:14px;line-height:1.6;color:#344054;">{_escape(line)}</p>'
+        for line in (message_text or "").split("\n") if line.strip()
+    ] or [
+        '<p style="margin:0;font-size:14px;color:#344054;">(No message provided)</p>'
+    ]
+    body_html = "".join(paragraphs)
+
+    html = _html_wrap(subject, body_html, company)
+    return _send(recipient, subject, html, message_text or subject, attachments=attachments)
 
 
 # ==========================================================

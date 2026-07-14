@@ -1,15 +1,11 @@
 import smtplib
 import socket
-from email.message import EmailMessage
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
 import sqlite3
-import json
 import base64
 from flask import Blueprint, request, jsonify, session
 from config import DB_FILE
 from utils import log_audit, login_required, decrypt_data
+from utils_email import send_branded_admin_message
 
 comms_bp = Blueprint('comms', __name__)
 
@@ -41,66 +37,49 @@ def get_smtp_settings():
 @comms_bp.route('/api/comms/send_email', methods=['POST'])
 @login_required
 def send_email():
-    data = request.json
-    recipient = data.get('to')
-    subject = data.get('subject')
-    body = data.get('body')
+    """Šalje mejl klijentu iz admin 'Send Email' modala. Koristi ISTI brendovan
+    HTML šablon i confidentiality footer kao portal notifikacije — ranije je
+    admin mejl bio običan tekst bez branding-a što je izgledalo neprofesionalno
+    naspram automatskih portal poruka."""
+    data = request.json or {}
+    recipient = (data.get('to') or '').strip()
+    subject = data.get('subject') or '(no subject)'
+    body = data.get('body') or ''
     attachment_b64 = data.get('attachment_b64')
     filename = data.get('filename', 'document.pdf')
 
-    settings = get_smtp_settings()
-    
-    if not settings:
-        return jsonify({"error": "api.smtpNotConfigured"}), 400
+    if not recipient:
+        return jsonify({"error": "api.recipientRequired"}), 400
 
-    smtp_server = settings.get('smtpServer')
-    smtp_port = int(settings.get('smtpPort', 587))
-    smtp_user = settings.get('smtpUser')
-    smtp_pass = settings.get('smtpPass')
-    smtp_security = settings.get('smtpSecurity', 'tls')
-    sender_name = settings.get('senderName', 'Aspidus CRM')
-    sender_email = settings.get('senderEmail', smtp_user)
+    attachments = None
+    if attachment_b64:
+        try:
+            raw = attachment_b64.split(',', 1)[1] if ',' in attachment_b64 else attachment_b64
+            attachments = [{'filename': filename, 'data': base64.b64decode(raw)}]
+        except Exception as e:
+            return jsonify({"error": f"Invalid attachment: {e}"}), 400
 
-    if not all([smtp_server, smtp_port, smtp_user, smtp_pass]):
-        return jsonify({"error": "api.smtpIncomplete"}), 400
-
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = f"{sender_name} <{sender_email}>"
-        msg['To'] = recipient
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-
-        if attachment_b64:
-            if ',' in attachment_b64:
-                attachment_b64 = attachment_b64.split(',')[1]
-            pdf_data = base64.b64decode(attachment_b64)
-            part = MIMEApplication(pdf_data, Name=filename)
-            part['Content-Disposition'] = f'attachment; filename="{filename}"'
-            msg.attach(part)
-
-        # Pametan izbor protokola: Port 465 uvek zahteva SSL
-        if smtp_security == 'ssl' or smtp_port == 465:
-            server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=15)
-        else:
-            server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
-            if smtp_security != 'none':
-                server.starttls()
-                
-        server.login(smtp_user, smtp_pass)
-        server.send_message(msg)
-        server.quit()
-
+    ok, err = send_branded_admin_message(recipient, subject, body, attachments=attachments)
+    if ok:
         log_audit('COMMUNICATION', 'email', f'Sent email to {recipient} with subject: {subject}')
         return jsonify({"status": "success"})
 
-    except smtplib.SMTPAuthenticationError:
+    # Map internal error codes back to translation keys the frontend already knows.
+    err_map = {
+        'SMTP_NOT_CONFIGURED': ('api.smtpNotConfigured', 400),
+        'SMTP_INCOMPLETE_OR_NO_RECIPIENT': ('api.smtpIncomplete', 400),
+    }
+    if err in err_map:
+        code, http = err_map[err]
+        return jsonify({"error": code}), http
+    # Detect common SMTP failure classes from the raw message string
+    low = (err or '').lower()
+    if 'authentication' in low or 'auth' in low and 'fail' in low:
         return jsonify({"error": "api.smtpAuthError"}), 400
-    except (socket.gaierror, socket.timeout, TimeoutError):
+    if 'timeout' in low or 'timed out' in low:
         return jsonify({"error": "api.smtpTimeoutError"}), 400
-    except Exception as e:
-        log_audit('ERROR', 'email', f'Failed to send email to {recipient}: {str(e)}', is_suspicious=True)
-        return jsonify({"error": f"SMTP Error: {str(e)}"}), 500
+    log_audit('ERROR', 'email', f'Failed to send email to {recipient}: {err}', is_suspicious=True)
+    return jsonify({"error": f"SMTP Error: {err}"}), 500
 
 @comms_bp.route('/api/comms/test_smtp', methods=['POST'])
 @login_required

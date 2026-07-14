@@ -358,6 +358,7 @@ async function loadPortalData() {
         renderGoodsTable();
         renderDocuments();
         fillProfile();
+        renderNotifications();
 
         if (typeof applyPermissions === 'function') applyPermissions(portalData?.permissions || []);
     } catch (e) {
