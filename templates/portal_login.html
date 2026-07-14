@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ company_name }} — Client Portal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root { --brand: {{ brand_color }}; }
+        body {
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 50%, #f1f5f9 100%);
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+        .glass-card {
+            background: rgba(255,255,255,0.95);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(255,255,255,0.8);
+            box-shadow: 0 8px 40px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .brand-btn { background: var(--brand); }
+        .brand-btn:hover { filter: brightness(0.92); }
+        .brand-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .input-field {
+            width: 100%; padding: 12px 16px; background: #fff; border: 1.5px solid #e2e8f0;
+            border-radius: 12px; font-size: 0.95rem; transition: all 0.15s ease; color: #1e293b;
+        }
+        .input-field:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(37,99,235,0.12); }
+        .input-field::placeholder { color: #94a3b8; }
+        .fade-in { animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="flex items-center justify-center p-4">
+    <div class="w-full max-w-md">
+        <div class="text-center mb-8">
+            {% if company_logo %}
+            <img src="{{ company_logo }}" alt="{{ company_name }}" class="h-14 mx-auto mb-4" onerror="this.style.display='none'">
+            {% endif %}
+            <h1 class="text-2xl font-bold text-slate-900 tracking-tight">{{ company_name }}</h1>
+            <p class="text-sm text-slate-500 mt-1.5 font-medium">B2B Client Portal</p>
+        </div>
+
+        <div class="glass-card rounded-2xl p-8">
+            <!-- Step 1: Email -->
+            <div id="step-email" class="fade-in">
+                <h2 class="text-lg font-semibold text-slate-900 mb-1">Sign in to your portal</h2>
+                <p class="text-sm text-slate-500 mb-6">Enter your registered business email to receive a one-time verification code.</p>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Email Address</label>
+                        <input type="email" id="login-email" class="input-field" placeholder="your@company.com" required autofocus>
+                    </div>
+                    <button onclick="requestOTPByEmail()" id="btn-request-otp" class="brand-btn w-full py-3 rounded-xl font-semibold text-white text-sm transition-all">
+                        Send Verification Code
+                    </button>
+                </div>
+                <p id="email-error" class="text-sm text-red-600 mt-3 hidden"></p>
+                <p id="email-info" class="text-sm text-blue-600 mt-3 hidden"></p>
+            </div>
+
+            <!-- Step 2: OTP -->
+            <div id="step-otp" class="hidden fade-in">
+                <h2 class="text-lg font-semibold text-slate-900 mb-1">Enter verification code</h2>
+                <p class="text-sm text-slate-500 mb-6">A 6-digit code has been sent to <span id="sent-to-email" class="font-semibold text-slate-700"></span></p>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Verification Code</label>
+                        <input type="text" id="login-otp" class="input-field font-mono text-center text-2xl tracking-[0.3em]" maxlength="6" placeholder="------" inputmode="numeric" autocomplete="one-time-code">
+                    </div>
+                    <button onclick="verifyOTPLogin()" id="btn-verify-otp" class="brand-btn w-full py-3 rounded-xl font-semibold text-white text-sm transition-all">
+                        Verify &amp; Sign In
+                    </button>
+                </div>
+                <p id="otp-error" class="text-sm text-red-600 mt-3 hidden"></p>
+                <div class="flex justify-between mt-4 text-xs text-slate-500">
+                    <button onclick="backToEmail()" class="hover:text-slate-700 transition-colors">&larr; Change email</button>
+                    <button onclick="resendOTP()" id="btn-resend" class="hover:text-slate-700 transition-colors">Resend code</button>
+                </div>
+            </div>
+
+            <!-- Loading -->
+            <div id="step-loading" class="hidden text-center py-8 fade-in">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 mx-auto mb-3" style="border-color: var(--brand);"></div>
+                <p class="text-sm text-slate-500 font-medium">Signing you in&hellip;</p>
+            </div>
+        </div>
+
+        <div class="text-center mt-6 space-y-1">
+            <p class="text-xs text-slate-400">Secured with end-to-end encryption &middot; OTP authentication</p>
+            <p class="text-xs text-slate-400">Session auto-expires after 15 minutes of inactivity</p>
+        </div>
+    </div>
+
+    <script>
+        let loginSessionId = null;
+        let loginEmail = '';
+
+        async function requestOTPByEmail() {
+            const email = document.getElementById('login-email').value.trim();
+            if (!email || !email.includes('@') || !email.includes('.')) {
+                return showError('email-error', 'Please enter a valid email address.');
+            }
+            loginEmail = email;
+            const btn = document.getElementById('btn-request-otp');
+            btn.disabled = true; btn.textContent = 'Sending…';
+            hideError('email-error'); hideError('email-info');
+            try {
+                const res = await fetch('/api/portal/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    loginSessionId = data.session_id;
+                    document.getElementById('sent-to-email').textContent = email;
+                    document.getElementById('step-email').classList.add('hidden');
+                    document.getElementById('step-otp').classList.remove('hidden');
+                    document.getElementById('login-otp').focus();
+                } else {
+                    showError('email-error', data.error || 'Something went wrong. Please try again.');
+                }
+            } catch (e) {
+                showError('email-error', 'Network error. Please check your connection.');
+            }
+            btn.disabled = false; btn.textContent = 'Send Verification Code';
+        }
+
+        async function verifyOTPLogin() {
+            const otp = document.getElementById('login-otp').value.trim();
+            if (!otp || otp.length !== 6) return showError('otp-error', 'Please enter the 6-digit code.');
+            const btn = document.getElementById('btn-verify-otp');
+            btn.disabled = true; btn.textContent = 'Verifying…';
+            hideError('otp-error');
+            try {
+                const res = await fetch('/api/portal/auth/login/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: loginSessionId, otp })
+                });
+                const data = await res.json();
+                if (res.ok && data.auth_key && data.token) {
+                    sessionStorage.setItem('portal_auth_' + data.token, data.auth_key);
+                    document.getElementById('step-otp').classList.add('hidden');
+                    document.getElementById('step-loading').classList.remove('hidden');
+                    window.location.href = '/portal/' + data.token;
+                } else {
+                    showError('otp-error', data.error || 'Invalid code. Please try again.');
+                }
+            } catch (e) {
+                showError('otp-error', 'Network error. Please check your connection.');
+            }
+            btn.disabled = false; btn.textContent = 'Verify & Sign In';
+        }
+
+        function backToEmail() {
+            document.getElementById('step-otp').classList.add('hidden');
+            document.getElementById('step-email').classList.remove('hidden');
+            document.getElementById('login-email').focus();
+            loginSessionId = null;
+        }
+
+        async function resendOTP() {
+            if (!loginEmail) return;
+            const btn = document.getElementById('btn-resend');
+            btn.textContent = 'Sending…'; btn.disabled = true;
+            try {
+                const res = await fetch('/api/portal/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: loginEmail })
+                });
+                const data = await res.json();
+                if (res.ok) { loginSessionId = data.session_id; btn.textContent = 'Code sent!'; }
+                else { showError('otp-error', data.error || 'Could not resend code.'); btn.textContent = 'Resend code'; }
+            } catch (e) { btn.textContent = 'Resend code'; }
+            setTimeout(() => { btn.textContent = 'Resend code'; btn.disabled = false; }, 3000);
+        }
+
+        function showError(id, msg) { const el = document.getElementById(id); if (el) { el.textContent = msg; el.classList.remove('hidden'); } }
+        function hideError(id) { const el = document.getElementById(id); if (el) el.classList.add('hidden'); }
+
+        document.getElementById('login-email').addEventListener('keydown', e => { if (e.key === 'Enter') requestOTPByEmail(); });
+        document.getElementById('login-otp').addEventListener('keydown', e => { if (e.key === 'Enter') verifyOTPLogin(); });
+    </script>
+</body>
+</html>
