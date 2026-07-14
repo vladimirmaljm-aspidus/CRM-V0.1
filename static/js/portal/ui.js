@@ -59,15 +59,27 @@ function addUBO() { const uc = document.getElementById('ubos-container'); if (uc
 // ==========================================================
 //  DASHBOARD
 // ==========================================================
+// Money is deliberately displayed as "1,234.56 USD" without a currency
+// symbol — offers/deals can be in any of USD/EUR/AED/RSD and mixing them
+// under a single symbol would misinform the client.
+function fmtMoney(v, currency) {
+    const n = Number(v || 0);
+    return `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency || ''}`.trim();
+}
+
 function renderDashboard() {
     const deals = portalData?.deals || [];
     const offers = portalData?.offers || [];
     const rfqs = portalData?.my_demands || [];
-    const activeDeals = deals.filter(d => (d.status || '').toLowerCase() !== 'completed' && (d.status || '').toLowerCase() !== 'closed').length;
-    const activeOffers = offers.filter(o => {
+    const documents = portalData?.documents || [];
+    const isActive = d => { const s = (d.status || '').toLowerCase(); return s !== 'completed' && s !== 'closed'; };
+    const isOfferOpen = o => {
+        if (o.clientStatus === 'declined') return false;
         if (!o.validUntil) return true;
         try { return new Date(o.validUntil) >= new Date(); } catch(e) { return true; }
-    }).length;
+    };
+    const activeDeals = deals.filter(isActive).length;
+    const activeOffers = offers.filter(isOfferOpen).length;
     const pendingRfqs = rfqs.filter(r => (r.status || 'pending') === 'pending').length;
     const kycStatus = portalData?.partner?.kycStatus || 'pending';
 
@@ -79,6 +91,33 @@ function renderDashboard() {
     if (kycEl) {
         kycEl.textContent = t(`kyc_status_${kycStatus}`) !== `kyc_status_${kycStatus}` ? t(`kyc_status_${kycStatus}`) : kycStatus;
     }
+
+    // Financial summary — group by currency because mixing currencies would
+    // give a nonsense total. If only one currency is used we show it flat,
+    // otherwise a comma-separated per-currency breakdown.
+    const sumByCurrency = (rows, priceKey = 'price') => {
+        const acc = {};
+        rows.forEach(r => {
+            const cur = r.currency || 'USD';
+            const qty = Number(r.quantity || 1);
+            const val = Number(r[priceKey] || 0) * qty;
+            acc[cur] = (acc[cur] || 0) + val;
+        });
+        return acc;
+    };
+    const renderSum = (acc) => {
+        const entries = Object.entries(acc).filter(([_, v]) => v > 0);
+        if (entries.length === 0) return '—';
+        return entries.map(([c, v]) => fmtMoney(v, c)).join(' + ');
+    };
+    setTxt('fin-total-spend', renderSum(sumByCurrency(deals.filter(d => (d.status || '').toLowerCase() === 'completed'), 'saleValue')));
+    setTxt('fin-open-offers', renderSum(sumByCurrency(offers.filter(isOfferOpen))));
+    setTxt('fin-completed-deals', String(deals.filter(d => (d.status || '').toLowerCase() === 'completed').length));
+    setTxt('fin-doc-count', String(documents.length));
+
+    // Active-shipment timeline (top open deal — the one the client is
+    // most likely to want tracking on right now)
+    renderActiveShipmentTimeline(deals);
 
     // Tab counters
     const setCount = (id, n) => {
@@ -159,13 +198,66 @@ function renderDeals() {
 }
 
 // ==========================================================
+//  ACTIVE SHIPMENT TIMELINE (dashboard widget)
+// ==========================================================
+// Timeline stages map to deal status. Anything before/at current status is
+// "done", the current status is "active", later stages are pending. If the
+// dealStatus does not match the pipeline (e.g. legacy status names) we fall
+// back to marking only the first stage as active so nothing lies to the user.
+const TIMELINE_STAGES = [
+    { key: 'in_negotiation', label: 'In Negotiation' },
+    { key: 'signed',          label: 'Contract Signed' },
+    { key: 'payment',         label: 'Payment' },
+    { key: 'shipped',         label: 'Shipped' },
+    { key: 'completed',       label: 'Delivered' }
+];
+function renderActiveShipmentTimeline(deals) {
+    const wrap = document.getElementById('dash-timeline'); if (!wrap) return;
+    // Pick the most recent non-completed deal; if none, most recent overall.
+    const openDeals = deals.filter(d => (d.status || '').toLowerCase() !== 'completed' && (d.status || '').toLowerCase() !== 'closed');
+    const target = openDeals[0] || deals[0];
+    if (!target) { wrap.innerHTML = '<p class="text-slate-400 text-sm">No active shipments to track yet.</p>'; return; }
+
+    const status = (target.status || '').toLowerCase();
+    const currentIdx = TIMELINE_STAGES.findIndex(s => s.key === status);
+    const html = `
+        <div class="mb-3 text-xs text-slate-500">
+            <span class="font-semibold text-slate-700">${safeText(target.contractId || 'Deal')}</span>
+            ${target.productName ? '· ' + safeText(target.productName) : ''}
+        </div>
+        <div class="flex items-start">
+            ${TIMELINE_STAGES.map((s, i) => {
+                const cls = currentIdx < 0 ? (i === 0 ? 'active' : '') : (i < currentIdx ? 'done' : (i === currentIdx ? 'active' : ''));
+                return `<div class="timeline-stage ${cls}"><div class="dot"></div><div class="timeline-bar"></div><div class="lbl">${s.label}</div></div>`;
+            }).join('')}
+        </div>`;
+    wrap.innerHTML = html;
+}
+
+// ==========================================================
+//  OFFERS FILTERS
+// ==========================================================
+let _offersFilter = 'all';
+function setOffersFilter(el, val) {
+    _offersFilter = val;
+    document.querySelectorAll('[data-filter]').forEach(c => c.classList.remove('active'));
+    if (el) el.classList.add('active');
+    renderOffers();
+}
+
+// ==========================================================
 //  OFFERS
 // ==========================================================
 function renderOffers() {
     const container = document.getElementById('offers-container'); if (!container) return;
-    const offers = portalData?.offers || [];
+    let offers = portalData?.offers || [];
+    const q = (document.getElementById('offers-search')?.value || '').toLowerCase().trim();
+    if (q) offers = offers.filter(o => (`${o.productName || ''} ${o.offerNo || ''} ${o.hsCode || ''}`).toLowerCase().includes(q));
+    if (_offersFilter === 'pending') offers = offers.filter(o => !o.clientStatus);
+    else if (_offersFilter === 'accepted') offers = offers.filter(o => o.clientStatus === 'accepted');
+    else if (_offersFilter === 'declined') offers = offers.filter(o => o.clientStatus === 'declined');
     if (offers.length === 0) {
-        container.innerHTML = `<div class="panel p-10 text-center"><p class="text-slate-500 text-sm">${t('no_offers')}</p></div>`;
+        container.innerHTML = `<div class="panel p-10 text-center"><p class="text-slate-500 text-sm">${q || _offersFilter !== 'all' ? 'No offers match your filter.' : t('no_offers')}</p></div>`;
         return;
     }
     container.innerHTML = offers.map(o => {
@@ -311,13 +403,53 @@ function renderRFQs() {
 }
 
 // ==========================================================
+//  DOCUMENTS FILTERS & EXPORT
+// ==========================================================
+let _docsFilter = 'all';
+function setDocsFilter(el, val) {
+    _docsFilter = val;
+    document.querySelectorAll('[data-doc-filter]').forEach(c => c.classList.remove('active'));
+    if (el) el.classList.add('active');
+    renderDocuments();
+}
+
+// CSV export of the download history helps the client keep an audit trail
+// on their side (procurement/compliance often want a record).
+function exportDocumentsHistory() {
+    const docs = portalData?.documents || [];
+    if (docs.length === 0) { showToast('No documents to export.', 'info'); return; }
+    const rows = [
+        ['Date', 'Type', 'File name', 'Document ID'],
+        ...docs.map(d => [
+            d.createdAt ? new Date(d.createdAt).toISOString() : '',
+            d.docType || 'Document',
+            d.fileName || '',
+            d.id || ''
+        ])
+    ];
+    const csv = rows.map(r => r.map(f => {
+        const s = String(f == null ? '' : f);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `document-history-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    showToast('Document history exported.', 'success');
+}
+
+// ==========================================================
 //  DOCUMENTS
 // ==========================================================
 function renderDocuments() {
     const body = document.getElementById('documents-table-body'); if (!body) return;
-    const docs = portalData?.documents || [];
+    let docs = portalData?.documents || [];
+    const q = (document.getElementById('docs-search')?.value || '').toLowerCase().trim();
+    if (q) docs = docs.filter(d => (`${d.fileName || ''} ${d.docType || ''}`).toLowerCase().includes(q));
+    if (_docsFilter !== 'all') docs = docs.filter(d => (d.docType || '').toUpperCase() === _docsFilter);
     if (docs.length === 0) {
-        body.innerHTML = `<tr><td colspan="4" class="py-8 px-3 text-center text-slate-400 text-sm">${t('no_docs')}</td></tr>`;
+        body.innerHTML = `<tr><td colspan="4" class="py-8 px-3 text-center text-slate-400 text-sm">${q || _docsFilter !== 'all' ? 'No documents match your filter.' : t('no_docs')}</td></tr>`;
         return;
     }
     body.innerHTML = docs.map(d => `
@@ -488,6 +620,118 @@ function renderKycStatusLine() {
 // ==========================================================
 //  Permisije (za portalPermissions iz partner zapisa)
 // ==========================================================
+// ==========================================================
+//  NOTIFICATIONS
+// ==========================================================
+// Client-side derived notifications feed. Derived (not stored) events give
+// the client a live at-a-glance view of things that need attention right
+// now — new offers, KYC status changes, upcoming validity expiry — without
+// any backend changes required.
+// Read-state is tracked per (token, event-id) in localStorage so refreshes
+// don't wipe out "already seen" markers.
+function _notifStorageKey() { return `portal_notif_seen_${typeof TOKEN !== 'undefined' ? TOKEN : ''}`; }
+function _getSeenNotifs() {
+    try { return JSON.parse(localStorage.getItem(_notifStorageKey()) || '[]'); } catch(e) { return []; }
+}
+function _saveSeenNotifs(ids) {
+    try { localStorage.setItem(_notifStorageKey(), JSON.stringify(ids.slice(-200))); } catch(e) {}
+}
+
+function buildNotifications() {
+    const list = [];
+    const offers = portalData?.offers || [];
+    const partner = portalData?.partner || {};
+    const now = new Date();
+
+    // Active offers awaiting client response (highest signal for the client)
+    offers.filter(o => !o.clientStatus).forEach(o => {
+        list.push({
+            id: `offer_pending_${o.id}`,
+            when: o.date || new Date().toISOString(),
+            title: `New offer awaits your response`,
+            body: `${o.productName || 'Product'} · ${o.offerNo || ''}`,
+            action: () => { switchTab('offers'); toggleNotificationsPanel(true); }
+        });
+    });
+    // Offers expiring within 3 days
+    offers.filter(o => !o.clientStatus && o.validUntil).forEach(o => {
+        try {
+            const d = new Date(o.validUntil);
+            const diffDays = Math.ceil((d - now) / (1000*60*60*24));
+            if (diffDays >= 0 && diffDays <= 3) {
+                list.push({
+                    id: `offer_expiring_${o.id}_${diffDays}`,
+                    when: new Date().toISOString(),
+                    title: `Offer ${o.offerNo || ''} expires in ${diffDays} day${diffDays === 1 ? '' : 's'}`,
+                    body: `${o.productName || ''}`,
+                    action: () => { switchTab('offers'); toggleNotificationsPanel(true); }
+                });
+            }
+        } catch(e) {}
+    });
+    // KYC update required
+    if (partner.kycStatus === 'update_requested' || partner.kycStatus === 'expired') {
+        list.push({
+            id: `kyc_${partner.kycStatus}`,
+            when: new Date().toISOString(),
+            title: partner.kycStatus === 'expired' ? 'KYC documentation has expired' : 'KYC update required',
+            body: partner.kycReviewNote || 'Please open the KYC tab to complete the requested items.',
+            action: () => { switchTab('kyc'); toggleNotificationsPanel(true); }
+        });
+    }
+    // Sort newest first
+    list.sort((a, b) => new Date(b.when) - new Date(a.when));
+    return list;
+}
+
+let _lastNotifList = [];
+function renderNotifications() {
+    _lastNotifList = buildNotifications();
+    const seen = new Set(_getSeenNotifs());
+    const body = document.getElementById('notif-body');
+    const badge = document.getElementById('notif-count');
+    const unreadCount = _lastNotifList.filter(n => !seen.has(n.id)).length;
+    if (badge) {
+        if (unreadCount > 0) { badge.textContent = String(unreadCount); badge.classList.remove('hidden'); }
+        else { badge.classList.add('hidden'); }
+    }
+    if (!body) return;
+    if (_lastNotifList.length === 0) {
+        body.innerHTML = `<div class="p-6 text-center text-slate-400 text-sm">${t('notif_empty')}</div>`;
+        return;
+    }
+    body.innerHTML = _lastNotifList.map((n, i) => `
+        <div class="notif-item ${seen.has(n.id) ? '' : 'unread'}" onclick="handleNotifClick(${i})">
+            <div class="text-sm font-semibold text-slate-900">${safeText(n.title)}</div>
+            ${n.body ? `<div class="text-xs text-slate-500 mt-1">${safeText(n.body)}</div>` : ''}
+            <div class="text-[10px] text-slate-400 mt-1">${n.when ? new Date(n.when).toLocaleString() : ''}</div>
+        </div>
+    `).join('');
+}
+window.handleNotifClick = function(idx) {
+    const n = _lastNotifList[idx]; if (!n) return;
+    const seen = new Set(_getSeenNotifs()); seen.add(n.id); _saveSeenNotifs([...seen]);
+    if (typeof n.action === 'function') n.action();
+    renderNotifications();
+};
+window.toggleNotificationsPanel = function(forceClose) {
+    const panel = document.getElementById('notif-panel'); if (!panel) return;
+    if (forceClose === true) { panel.classList.add('hidden'); return; }
+    panel.classList.toggle('hidden');
+};
+window.markAllNotificationsRead = function() {
+    _saveSeenNotifs(_lastNotifList.map(n => n.id));
+    renderNotifications();
+};
+// Dismiss the panel on outside click for standard UX.
+document.addEventListener('click', (e) => {
+    const panel = document.getElementById('notif-panel');
+    const btn = document.getElementById('btn-notifications');
+    if (!panel || panel.classList.contains('hidden')) return;
+    if (panel.contains(e.target) || (btn && btn.contains(e.target))) return;
+    panel.classList.add('hidden');
+});
+
 window.applyPermissions = function(permissions) {
     if (!permissions || permissions.length === 0) return;
     const perms = new Set(permissions);
