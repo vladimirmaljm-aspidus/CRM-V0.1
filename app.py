@@ -172,6 +172,7 @@ def apply_brutal_security_headers(response):
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; "
         "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
         "img-src 'self' data: blob: https://googleusercontent.com; "
+        "frame-src 'self' blob:; "
         "connect-src 'self' http://ip-api.com;"
     )
     response.headers['Content-Security-Policy'] = csp
