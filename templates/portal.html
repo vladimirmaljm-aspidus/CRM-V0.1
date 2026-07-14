@@ -152,7 +152,7 @@
                     <p class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider" id="lbl-welcome">Welcome</p>
                     <p class="text-sm font-semibold text-slate-800" id="partner-name">—</p>
                 </div>
-                <button class="btn btn-danger" onclick="logoutPortal()">
+                <button class="btn btn-danger" onclick="portalLogout()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
                     <span id="lbl-logout">Logout</span>
                 </button>
@@ -757,6 +757,12 @@
             <div class="animate-spin rounded-full h-9 w-9 border-b-2 border-blue-600"></div>
             <p class="font-semibold text-slate-700 text-sm" id="lbl-uploading-docs">Encrypting &amp; uploading…</p>
         </div>
+    </div>
+
+    <!-- SESSION WARNING -->
+    <div id="session-warning" class="hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-amber-50 border border-amber-300 rounded-xl shadow-lg px-5 py-3 flex items-center gap-3 text-sm text-amber-800 font-medium">
+        <span>Your session will expire soon due to inactivity.</span>
+        <button onclick="resetInactivityTimer()" class="bg-amber-600 text-white px-3 py-1 rounded-lg text-xs font-semibold hover:bg-amber-700">Stay signed in</button>
     </div>
 
     <!-- TOAST CONTAINER -->

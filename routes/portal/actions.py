@@ -8,7 +8,7 @@ from werkzeug.utils import secure_filename
 from flask import request, jsonify, abort, send_from_directory, current_app, session
 from config import DB_FILE, PORTAL_DB_FILE, PORTAL_UPLOAD_FOLDER, ALLOWED_EXTENSIONS
 from utils import log_audit, login_required, encrypt_data, decrypt_data, is_safe_file_content
-from . import (portal_bp, safe_parse, verify_portal_session, find_partner_by_token)
+from . import (portal_bp, safe_parse, verify_portal_session, find_partner_by_token, log_portal_activity)
 
 
 def require_portal_admin():
@@ -103,6 +103,7 @@ def submit_portal_product(token):
     conn_p.commit()
     conn_p.close()
     log_audit('EDIT', 'portal', f"Partner '{company_name}' submitted product: {prod_data.get('name')}", is_suspicious=False)
+    log_portal_activity(partner_id, 'PRODUCT_SUBMIT', f"Submitted product: {prod_data.get('name')}")
     return jsonify({"status": "success", "message": "Product securely staging for verification"})
 
 @portal_bp.route('/api/portal/rfq/submit/<token>', methods=['POST'])
@@ -153,6 +154,7 @@ def submit_rfq(token):
     conn.commit()
     conn.close()
     log_audit('CREATE', 'demands', f"New RFQ for {product_name} submitted via portal by partner ID: {partner_id} ({company_name})", is_suspicious=False)
+    log_portal_activity(partner_id, 'RFQ_SUBMIT', f"RFQ for {product_name}, qty: {demand_obj.get('quantity')}")
     return jsonify({"status": "success", "message": "Request for Quote securely submitted."})
 
 @portal_bp.route('/api/portal/admin/products', methods=['GET'])
@@ -295,6 +297,7 @@ def submit_kyc(token):
     conn.commit()
     conn.close()
     log_audit('EDIT', 'portal', f"Partner {clean_data.get('companyName')} payload securely encrypted inside air-gapped vault", is_suspicious=False)
+    log_portal_activity(partner_id, 'KYC_SUBMIT', f'KYC submission by {clean_data.get("companyName")}')
     return jsonify({"status": "success", "message": "KYC Data securely submitted to Vault."})
 
 @portal_bp.route('/api/portal/admin/submissions/<partner_id>', methods=['GET'])
@@ -776,6 +779,7 @@ def portal_download_document(token, doc_id):
         log_audit('DOWNLOAD', 'portal',
                   f"Client '{company}' {action_kind.lower()}ed document '{file_name}' (type: {doc.get('docType', 'OFFER')}, on-demand) via portal",
                   is_suspicious=False)
+        log_portal_activity(partner_id, f'DOCUMENT_{action_kind}', f"{file_name} (offer regen)")
         from flask import Response
         return Response(
             pdf_bytes,
@@ -809,6 +813,7 @@ def portal_download_document(token, doc_id):
         log_audit('DOWNLOAD', 'portal',
                   f"Client '{company}' {action_kind.lower()}ed document '{file_name}' (type: {doc.get('docType', 'Document')}, inline) via portal",
                   is_suspicious=False)
+        log_portal_activity(partner_id, f'DOCUMENT_{action_kind}', f"{file_name} (inline)")
         from flask import Response
         return Response(
             pdf_bytes, mimetype='application/pdf',
@@ -839,6 +844,7 @@ def portal_download_document(token, doc_id):
             log_audit('DOWNLOAD', 'portal',
                       f"Client '{company}' {action_kind.lower()}ed document '{file_name}' (fallback regen) via portal",
                       is_suspicious=False)
+            log_portal_activity(partner_id, f'DOCUMENT_{action_kind}', f"{file_name} (fallback regen)")
             from flask import Response
             return Response(
                 pdf_bytes, mimetype='application/pdf',
@@ -857,6 +863,7 @@ def portal_download_document(token, doc_id):
     log_audit('DOWNLOAD', 'portal',
               f"Client '{company}' {action_kind.lower()}ed document '{file_name}' (type: {doc.get('docType', 'Document')}) via portal",
               is_suspicious=False)
+    log_portal_activity(partner_id, f'DOCUMENT_{action_kind}', f"{file_name}")
     return send_from_directory(folder, safe_name, as_attachment=(not inline), download_name=file_name)
 
 
@@ -914,6 +921,7 @@ def portal_accept_offer(token, offer_id):
         conn.close()
 
     log_audit(log_action, 'portal', f"Client '{partner.get('companyName')}' {action}ed offer {offer.get('offerNo', offer_id)}", is_suspicious=False)
+    log_portal_activity(partner_id, f'OFFER_{action.upper()}', f"Offer {offer.get('offerNo', offer_id)}")
     return jsonify({"status": "success", "clientStatus": offer.get('clientStatus'), "at": offer.get('clientAcceptedAt') or offer.get('clientDeclinedAt')})
 
 

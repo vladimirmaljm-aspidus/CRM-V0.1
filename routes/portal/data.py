@@ -4,13 +4,36 @@ from flask import request, jsonify, abort, render_template
 from config import DB_FILE, PORTAL_DB_FILE
 from utils import decrypt_data, log_audit
 from . import (portal_bp, safe_parse, check_portal_rate_limit,
-               verify_portal_session, find_partner_by_token)
+               verify_portal_session, find_partner_by_token, log_portal_activity)
+
+@portal_bp.route('/portal/login', methods=['GET'])
+@portal_bp.route('/portal/', methods=['GET'])
+def portal_login_page():
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if ip and ',' in ip: ip = ip.split(',')[0].strip()
+    if not check_portal_rate_limit(ip):
+        abort(429, description="DDoS Protection: Rate limit exceeded.")
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        c = conn.cursor()
+        c.execute("SELECT value FROM settings WHERE key='company'")
+        row = c.fetchone()
+        company = decrypt_data(row[0]) if row else {}
+        if not isinstance(company, dict): company = {}
+    finally:
+        if conn: conn.close()
+    return render_template('portal_login.html',
+                           company_name=company.get('name', 'Aspidus'),
+                           company_logo=company.get('logoUrl') or company.get('logoDataUrl', ''),
+                           brand_color=company.get('brandColor', '#2563eb'))
+
 
 @portal_bp.route('/portal/<token>', methods=['GET'])
 def view_portal(token):
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if ip and ',' in ip: ip = ip.split(',')[0].strip()
-    if not check_portal_rate_limit(ip): 
+    if not check_portal_rate_limit(ip):
         abort(429, description="DDoS Protection: Rate limit exceeded.")
     return render_template('portal.html', token=token)
 
