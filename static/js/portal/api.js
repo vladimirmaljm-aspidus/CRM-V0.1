@@ -136,29 +136,93 @@ async function submitProfileChangeRequest() {
     if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
 }
 
-// Preuzimanje dokumenta iz vault-a (offers/invoices/contracts) — server loguje audit.
+// Otvaranje dokumenta u portalu.
+//
+// Ranije: klik = trenutni download fajla. Sada: klik otvara preview modal sa
+// PDF-om u iframe-u; korisnik može da PROČITA dokument pa tek onda odluči da
+// li skida "hard copy" (Download dugme) ili štampa (Print). Preview endpoint
+// koristi ?inline=1 pa server šalje Content-Disposition: inline umesto
+// attachment, i (za ponude) regeneriše PDF u memoriji iz aktuelnih podataka
+// bez pisanja na disk.
+//
+// Blob se drži u memoriji dok je modal otvoren i oslobađa se pri zatvaranju,
+// tako da Print/Download koriste istu kopiju bez novog HTTP poziva.
+let _previewBlobUrl = null;
+let _previewFileName = null;
+let _previewDocId = null;
+
 async function downloadPortalDocument(docId) {
     if (!docId) return;
     try {
-        const res = await fetch(`/api/portal/document/${TOKEN}/${encodeURIComponent(docId)}`, {
+        const res = await fetch(`/api/portal/document/${TOKEN}/${encodeURIComponent(docId)}?inline=1`, {
             headers: { 'X-Portal-Auth': authKey }
         });
         if (!res.ok) {
-            if (res.status === 404) return showToast(t('err_doc_not_found'), 'error');
+            if (res.status === 404 || res.status === 410) return showToast(t('err_doc_not_found'), 'error');
             if (res.status === 403) return showToast(t('err_doc_forbidden'), 'error');
             return showToast(t('err_generic'), 'error');
         }
         const blob = await res.blob();
-        // filename iz Content-Disposition (fallback na doc_<id>.pdf)
         const cd = res.headers.get('Content-Disposition') || '';
         const m = cd.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
-        const filename = m ? decodeURIComponent(m[1].replace(/"$/, '')) : `document_${docId}.pdf`;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = filename;
-        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-        showToast(t('msg_download_logged'), 'success');
+        _previewFileName = m ? decodeURIComponent(m[1].replace(/"$/, '')) : `document_${docId}.pdf`;
+        _previewDocId = docId;
+        if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); }
+        _previewBlobUrl = URL.createObjectURL(blob);
+
+        const iframe = document.getElementById('pdf-preview-frame');
+        const title = document.getElementById('pdf-preview-title');
+        if (title) title.textContent = _previewFileName;
+        if (iframe) iframe.src = _previewBlobUrl;
+        const modal = document.getElementById('pdf-preview-modal');
+        modal.classList.remove('hidden'); modal.classList.add('flex');
     } catch (e) { showToast(t('err_network'), 'error'); }
 }
+
+window.closePdfPreview = function() {
+    const modal = document.getElementById('pdf-preview-modal');
+    if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
+    const iframe = document.getElementById('pdf-preview-frame');
+    if (iframe) iframe.src = 'about:blank';
+    if (_previewBlobUrl) { URL.revokeObjectURL(_previewBlobUrl); _previewBlobUrl = null; }
+    _previewFileName = null; _previewDocId = null;
+};
+
+// Print: reuse blob URL, ask iframe to trigger native print dialog.
+// This works in all major browsers where the built-in PDF viewer is loaded
+// into the iframe; if the browser is locked down it falls back to
+// window.open() so the user can print via browser controls.
+window.printPdfPreview = function() {
+    const iframe = document.getElementById('pdf-preview-frame');
+    if (!iframe || !iframe.contentWindow) return;
+    try {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+    } catch (e) {
+        if (_previewBlobUrl) window.open(_previewBlobUrl, '_blank');
+    }
+};
+
+// Download: trigger a new attachment fetch (proper Content-Disposition:
+// attachment) so the browser Save dialog appears with the right filename.
+// We do NOT reuse the inline blob because programmatic <a download="…">
+// on some Safari builds ignores the download attribute for cross-origin
+// blob URLs — a fresh attachment request is more portable.
+window.downloadPdfPreview = async function() {
+    if (!_previewDocId) return;
+    try {
+        const res = await fetch(`/api/portal/document/${TOKEN}/${encodeURIComponent(_previewDocId)}`, {
+            headers: { 'X-Portal-Auth': authKey }
+        });
+        if (!res.ok) return showToast(t('err_generic'), 'error');
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = _previewFileName || 'document.pdf';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        showToast(t('msg_download_logged'), 'success');
+    } catch (e) { showToast(t('err_network'), 'error'); }
+};
 
 async function requestOTP() {
     const msg = document.getElementById('otp-status-msg');

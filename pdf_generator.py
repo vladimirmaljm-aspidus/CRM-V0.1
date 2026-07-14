@@ -482,26 +482,20 @@ def build_offer_pdf(offer, company=None, settings=None):
 
 
 def save_offer_pdf_to_vault(offer):
-    """Generise PDF ponude i cuva u shared_documents (vault) + fajl u uploads/.
-    Vraca (doc_id, file_url) ili (None, None) na gresku."""
-    try:
-        pdf_bytes = build_offer_pdf(offer)
-    except Exception as e:
-        logger.error(f"Failed to generate offer PDF: {e}")
-        return None, None
+    """Upisuje samo REFERENCU u shared_documents; PDF se generiše on-demand.
 
-    # Fajl
-    filename = f"offer_{offer.get('offerNo', 'unknown').replace('/', '_')}_{uuid.uuid4().hex[:8]}.pdf"
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
-    try:
-        with open(filepath, 'wb') as f:
-            f.write(pdf_bytes)
-    except Exception as e:
-        logger.error(f"Failed to write PDF to disk: {e}")
-        return None, None
-    file_url = f"/uploads/{filename}"
+    Ranije: server je pravio PDF na disk (uploads/) i vault upis sa file_url.
+    Sad: samo vault upis sa sourceOfferId='<offer_id>' i sourceType='OFFER'.
+    Kada klijent otvori dokument u portalu, /api/portal/document/<token>/<doc_id>
+    endpoint prepozna sourceOfferId i regeneriše PDF u memoriji iz aktuelnih
+    podataka o ponudi u bazi. Prednosti:
+      - nema akumulacije PDF fajlova na disku,
+      - PDF uvek reflektuje najnovije podatke o ponudi (ako admin ispravi
+        cenu/logistiku, klijent vidi tačno stanje pri sledećem otvaranju),
+      - preview u modalu pre nego što klijent skine "hard copy".
 
-    # Vault entry
+    Vraca (doc_id, None) — drugi element je nasleđen (file_url), sada nema
+    smisla; pozivaoci ga ignorišu."""
     doc_id = f"doc_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     doc = {
@@ -510,8 +504,8 @@ def save_offer_pdf_to_vault(offer):
         'productId': offer.get('productId'),
         'docType': 'OFFER',
         'fileName': f"Offer_{offer.get('offerNo', '')}.pdf",
-        'fileUrl': file_url,
         'sourceOfferId': offer.get('id'),
+        'sourceType': 'OFFER',
         'createdAt': now,
     }
     try:
@@ -521,7 +515,27 @@ def save_offer_pdf_to_vault(offer):
             conn.commit()
     except Exception as e:
         logger.error(f"Failed to save PDF vault entry: {e}")
-        # PDF fajl je već tu, ali bez vault entry-ja klijent ne bi mogao da ga preuzme
         return None, None
 
-    return doc_id, file_url
+    return doc_id, None
+
+
+def regenerate_offer_pdf_by_id(offer_id):
+    """Ponovo pravi PDF ponude iz aktuelnih podataka u bazi. Vraća bytes ili
+    None ako ponuda ne postoji."""
+    if not offer_id:
+        return None
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            c = conn.cursor()
+            c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
+            row = c.fetchone()
+        if not row:
+            return None
+        offer_data = decrypt_data(row[0])
+        if not isinstance(offer_data, dict):
+            return None
+        return build_offer_pdf(offer_data)
+    except Exception as e:
+        logger.error(f"Failed to regenerate PDF for offer {offer_id}: {e}")
+        return None
