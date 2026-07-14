@@ -6,7 +6,8 @@ from flask import request, jsonify, abort
 from config import DB_FILE
 from utils import log_audit, login_required, decrypt_data
 from . import (portal_bp, safe_parse, check_portal_rate_limit,
-               create_portal_otp, verify_portal_otp, find_partner_by_token)
+               create_portal_otp, verify_portal_otp, find_partner_by_token,
+               find_partner_by_email, pending_email_sessions, log_portal_activity)
 
 @portal_bp.route('/api/portal/generate/<partner_id>', methods=['POST'])
 @login_required
@@ -171,6 +172,96 @@ def verify_otp(token):
     user_otp = (request.get_json(silent=True) or {}).get('otp')
     auth_key = verify_portal_otp(token, user_otp)
     if auth_key:
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        c = conn.cursor()
+        partner_id, _ = find_partner_by_token(c, token, enforce_active=False)
+        conn.close()
+        log_portal_activity(partner_id, 'LOGIN_SUCCESS', 'OTP login via direct link')
         return jsonify({"status": "success", "auth_key": auth_key})
 
     return jsonify({"error": "Invalid or expired OTP"}), 401
+
+
+# ==========================================================
+#  EMAIL-BASED LOGIN (no token URL needed)
+# ==========================================================
+
+@portal_bp.route('/api/portal/auth/login', methods=['POST'])
+def portal_login_request():
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if ip and ',' in ip: ip = ip.split(',')[0].strip()
+    if not check_portal_rate_limit(ip): abort(429)
+
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+
+    if not email or '@' not in email or '.' not in email:
+        return jsonify({"error": "Please enter a valid email address."}), 400
+
+    partner_id, partner = find_partner_by_email(email)
+
+    if not partner:
+        log_portal_activity(None, 'LOGIN_FAILED', f'Unregistered email attempt: {email}')
+        log_audit('SECURITY', 'portal', f'Portal login attempt with unregistered email: {email}', is_suspicious=True)
+        return jsonify({"error": "This email address is not registered in our system. Please contact your account manager."}), 404
+
+    if partner.get('isPortalActive', True) is False:
+        log_portal_activity(partner_id, 'LOGIN_BLOCKED', f'Portal access revoked for {email}')
+        log_audit('SECURITY', 'portal', f'Login attempt on revoked portal for {email}', is_suspicious=True)
+        return jsonify({"error": "Your portal access has been suspended. Please contact your account manager."}), 403
+
+    token = partner.get('portalToken')
+    if not token:
+        return jsonify({"error": "Portal access has not been configured for your account yet. Please contact your account manager."}), 403
+
+    otp = create_portal_otp(token)
+
+    email_sent = False
+    try:
+        from utils_email import send_portal_otp
+        portal_url = request.url_root.rstrip('/') + f"/portal/{token}"
+        ok, err = send_portal_otp(email, partner.get('companyName', ''), otp, portal_url)
+        if ok:
+            email_sent = True
+            log_portal_activity(partner_id, 'OTP_SENT', f'OTP sent to {email} via email login')
+    except Exception:
+        pass
+
+    print(f"\n========================================================")
+    print(f"B2B PORTAL LOGIN OTP CODE: {otp} (For: {partner.get('companyName')})")
+    print(f"========================================================\n")
+
+    session_id = secrets.token_hex(16)
+    pending_email_sessions[session_id] = {
+        'token': token, 'partner_id': partner_id, 'email': email,
+        'expires': time.time() + 300
+    }
+
+    msg = "A verification code has been sent to your email." if email_sent else "Verification code generated. Check your email or contact your administrator."
+    return jsonify({"status": "success", "session_id": session_id, "message": msg})
+
+
+@portal_bp.route('/api/portal/auth/login/verify', methods=['POST'])
+def portal_login_verify():
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if ip and ',' in ip: ip = ip.split(',')[0].strip()
+    if not check_portal_rate_limit(ip): abort(429)
+
+    data = request.get_json(silent=True) or {}
+    session_id = data.get('session_id')
+    user_otp = data.get('otp')
+
+    pending = pending_email_sessions.get(session_id)
+    if not pending or pending.get('expires', 0) < time.time():
+        pending_email_sessions.pop(session_id, None)
+        return jsonify({"error": "Session expired. Please request a new code."}), 401
+
+    token = pending['token']
+    auth_key = verify_portal_otp(token, user_otp)
+    if auth_key:
+        pending_email_sessions.pop(session_id, None)
+        log_portal_activity(pending['partner_id'], 'LOGIN_SUCCESS', f'Email login from {pending["email"]}')
+        log_audit('LOGIN', 'portal', f'Portal email login: {pending["email"]}', is_suspicious=False)
+        return jsonify({"status": "success", "auth_key": auth_key, "token": token})
+
+    return jsonify({"error": "Invalid or expired verification code."}), 401

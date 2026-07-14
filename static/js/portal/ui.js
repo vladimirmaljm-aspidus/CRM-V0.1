@@ -32,7 +32,7 @@ function switchTab(tabId) {
 
 function logoutPortal() {
     sessionStorage.removeItem(`portal_auth_${TOKEN}`);
-    window.location.reload();
+    window.location.href = '/portal/login';
 }
 
 function showToast(message, type) {
