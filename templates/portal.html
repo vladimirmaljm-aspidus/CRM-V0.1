@@ -644,6 +644,32 @@
         </div>
     </div>
 
+    <!-- PDF PREVIEW MODAL -->
+    <div id="pdf-preview-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl h-[92vh] flex flex-col overflow-hidden">
+            <div class="flex justify-between items-center border-b border-slate-100 px-6 py-4">
+                <div>
+                    <h3 class="text-lg font-semibold text-slate-900" id="pdf-preview-title">Document Preview</h3>
+                    <p class="text-xs text-slate-400 mt-0.5" id="pdf-preview-subtitle">Review the document before saving or printing a hard copy.</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="button" class="btn btn-ghost" onclick="printPdfPreview()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M6 9V2h12v7"/><rect x="6" y="14" width="12" height="8"/><path d="M18 14h3v-4H3v4h3"/></svg>
+                        <span>Print</span>
+                    </button>
+                    <button type="button" class="btn btn-primary" onclick="downloadPdfPreview()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M12 3v14m-5-5l5 5 5-5M5 21h14"/></svg>
+                        <span>Download</span>
+                    </button>
+                    <button type="button" class="icon-btn" onclick="closePdfPreview()">✕</button>
+                </div>
+            </div>
+            <div class="flex-1 min-h-0 bg-slate-100">
+                <iframe id="pdf-preview-frame" class="w-full h-full" style="border:none;"></iframe>
+            </div>
+        </div>
+    </div>
+
     <!-- FULL LOADING -->
     <div id="full-loading" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden items-center justify-center">
         <div class="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center gap-3 border border-slate-200">

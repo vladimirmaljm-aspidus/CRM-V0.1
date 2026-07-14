@@ -717,12 +717,24 @@ def admin_review_profile_request(req_id):
 
 @portal_bp.route('/api/portal/document/<token>/<doc_id>', methods=['GET'])
 def portal_download_document(token, doc_id):
-    """Klijent portala preuzima svoj dokument (ponuda/faktura/dogovor). Svaki
-    download se beleži u audit dnevnik sa nazivom firme i datumom, kako bi u
-    slučaju spora postojao trag da je klijent preuzeo dokument."""
+    """Klijent portala otvara ili preuzima svoj dokument.
+
+    Podržava dva režima preko query stringa:
+      - ?inline=1  → Content-Disposition: inline (za preview u iframe-u)
+      - default    → attachment (klasičan download)
+
+    Radi sa dva izvora dokumenta (backward-compat):
+      1) Nova ponuda: doc.sourceType == 'OFFER' + sourceOfferId — PDF se
+         regeneriše iz aktuelne ponude u bazi (nema pisanja na disk).
+      2) Legacy fajlovi: doc.fileUrl je '/uploads/...' ili '/portal_uploads/...'
+         — služi se sa diska.
+
+    Svaki view/download se beleži u audit trag."""
     auth_header = request.headers.get('X-Portal-Auth')
     if not verify_portal_session(token, auth_header):
         return jsonify({"error": "UNAUTHORIZED"}), 401
+
+    inline = request.args.get('inline') in ('1', 'true', 'yes')
 
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
     try:
@@ -743,26 +755,48 @@ def portal_download_document(token, doc_id):
     finally:
         conn.close()
 
+    company = partner.get('companyName', 'Unknown')
+    file_name = doc.get('fileName') or 'Document.pdf'
+    action_kind = 'PREVIEW' if inline else 'DOWNLOAD'
+
+    # PUT #1: OFFER referenca — regeneriši u memoriji, ne pisati na disk.
+    if doc.get('sourceType') == 'OFFER' and doc.get('sourceOfferId'):
+        from pdf_generator import regenerate_offer_pdf_by_id
+        pdf_bytes = regenerate_offer_pdf_by_id(doc['sourceOfferId'])
+        if not pdf_bytes:
+            log_audit('ERROR', 'portal',
+                      f"Client '{company}' tried to access offer PDF {doc_id} but source offer missing", is_suspicious=True)
+            return jsonify({"error": "SOURCE_MISSING"}), 410
+        log_audit('DOWNLOAD', 'portal',
+                  f"Client '{company}' {action_kind.lower()}ed document '{file_name}' (type: {doc.get('docType', 'OFFER')}, on-demand) via portal",
+                  is_suspicious=False)
+        from flask import Response
+        return Response(
+            pdf_bytes,
+            mimetype='application/pdf',
+            headers={
+                'Content-Disposition': f'{"inline" if inline else "attachment"}; filename="{file_name}"',
+                'Cache-Control': 'private, no-store',
+            }
+        )
+
+    # PUT #2: legacy file na disku
     file_url = doc.get('fileUrl') or ''
-    # file_url je oblika '/uploads/<uuid>.pdf' — preuzmi fajl iz odgovarajućeg foldera
+    if not file_url:
+        return jsonify({"error": "DOCUMENT_NOT_FOUND"}), 404
     filename = os.path.basename(file_url)
     safe_name = secure_filename(filename)
     if not safe_name:
         return jsonify({"error": "INVALID_FILE"}), 400
-
-    # Odaberi folder na osnovu prefiksa; podržava i /portal_uploads/ i /uploads/
     if file_url.startswith('/portal_uploads/'):
         folder = current_app.config['PORTAL_UPLOAD_FOLDER']
     else:
         folder = current_app.config['UPLOAD_FOLDER']
 
-    company = partner.get('companyName', 'Unknown')
-    log_audit(
-        'DOWNLOAD', 'portal',
-        f"Client '{company}' downloaded document '{doc.get('fileName', safe_name)}' (type: {doc.get('docType', 'Document')}) via portal",
-        is_suspicious=False
-    )
-    return send_from_directory(folder, safe_name, as_attachment=True, download_name=doc.get('fileName') or safe_name)
+    log_audit('DOWNLOAD', 'portal',
+              f"Client '{company}' {action_kind.lower()}ed document '{file_name}' (type: {doc.get('docType', 'Document')}) via portal",
+              is_suspicious=False)
+    return send_from_directory(folder, safe_name, as_attachment=(not inline), download_name=file_name)
 
 
 # ==========================================================
