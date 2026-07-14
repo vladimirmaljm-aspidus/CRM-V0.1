@@ -58,6 +58,8 @@
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .label.required::after { content: ' *'; color: #ef4444; font-weight: 700; }
+        .field-help { font-size: 0.68rem; color: #94a3b8; margin-top: 2px; line-height: 1.3; }
         .stat-card { padding: 20px; border-radius: 14px; background: var(--p-panel); border: 1px solid var(--p-border); box-shadow: 0 1px 2px rgba(16,24,40,0.04); transition: box-shadow 0.15s ease; }
         .stat-card:hover { box-shadow: 0 4px 12px rgba(16,24,40,0.06); }
         .stat-label { font-size: 0.72rem; font-weight: 600; color: var(--p-muted); text-transform: uppercase; letter-spacing: 0.05em; }
@@ -370,15 +372,60 @@
                     <div class="space-y-4 pb-6 border-b border-slate-100">
                         <h3 class="text-xs font-semibold text-blue-700 uppercase tracking-widest" id="lbl-kyc-sec1">1. Company Details</h3>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                            <div><label class="label" id="lbl-reg-name">Registered Company Name</label><input type="text" id="kyc-comp-name" class="input" required></div>
-                            <div><label class="label" id="lbl-reg-no">Registration No.</label><input type="text" id="kyc-reg-no" class="input" required></div>
-                            <div><label class="label" id="lbl-tax-id">Tax ID / VAT</label><input type="text" id="kyc-tax-id" class="input" required></div>
-                            <div><label class="label" id="lbl-website">Website</label><input type="text" id="kyc-website" class="input"></div>
-                            <div><label class="label" id="lbl-industry">Industry / Activity</label><input type="text" id="kyc-industry" class="input" required></div>
+                            <div>
+                                <label class="label required" id="lbl-reg-name">Registered Company Name</label>
+                                <input type="text" id="kyc-comp-name" class="input" required>
+                                <p class="field-help">Full legal name as registered with government authorities</p>
+                            </div>
+                            <div>
+                                <label class="label required" id="lbl-reg-no">Registration No.</label>
+                                <input type="text" id="kyc-reg-no" class="input" required>
+                                <p class="field-help">Company registration or incorporation number</p>
+                            </div>
+                            <div>
+                                <label class="label required" id="lbl-tax-id">Tax ID / VAT</label>
+                                <input type="text" id="kyc-tax-id" class="input" required>
+                                <p class="field-help">Tax identification or VAT registration number</p>
+                            </div>
+                            <div>
+                                <label class="label" id="lbl-website">Website</label>
+                                <input type="text" id="kyc-website" class="input" placeholder="https://...">
+                                <p class="field-help">Company website URL (optional)</p>
+                            </div>
+                            <div>
+                                <label class="label required" id="lbl-industry">Industry / Activity</label>
+                                <input type="text" id="kyc-industry" class="input" required>
+                                <p class="field-help">Primary business sector or NACE/SIC activity code</p>
+                            </div>
+                            <div>
+                                <label class="label required" id="lbl-kyc-phone">Contact Phone</label>
+                                <input type="text" id="kyc-contact-phone" class="input" required placeholder="+xxx...">
+                                <p class="field-help">Main business phone number with country code</p>
+                            </div>
                         </div>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                            <div><label class="label" id="lbl-reg-addr">Registered Address</label><input type="text" id="kyc-reg-addr" class="input" required></div>
-                            <div><label class="label" id="lbl-op-addr">Operational Address</label><input type="text" id="kyc-op-addr" class="input"></div>
+                            <div class="md:col-span-2">
+                                <label class="label required" id="lbl-reg-addr">Registered Address</label>
+                                <input type="text" id="kyc-reg-addr" class="input" required>
+                                <p class="field-help">Full street address as per company registration</p>
+                            </div>
+                            <div>
+                                <label class="label required" id="lbl-kyc-city">City</label>
+                                <input type="text" id="kyc-city" class="input" required>
+                            </div>
+                            <div>
+                                <label class="label required" id="lbl-kyc-country">Country</label>
+                                <input type="text" id="kyc-country" class="input" required>
+                            </div>
+                            <div>
+                                <label class="label" id="lbl-kyc-zip">ZIP / Postal Code</label>
+                                <input type="text" id="kyc-zip" class="input">
+                            </div>
+                            <div>
+                                <label class="label" id="lbl-op-addr">Operational Address</label>
+                                <input type="text" id="kyc-op-addr" class="input">
+                                <p class="field-help">If different from registered address (optional)</p>
+                            </div>
                         </div>
                     </div>
 
@@ -386,15 +433,43 @@
                     <div class="space-y-4 pb-6 border-b border-slate-100">
                         <h3 class="text-xs font-semibold text-blue-700 uppercase tracking-widest" id="lbl-kyc-sec2">2. Banking &amp; Financial Profile</h3>
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div><label class="label" id="lbl-bank-name">Bank Name</label><input type="text" id="kyc-bank-name" class="input" required></div>
-                            <div><label class="label" id="lbl-bank-iban">IBAN / Account No.</label><input type="text" id="kyc-bank-iban" class="input font-mono" required></div>
-                            <div><label class="label" id="lbl-bank-swift">SWIFT / BIC</label><input type="text" id="kyc-bank-swift" class="input font-mono" required></div>
-                            <div class="md:col-span-2"><label class="label" id="lbl-bank-addr">Bank Branch Address</label><input type="text" id="kyc-bank-addr" class="input" required></div>
-                            <div><label class="label" id="lbl-corr-bank">Correspondent Bank</label><input type="text" id="kyc-corr-bank" class="input"></div>
+                            <div>
+                                <label class="label required" id="lbl-bank-name">Bank Name</label>
+                                <input type="text" id="kyc-bank-name" class="input" required>
+                                <p class="field-help">Full name of your primary business bank</p>
+                            </div>
+                            <div>
+                                <label class="label required" id="lbl-bank-iban">IBAN / Account No.</label>
+                                <input type="text" id="kyc-bank-iban" class="input font-mono" required>
+                                <p class="field-help">International Bank Account Number or local account number</p>
+                            </div>
+                            <div>
+                                <label class="label required" id="lbl-bank-swift">SWIFT / BIC</label>
+                                <input type="text" id="kyc-bank-swift" class="input font-mono" required>
+                                <p class="field-help">Bank identification code for international wire transfers</p>
+                            </div>
+                            <div class="md:col-span-2">
+                                <label class="label required" id="lbl-bank-addr">Bank Branch Address</label>
+                                <input type="text" id="kyc-bank-addr" class="input" required>
+                                <p class="field-help">Full address of the bank branch where the account is held</p>
+                            </div>
+                            <div>
+                                <label class="label" id="lbl-corr-bank">Correspondent Bank</label>
+                                <input type="text" id="kyc-corr-bank" class="input">
+                                <p class="field-help">Intermediary bank for international transfers, if applicable</p>
+                            </div>
                         </div>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
-                            <div><label class="label" id="lbl-turnover">Expected Annual Volume (USD)</label><input type="text" id="kyc-turnover" class="input font-mono" required></div>
-                            <div><label class="label" id="lbl-sof">Source of Funds / Wealth</label><input type="text" id="kyc-sof" class="input" required></div>
+                            <div>
+                                <label class="label required" id="lbl-turnover">Expected Annual Volume (USD)</label>
+                                <input type="text" id="kyc-turnover" class="input font-mono" required>
+                                <p class="field-help">Estimated yearly trade volume in US dollars</p>
+                            </div>
+                            <div>
+                                <label class="label required" id="lbl-sof">Source of Funds / Wealth</label>
+                                <input type="text" id="kyc-sof" class="input" required>
+                                <p class="field-help">Origin of business capital (e.g. trade revenue, investment, loans)</p>
+                            </div>
                         </div>
                     </div>
 
@@ -402,17 +477,19 @@
                     <div class="space-y-4 pb-6 border-b border-slate-100">
                         <h3 class="text-xs font-semibold text-blue-700 uppercase tracking-widest" id="lbl-kyc-sec3">3. Directors &amp; UBOs</h3>
                         <div class="card p-4">
-                            <div class="flex justify-between items-center mb-3">
+                            <div class="flex justify-between items-center mb-2">
                                 <h4 class="text-sm font-semibold text-slate-800" id="lbl-dir-title">Directors / Managers</h4>
                                 <button type="button" class="btn btn-ghost small text-xs" onclick="addDirector()" id="btn-add-dir">+ Add Director</button>
                             </div>
+                            <p class="field-help mb-3">List all directors, managers, and authorized signatories. Full name, passport number, and nationality are required for each person.</p>
                             <div id="directors-container" class="space-y-3"></div>
                         </div>
                         <div class="card p-4">
-                            <div class="flex justify-between items-center mb-3">
+                            <div class="flex justify-between items-center mb-2">
                                 <h4 class="text-sm font-semibold text-slate-800" id="lbl-ubo-title">Ultimate Beneficial Owners (&gt;25%)</h4>
                                 <button type="button" class="btn btn-ghost small text-xs" onclick="addUBO()" id="btn-add-ubo">+ Add UBO</button>
                             </div>
+                            <p class="field-help mb-3">List all individuals who directly or indirectly own more than 25% of the company. This is a regulatory requirement.</p>
                             <div id="ubos-container" class="space-y-3"></div>
                         </div>
                     </div>
@@ -420,6 +497,7 @@
                     <!-- 4. AML -->
                     <div class="space-y-4 pb-6 border-b border-slate-100">
                         <h3 class="text-xs font-semibold text-blue-700 uppercase tracking-widest" id="lbl-kyc-sec4">4. AML / CFT Compliance</h3>
+                        <p class="field-help mb-3">Answer each question truthfully. Checking a box does not disqualify your application — it triggers additional due diligence as required by international regulations.</p>
                         <div class="card p-4 space-y-3">
                             <label class="flex items-start gap-3 text-sm text-slate-800 cursor-pointer"><input type="checkbox" id="kyc-pep" class="mt-0.5 w-4 h-4"><span id="lbl-pep">Any owner/director is a Politically Exposed Person (PEP)?</span></label>
                             <label class="flex items-start gap-3 text-sm text-slate-800 cursor-pointer"><input type="checkbox" id="kyc-sanctions" class="mt-0.5 w-4 h-4"><span id="lbl-sanctions">Subject to any UN/OFAC international sanctions?</span></label>
@@ -436,15 +514,18 @@
                         </div>
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div class="card p-5 text-center">
-                                <p class="text-sm font-semibold text-slate-800 mb-2" id="lbl-up-license">Trade License(s)</p>
+                                <p class="text-sm font-semibold text-slate-800 mb-1" id="lbl-up-license">Trade License(s)</p>
+                                <p class="field-help mb-2">Current trade or business license issued by authorities</p>
                                 <input type="file" id="file-license" class="text-xs w-full" accept=".pdf,.jpg,.png" multiple>
                             </div>
                             <div class="card p-5 text-center">
-                                <p class="text-sm font-semibold text-slate-800 mb-2" id="lbl-up-pass">Passports (Directors &amp; UBOs)</p>
+                                <p class="text-sm font-semibold text-slate-800 mb-1" id="lbl-up-pass">Passports (Directors &amp; UBOs)</p>
+                                <p class="field-help mb-2">Clear scans of passports for all listed directors and UBOs</p>
                                 <input type="file" id="file-passport" class="text-xs w-full" accept=".pdf,.jpg,.png" multiple>
                             </div>
                             <div class="card p-5 text-center">
-                                <p class="text-sm font-semibold text-slate-800 mb-2" id="lbl-up-inc">Cert. of Incorporation / MoA</p>
+                                <p class="text-sm font-semibold text-slate-800 mb-1" id="lbl-up-inc">Cert. of Incorporation / MoA</p>
+                                <p class="field-help mb-2">Certificate of incorporation, memorandum of association, or equivalent</p>
                                 <input type="file" id="file-inc" class="text-xs w-full" accept=".pdf,.jpg,.png" multiple>
                             </div>
                         </div>
