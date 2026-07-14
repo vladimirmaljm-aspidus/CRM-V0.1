@@ -437,6 +437,46 @@ async function loadPortalData() {
     }
 }
 
+// ==========================================================
+//  SESSION INACTIVITY TIMER (15 min)
+// ==========================================================
+const SESSION_TIMEOUT_MS = 15 * 60 * 1000;
+const SESSION_WARNING_MS = 13 * 60 * 1000;
+let _inactivityTimer = null;
+let _warningTimer = null;
+
+function resetInactivityTimer() {
+    if (_warningTimer) clearTimeout(_warningTimer);
+    if (_inactivityTimer) clearTimeout(_inactivityTimer);
+    const warningEl = document.getElementById('session-warning');
+    if (warningEl) warningEl.classList.add('hidden');
+
+    _warningTimer = setTimeout(() => {
+        const w = document.getElementById('session-warning');
+        if (w) { w.classList.remove('hidden'); }
+    }, SESSION_WARNING_MS);
+
+    _inactivityTimer = setTimeout(() => {
+        authKey = null;
+        sessionStorage.removeItem('portal_auth_' + TOKEN);
+        window.location.href = '/portal/login';
+    }, SESSION_TIMEOUT_MS);
+}
+
+if (typeof TOKEN !== 'undefined') {
+    ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click'].forEach(evt =>
+        document.addEventListener(evt, resetInactivityTimer, { passive: true })
+    );
+    resetInactivityTimer();
+}
+
+// Logout button
+window.portalLogout = function() {
+    authKey = null;
+    sessionStorage.removeItem('portal_auth_' + TOKEN);
+    window.location.href = '/portal/login';
+};
+
 // Boot
 updateStaticText();
 loadPortalData();

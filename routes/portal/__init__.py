@@ -12,12 +12,14 @@ portal_bp = Blueprint('portal', __name__)
 #  MEMORIJSKO STANJE PORTAL AUTENTIFIKACIJE
 # ==========================================================
 # portal_otps:          token -> {'otp', 'expires', 'attempts'}
-# portal_auth_sessions: token -> {'key', 'expires'}
+# portal_auth_sessions: token -> {'key', 'expires', 'last_active', 'partner_id'}
+# pending_email_sessions: session_id -> {'token', 'partner_id', 'email', 'expires'}
 portal_otps = {}
 portal_auth_sessions = {}
+pending_email_sessions = {}
 
-# Sesija portala važi 1h; OTP 5 min; posle 5 pogrešnih OTP unosa kod se poništava.
 PORTAL_SESSION_TTL = 3600
+PORTAL_INACTIVITY_TTL = 900
 PORTAL_OTP_TTL = 300
 PORTAL_OTP_MAX_ATTEMPTS = 5
 
@@ -32,6 +34,9 @@ def init_portal_db():
                      (id TEXT PRIMARY KEY, partner_id TEXT, token TEXT, data JSON, submitted_at TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS portal_products
                      (id TEXT PRIMARY KEY, partner_id TEXT, data JSON, status TEXT, created_at TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS portal_activity_log
+                     (id TEXT PRIMARY KEY, partner_id TEXT, action TEXT, details TEXT,
+                      ip_address TEXT, user_agent TEXT, location TEXT, timestamp TEXT)''')
         conn.commit()
     finally:
         if conn: conn.close()
@@ -64,8 +69,10 @@ def _cleanup_expired():
     now = time.time()
     for tok in [t for t, v in portal_otps.items() if v.get('expires', 0) < now]:
         portal_otps.pop(tok, None)
-    for tok in [t for t, v in portal_auth_sessions.items() if v.get('expires', 0) < now]:
+    for tok in [t for t, v in portal_auth_sessions.items() if v.get('expires', 0) < now or now - v.get('last_active', 0) > PORTAL_INACTIVITY_TTL]:
         portal_auth_sessions.pop(tok, None)
+    for sid in [s for s, v in pending_email_sessions.items() if v.get('expires', 0) < now]:
+        pending_email_sessions.pop(sid, None)
 
 
 def create_portal_otp(token):
@@ -97,23 +104,34 @@ def verify_portal_otp(token, user_otp):
     return None
 
 
-def create_portal_session(token):
+def create_portal_session(token, partner_id=None):
     key = secrets.token_hex(32)
-    portal_auth_sessions[token] = {'key': key, 'expires': time.time() + PORTAL_SESSION_TTL}
+    now = time.time()
+    portal_auth_sessions[token] = {
+        'key': key, 'expires': now + PORTAL_SESSION_TTL,
+        'last_active': now, 'partner_id': partner_id
+    }
     return key
 
 
 def verify_portal_session(token, auth_header):
-    """Constant-time provera portal sesije sa isticanjem (TTL)."""
+    """Constant-time provera portal sesije sa isticanjem (TTL + inactivity)."""
     if not token or not auth_header:
         return False
     sess = portal_auth_sessions.get(token)
     if not sess:
         return False
-    if sess['expires'] < time.time():
+    now = time.time()
+    if sess['expires'] < now:
         portal_auth_sessions.pop(token, None)
         return False
-    return secrets.compare_digest(sess['key'], auth_header)
+    if now - sess.get('last_active', 0) > PORTAL_INACTIVITY_TTL:
+        portal_auth_sessions.pop(token, None)
+        return False
+    if not secrets.compare_digest(sess['key'], auth_header):
+        return False
+    sess['last_active'] = now
+    return True
 
 
 def find_partner_by_token(cursor, token, enforce_active=True):
@@ -129,6 +147,45 @@ def find_partner_by_token(cursor, token, enforce_active=True):
             if enforce_active and p_data.get('isPortalActive', True) is False:
                 return None, None
             return r[0], p_data
+    return None, None
+
+
+def log_portal_activity(partner_id, action, details, ip=None, user_agent=None):
+    from flask import request as _req
+    if ip is None:
+        ip = _req.headers.get('X-Forwarded-For', _req.remote_addr)
+        if ip and ',' in ip: ip = ip.split(',')[0].strip()
+    if user_agent is None:
+        user_agent = _req.user_agent.string if _req.user_agent else 'Unknown'
+    entry_id = secrets.token_hex(12)
+    timestamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    try:
+        conn = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+        conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute(
+            "INSERT INTO portal_activity_log (id, partner_id, action, details, ip_address, user_agent, location, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (entry_id, partner_id, action, details, ip, user_agent, 'N/A', timestamp)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def find_partner_by_email(email):
+    if not email:
+        return None, None
+    email_lower = email.strip().lower()
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    c = conn.cursor()
+    c.execute('SELECT id, data FROM partners')
+    for row in c.fetchall():
+        p = safe_parse(row[1])
+        p_email = (p.get('contact', {}).get('email') or p.get('email', '')).strip().lower()
+        if p_email == email_lower:
+            conn.close()
+            return row[0], p
+    conn.close()
     return None, None
 
 

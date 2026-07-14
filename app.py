@@ -68,6 +68,23 @@ app.register_blueprint(portal_bp)
 app.register_blueprint(firewall_bp)
 app.register_blueprint(vault_bp)
 
+CRM_INACTIVITY_TTL = 1200
+
+@app.before_request
+def check_crm_session_timeout():
+    from flask import session as flask_session
+    if 'user_id' in flask_session and not request.path.startswith('/portal') and not request.path.startswith('/static'):
+        now = time.time()
+        last = flask_session.get('last_active', flask_session.get('login_time', 0))
+        if now - last > CRM_INACTIVITY_TTL:
+            username = flask_session.get('username', 'unknown')
+            log_audit('SECURITY', 'system', f'Session expired due to inactivity for user: {username}', is_suspicious=False)
+            flask_session.clear()
+            if request.path.startswith('/api/'):
+                return jsonify({"error": "SESSION_EXPIRED"}), 401
+            return
+        flask_session['last_active'] = now
+
 @app.before_request
 def limit_login_attempts():
     """
