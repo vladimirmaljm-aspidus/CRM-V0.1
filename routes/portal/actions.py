@@ -957,6 +957,137 @@ def portal_accept_offer(token, offer_id):
 #  CRM DASHBOARD: brojači pending stavki iz portala (za notifikacije)
 # ==========================================================
 
+@portal_bp.route('/api/portal/admin/activity', methods=['GET'])
+@login_required
+def admin_portal_activity():
+    """Vraća listu događaja iz portala (client login-i, KYC, upload-i, prihvatanja
+    ponuda, preuzimanje dokumenata, izmene profila) — RAZDVOJENO od CRM audit-a.
+    Filteri: partner_id, action, start/end (ISO), limit (default 200, max 1000)."""
+    denied = require_portal_admin()
+    if denied: return denied
+
+    partner_filter = request.args.get('partner_id') or None
+    action_filter = request.args.get('action') or None
+    start = request.args.get('start') or None
+    end = request.args.get('end') or None
+    try:
+        limit = max(1, min(int(request.args.get('limit', 200)), 1000))
+    except (TypeError, ValueError):
+        limit = 200
+
+    where = []
+    args = []
+    if partner_filter:
+        where.append("partner_id = ?"); args.append(partner_filter)
+    if action_filter:
+        where.append("action = ?"); args.append(action_filter)
+    if start:
+        where.append("timestamp >= ?"); args.append(start)
+    if end:
+        where.append("timestamp <= ?"); args.append(end)
+    where_sql = ('WHERE ' + ' AND '.join(where)) if where else ''
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    try:
+        cp = conn_p.cursor()
+        cp.execute(
+            f"SELECT id, partner_id, action, details, ip_address, user_agent, location, timestamp "
+            f"FROM portal_activity_log {where_sql} ORDER BY timestamp DESC LIMIT ?",
+            (*args, limit)
+        )
+        rows = cp.fetchall()
+    finally:
+        conn_p.close()
+
+    # Mapiraj partner_id -> naziv firme / kontakt email za čitljiv prikaz
+    conn_m = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        cm = conn_m.cursor()
+        cm.execute("SELECT id, data FROM partners")
+        partners_map = {}
+        for pr in cm.fetchall():
+            pd = safe_parse(pr[1])
+            partners_map[pr[0]] = {
+                'name': pd.get('companyName', 'Unknown'),
+                'email': (pd.get('contact', {}).get('email') or pd.get('email', '')),
+                'country': pd.get('address', {}).get('country', '')
+            }
+    finally:
+        conn_m.close()
+
+    # Distinct akcije/partneri za frontend filter dropdown-e (na osnovu skupa)
+    distinct_actions = sorted({r[2] for r in rows if r[2]})
+    result_rows = []
+    for r in rows:
+        pinfo = partners_map.get(r[1] or '', {})
+        result_rows.append({
+            "id": r[0],
+            "partner_id": r[1],
+            "partner_name": pinfo.get('name', 'Unknown'),
+            "partner_email": pinfo.get('email', ''),
+            "partner_country": pinfo.get('country', ''),
+            "action": r[2],
+            "details": r[3],
+            "ip_address": r[4],
+            "user_agent": r[5],
+            "location": r[6] or 'N/A',
+            "timestamp": r[7]
+        })
+
+    return jsonify({
+        "rows": result_rows,
+        "meta": {
+            "total_returned": len(result_rows),
+            "limit": limit,
+            "distinct_actions": distinct_actions
+        }
+    })
+
+
+@portal_bp.route('/api/portal/admin/activity/stats', methods=['GET'])
+@login_required
+def admin_portal_activity_stats():
+    """Agregat: broj login-a, KYC, upload-a, preuzetih dokumenata, RFQ-a
+    po partneru u zadnjih 30 dana. Za dashboard tab."""
+    denied = require_portal_admin()
+    if denied: return denied
+
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    cutoff = (_dt.now(_tz.utc) - _td(days=30)).isoformat().replace('+00:00', 'Z')
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    try:
+        cp = conn_p.cursor()
+        cp.execute("SELECT partner_id, action FROM portal_activity_log WHERE timestamp >= ?", (cutoff,))
+        agg = {}
+        for pid, action in cp.fetchall():
+            key = pid or 'UNKNOWN'
+            agg.setdefault(key, {'logins': 0, 'kyc': 0, 'uploads': 0, 'downloads': 0, 'rfq': 0, 'offers_accepted': 0, 'total': 0})
+            agg[key]['total'] += 1
+            if action == 'LOGIN_SUCCESS': agg[key]['logins'] += 1
+            elif action == 'KYC_SUBMIT': agg[key]['kyc'] += 1
+            elif action == 'RFQ_SUBMIT': agg[key]['rfq'] += 1
+            elif action in ('DOCUMENT_DOWNLOAD', 'DOCUMENT_PREVIEW'): agg[key]['downloads'] += 1
+            elif action == 'PRODUCT_SUBMIT': agg[key]['uploads'] += 1
+            elif action == 'OFFER_ACCEPT': agg[key]['offers_accepted'] += 1
+    finally:
+        conn_p.close()
+
+    # partner names
+    conn_m = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        cm = conn_m.cursor()
+        cm.execute("SELECT id, data FROM partners")
+        names = {pr[0]: safe_parse(pr[1]).get('companyName', 'Unknown') for pr in cm.fetchall()}
+    finally:
+        conn_m.close()
+
+    return jsonify([
+        {'partner_id': pid, 'partner_name': names.get(pid, 'Unknown'), **v}
+        for pid, v in sorted(agg.items(), key=lambda x: -x[1]['total'])
+    ])
+
+
 @portal_bp.route('/api/portal/admin/pending_counts', methods=['GET'])
 @login_required
 def admin_portal_pending_counts():

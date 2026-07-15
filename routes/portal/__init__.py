@@ -187,12 +187,39 @@ def find_partner_by_token(cursor, token, enforce_active=True):
 
 
 def log_portal_activity(partner_id, action, details, ip=None, user_agent=None):
+    """Beleži jedno dešavanje iz PORTALA (klijentski nalozi) u posebnu tabelu
+    razdvojenu od CRM audit-a. Automatski obogaćuje unos IP geolokacijom
+    (get_ip_info je kesiran, ne usporava) da admin može da vidi zemlju/grad
+    i klikne na Google Maps za koordinate."""
     from flask import request as _req
+    from utils import get_ip_info
     if ip is None:
-        ip = _req.headers.get('X-Forwarded-For', _req.remote_addr)
-        if ip and ',' in ip: ip = ip.split(',')[0].strip()
+        try:
+            ip = _req.headers.get('X-Forwarded-For', _req.remote_addr)
+            if ip and ',' in ip: ip = ip.split(',')[0].strip()
+        except Exception:
+            ip = None
     if user_agent is None:
-        user_agent = _req.user_agent.string if _req.user_agent else 'Unknown'
+        try:
+            user_agent = _req.user_agent.string if _req.user_agent else 'Unknown'
+        except Exception:
+            user_agent = 'Unknown'
+
+    # Geo lookup (kesiran)
+    location_str = 'N/A'
+    try:
+        network_info, ip_location, _tz = get_ip_info(ip) if ip else ('N/A', 'N/A', 'N/A')
+        # Sastavimo "grad, zemlja | lat,lng" format da UI može da parsira mapu.
+        parts = []
+        if network_info and network_info not in ('N/A', 'UNKNOWN_IP_LOCATION', 'LOCAL_NETWORK'):
+            parts.append(network_info)
+        if ip_location and ip_location != 'N/A':
+            parts.append(ip_location)
+        if parts:
+            location_str = ' | '.join(parts)
+    except Exception:
+        pass
+
     entry_id = secrets.token_hex(12)
     timestamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     try:
@@ -200,7 +227,7 @@ def log_portal_activity(partner_id, action, details, ip=None, user_agent=None):
         conn.execute('PRAGMA journal_mode=WAL;')
         conn.execute(
             "INSERT INTO portal_activity_log (id, partner_id, action, details, ip_address, user_agent, location, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (entry_id, partner_id, action, details, ip, user_agent, 'N/A', timestamp)
+            (entry_id, partner_id, action, details, ip, user_agent, location_str, timestamp)
         )
         conn.commit()
         conn.close()
