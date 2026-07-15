@@ -274,8 +274,12 @@ function showUserForm(user = null) {
                         ${tLang('Pregled Audit Logova', 'View Audit Logs')}
                     </label>
                     <label class="inline-flex items-center cursor-pointer text-[11px] font-black text-orange-700 dark:text-orange-400 hover:text-orange-900 uppercase">
-                        <input type="checkbox" name="perm_firewall_manage" ${perms['firewall_manage'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-orange-600 border-slate-400"> 
+                        <input type="checkbox" name="perm_firewall_manage" ${perms['firewall_manage'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-orange-600 border-slate-400">
                         ${tLang('IP Blokade & Firewall', 'Manage Firewall & Bans')}
+                    </label>
+                    <label class="inline-flex items-center cursor-pointer text-[11px] font-black text-sky-700 dark:text-sky-400 hover:text-sky-900 uppercase">
+                        <input type="checkbox" name="perm_portal_activity_view" ${perms['portal_activity_view'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-sky-600 border-slate-400">
+                        ${tLang('Pregled Portal Aktivnosti', 'View Portal Activity Log')}
                     </label>
                 </div>
             `;
@@ -404,6 +408,8 @@ function showUserForm(user = null) {
         if (fd.get('perm_system_import')) payload.permissions['system_import'] = true;
         if (fd.get('perm_settings_manage')) payload.permissions['settings_manage'] = true;
         if (fd.get('perm_audit_view')) payload.permissions['audit_view'] = true;
+        if (fd.get('perm_portal_activity_view')) payload.permissions['portal_activity_view'] = true;
+        if (fd.get('perm_firewall_manage')) payload.permissions['firewall_manage'] = true;
         if (fd.get('perm_firewall_manage')) payload.permissions['firewall_manage'] = true;
   
         try {

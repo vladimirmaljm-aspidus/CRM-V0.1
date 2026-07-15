@@ -12,7 +12,8 @@ const NAV_ICONS = {
   partners: '<circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0M16 6a3 3 0 0 1 0 6m5 8a5 5 0 0 0-4-4.9"/>',
   network: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M6.7 7.5l4 8.5m6.6-8.5l-4 8.5M7 6h10"/>',
   users: '<circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/>',
-  audit: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9.5 12l1.8 1.8 3.2-3.6"/>'
+  audit: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9.5 12l1.8 1.8 3.2-3.6"/>',
+  portal_activity: '<path d="M3 3v18h18"/><path d="M7 15l4-4 4 3 5-6"/>'
 };
 
 let fullNavigationItems = [
@@ -28,7 +29,8 @@ let fullNavigationItems = [
   { view:'network', icon:'network', labelPath:'nav.network', group: 'network' },
 
   { view:'users', icon:'users', labelPath:'users.manage', adminOnly: true, group: 'admin' },
-  { view:'audit', icon:'audit', labelPath:'audit.title', adminOnly: true, permKey: 'audit_view', group: 'admin' }
+  { view:'audit', icon:'audit', labelPath:'audit.title', adminOnly: true, permKey: 'audit_view', group: 'admin' },
+  { view:'portal_activity', icon:'portal_activity', labelPath:'portalActivity.navLabel', adminOnly: true, permKey: 'portal_activity_view', group: 'admin' }
 ];
 
 function navIconSvg(key) {
@@ -73,7 +75,7 @@ function buildNavigation() {
       nav.appendChild(grpHeader);
 
       grp.items.forEach(item => {
-          const labelText = item.labelPath.startsWith('nav.') || item.labelPath.startsWith('users.') || item.labelPath.startsWith('audit.') ? t(item.labelPath) : item.labelPath;
+          const labelText = item.labelPath.startsWith('nav.') || item.labelPath.startsWith('users.') || item.labelPath.startsWith('audit.') || item.labelPath.startsWith('portalActivity.') ? t(item.labelPath) : item.labelPath;
           const isActive = state.currentView === item.view;
 
           const activeClasses = isActive
@@ -120,6 +122,7 @@ function render() {
       else if(state.currentView === 'offers' && hasPerm('offers', 'view')) { if(typeof renderOffersView==='function') renderOffersView(); }
       else if(state.currentView === 'users' && state.user.role === 'admin') { if(typeof renderUsersView==='function') renderUsersView(); } 
       else if(state.currentView === 'audit' && (state.user.role === 'admin' || (state.user.permissions && state.user.permissions.audit_view))) { if(typeof renderAuditLogView==='function') renderAuditLogView(); }
+      else if(state.currentView === 'portal_activity' && (state.user.role === 'admin' || (state.user.permissions && state.user.permissions.portal_activity_view))) { if(typeof renderPortalActivityView==='function') renderPortalActivityView(); }
       else {
           main.innerHTML = `<div class="p-10 text-center"><h2 class="text-3xl text-red-500 font-bold mb-4">${t('users.accessDenied')}</h2><p class="text-gray-400">${t('users.accessDeniedMsg')}</p></div>`;
       }
