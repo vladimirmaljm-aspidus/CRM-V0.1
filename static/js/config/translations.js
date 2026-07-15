@@ -18,6 +18,18 @@ const translations = {
     },
     log_actions: { LOGIN: 'Prijava', LOGOUT: 'Odjava', CREATE: 'Kreiranje', EDIT: 'Izmena', DELETE: 'Brisanje', DOWNLOAD: 'Preuzimanje', SCREENSHOT: 'Snimak Ekrana', SECURITY: 'Bezbednost' },
     modules: { system: 'Sistem', audit: 'Dnevnik', users: 'Zaposleni', files: 'Fajlovi', database: 'Baza Podataka', partners: 'Partneri', products: 'Proizvodi', deals: 'Poslovi', demands: 'Potražnja', accounts: 'Računi', transactions: 'Transakcije', recurringExpenses: 'Ponavljajući Troškovi', connections: 'Povezanosti', offers: 'Ponude' },
+    portalActivity: {
+        navLabel: 'Portal Aktivnost', title: 'Aktivnost Klijenata Portala',
+        desc: 'Prati prijave, KYC podneske, upload-e i preuzimanja klijenata sa lokacijama.',
+        client: 'Klijent', location: 'Lokacija',
+        allClients: 'Svi klijenti', allActions: 'Sve akcije',
+        last7: 'Poslednjih 7 dana', last30: 'Poslednjih 30 dana', last90: 'Poslednjih 90 dana', last365: 'Poslednjih 12 meseci', allTime: 'Sve vreme',
+        searchPh: 'Pretraži firmu, IP, detalj...',
+        loading: 'Učitavanje portal aktivnosti…', empty: 'Nema podataka za date filtere.',
+        loadError: 'Greška pri učitavanju portal aktivnosti.',
+        stats30d: 'Analitika Klijenata (30 dana)', noStats: 'Nema portal aktivnosti u poslednjih 30 dana.',
+        kpiLogins: 'Prijave klijenata', kpiKyc: 'KYC podnesci', kpiDocs: 'Pregleda/preuzimanja dokumenata', kpiOffers: 'Odgovori na ponude'
+    },
     finances: {
         title: 'Finansijski Pregled', totalRevenue: 'Ukupni Primici', totalExpenses: 'Ukupni Troškovi', netProfit: 'Neto Profit', commission: 'Očekivana Provizija',
         receivables: 'Potraživanja (Nije naplaćeno)', payables: 'Obaveze (Nije plaćeno)', buyer: 'Kupac', supplier: 'Dobavljač', amount: 'Iznos', dueDate: 'Rok', deal: 'Posao',
@@ -105,6 +117,18 @@ const translations = {
     },
     log_actions: { LOGIN: 'Login', LOGOUT: 'Logout', CREATE: 'Create', EDIT: 'Modify', DELETE: 'Delete', DOWNLOAD: 'Download', SCREENSHOT: 'Screenshot', SECURITY: 'Security' },
     modules: { system: 'System', audit: 'Audit', users: 'Employees', files: 'Files', database: 'Database', partners: 'Partners', products: 'Products', deals: 'Deals', demands: 'Demands', accounts: 'Accounts', transactions: 'Transactions', recurringExpenses: 'Recurring Expenses', connections: 'Connections', offers: 'Offers' },
+    portalActivity: {
+        navLabel: 'Portal Activity', title: 'Portal Client Activity',
+        desc: 'Track client logins, KYC submissions, uploads, and downloads with locations.',
+        client: 'Client', location: 'Location',
+        allClients: 'All clients', allActions: 'All actions',
+        last7: 'Last 7 days', last30: 'Last 30 days', last90: 'Last 90 days', last365: 'Last 12 months', allTime: 'All time',
+        searchPh: 'Search company, IP, detail...',
+        loading: 'Loading portal activity…', empty: 'No matching portal events.',
+        loadError: 'Failed to load portal activity.',
+        stats30d: 'Client Analytics (30 days)', noStats: 'No portal activity in the last 30 days.',
+        kpiLogins: 'Client logins', kpiKyc: 'KYC submissions', kpiDocs: 'Doc views/downloads', kpiOffers: 'Offer responses'
+    },
     finances: {
         title: 'Financial Overview', totalRevenue: 'Total Revenue', totalExpenses: 'Total Expenses', netProfit: 'Net Profit', commission: 'Expected Commission',
         receivables: 'Receivables (Unpaid)', payables: 'Payables (Unpaid)', buyer: 'Buyer', supplier: 'Supplier', amount: 'Amount', dueDate: 'Due Date', deal: 'Deal',
