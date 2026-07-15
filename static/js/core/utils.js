@@ -1,6 +1,55 @@
 // Osnovne globalne funkcije
 function generateId() { return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
 
+// ==========================================================
+//  TOAST NOTIFIKACIJE — profesionalna zamena za native alert()
+// ==========================================================
+// Poziv: showToast('poruka', 'success' | 'error' | 'info' | 'warn', trajanje_ms)
+// Kada je pozvano bez tipa, tretira se kao 'info'. Toast se sam uklanja nakon
+// zadatog vremena (default 4.5s), sa slide-in/out animacijom. Pristupačan je
+// (role="status", aria-live="polite") pa screen readeri čitaju.
+function showToast(message, type = 'info', duration = 4500) {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        container.className = 'fixed top-4 right-4 z-[300] flex flex-col gap-2 max-w-sm w-[calc(100%-2rem)] sm:w-96 pointer-events-none';
+        document.body.appendChild(container);
+    }
+    const palette = {
+        success: { bg: 'bg-emerald-600', icon: '✅' },
+        error:   { bg: 'bg-red-600',     icon: '⛔' },
+        warn:    { bg: 'bg-amber-500',   icon: '⚠️' },
+        info:    { bg: 'bg-slate-800',   icon: 'ℹ️' }
+    };
+    const cfg = palette[type] || palette.info;
+    const el = document.createElement('div');
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    el.className = `pointer-events-auto ${cfg.bg} text-white px-4 py-3 rounded-xl shadow-2xl flex items-start gap-3 text-sm font-medium transition-all duration-300 translate-x-full opacity-0`;
+    el.innerHTML = `
+      <span class="text-lg leading-none">${cfg.icon}</span>
+      <div class="flex-1 leading-snug">${String(message).replace(/</g,'&lt;')}</div>
+      <button class="ml-2 opacity-70 hover:opacity-100 text-lg leading-none" aria-label="Close">×</button>`;
+    container.appendChild(el);
+    // slide in
+    requestAnimationFrame(() => { el.classList.remove('translate-x-full', 'opacity-0'); });
+    const remove = () => {
+        el.classList.add('translate-x-full', 'opacity-0');
+        setTimeout(() => el.remove(), 300);
+    };
+    el.querySelector('button').addEventListener('click', remove);
+    setTimeout(remove, duration);
+    return remove;
+}
+window.showToast = showToast;
+// Kratki aliasi radi zamene alert() jednim potezom (ne diramo istorijski alert
+// pozive automatski, ali novi kod treba da koristi ovo)
+window.toastSuccess = (m,d) => showToast(m, 'success', d);
+window.toastError   = (m,d) => showToast(m, 'error', d);
+window.toastInfo    = (m,d) => showToast(m, 'info', d);
+window.toastWarn    = (m,d) => showToast(m, 'warn', d);
+
 function applyTheme() {
   const body = document.body; const toggle = document.getElementById('theme-toggle');
   if (state.theme === 'light') { body.classList.add('light-theme'); body.classList.remove('dark-theme'); if(toggle) toggle.checked = false; }

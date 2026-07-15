@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from werkzeug.utils import secure_filename
 from flask import request, jsonify, abort, send_from_directory, current_app, session
 from config import DB_FILE, PORTAL_DB_FILE, PORTAL_UPLOAD_FOLDER, ALLOWED_EXTENSIONS
-from utils import log_audit, login_required, encrypt_data, decrypt_data, is_safe_file_content
+from utils import log_audit, login_required, encrypt_data, decrypt_data, is_safe_file_content, rate_limit
 from . import (portal_bp, safe_parse, verify_portal_session, find_partner_by_token, log_portal_activity)
 
 
@@ -66,6 +66,7 @@ def require_partner_view():
     return jsonify({"error": "Unauthorized"}), 403
 
 @portal_bp.route('/api/portal/products/submit/<token>', methods=['POST'])
+@rate_limit(max_per_minute=20, key='portal_product_submit')
 def submit_portal_product(token):
     auth_header = request.headers.get('X-Portal-Auth')
     if not verify_portal_auth(token, auth_header): 
@@ -107,6 +108,7 @@ def submit_portal_product(token):
     return jsonify({"status": "success", "message": "Product securely staging for verification"})
 
 @portal_bp.route('/api/portal/rfq/submit/<token>', methods=['POST'])
+@rate_limit(max_per_minute=10, key='portal_rfq_submit')
 def submit_rfq(token):
     auth_header = request.headers.get('X-Portal-Auth')
     if not verify_portal_auth(token, auth_header): 
@@ -227,6 +229,7 @@ PORTAL_MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB po fajlu (KYC pasoš, izvod iz 
 PORTAL_MAX_FILES_PER_REQUEST = 10
 
 @portal_bp.route('/api/portal/upload/<token>', methods=['POST'])
+@rate_limit(max_per_minute=20, key='portal_upload')
 def portal_upload(token):
     auth_header = request.headers.get('X-Portal-Auth')
     if not verify_portal_auth(token, auth_header):
@@ -273,6 +276,7 @@ def portal_upload(token):
     return jsonify({"status": "success", "urls": urls})
 
 @portal_bp.route('/api/portal/kyc/submit/<token>', methods=['POST'])
+@rate_limit(max_per_minute=5, key='portal_kyc_submit')
 def submit_kyc(token):
     auth_header = request.headers.get('X-Portal-Auth')
     if not verify_portal_auth(token, auth_header): 
