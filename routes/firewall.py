@@ -1,7 +1,8 @@
 from flask import Blueprint, jsonify, request, session
 import sqlite3
 import ipaddress
-from utils import login_required, log_audit, FirewallCache, decrypt_data
+from utils import (login_required, log_audit, FirewallCache, decrypt_data, encrypt_data,
+                   load_firewall_settings, DEFAULT_FIREWALL_SETTINGS)
 from config import AUDIT_DB_FILE, DB_FILE
 
 firewall_bp = Blueprint('firewall', __name__, url_prefix='/api/firewall')
@@ -152,5 +153,84 @@ def remove_from_whitelist():
         FirewallCache.whitelist.remove(ip)
         log_audit('FIREWALL_MANAGE', 'firewall', f"Admin manually removed IP address from whitelist: {ip}")
         return jsonify({"message": "IP_UNWHITELISTED_SUCCESSFULLY", "ip": ip}), 200
-    
+
     return jsonify({"error": "IP_NOT_FOUND"}), 404
+
+
+# ==========================================================
+#  ADMIN-KONFIGURABILNE POSTAVKE (rate limit, TTL, retention)
+# ==========================================================
+
+@firewall_bp.route('/settings', methods=['GET'])
+@login_required
+def get_firewall_settings():
+    """Vraća trenutne (aktivne) firewall postavke + spisak default-a i opisa.
+    Admin ih menja preko POST /api/firewall/settings."""
+    if not is_admin():
+        return jsonify({"error": "ACCESS_DENIED"}), 403
+
+    stored = {}
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            c = conn.cursor()
+            c.execute("SELECT value FROM settings WHERE key='firewall'")
+            row = c.fetchone()
+        if row and row[0]:
+            stored = decrypt_data(row[0]) or {}
+    except Exception:
+        stored = {}
+
+    active = dict(DEFAULT_FIREWALL_SETTINGS)
+    if isinstance(stored, dict):
+        for k in DEFAULT_FIREWALL_SETTINGS:
+            if k in stored:
+                try:
+                    v = int(stored[k])
+                    if v > 0: active[k] = v
+                except (TypeError, ValueError):
+                    pass
+
+    return jsonify({
+        "active": active,
+        "defaults": DEFAULT_FIREWALL_SETTINGS,
+        "descriptions": {
+            "max_login_attempts": "Failed logins allowed per IP in 5 minutes before auto-blacklist.",
+            "max_portal_requests_per_min": "Requests-per-minute cap for anonymous portal endpoints.",
+            "crm_inactivity_seconds": "CRM auto-logout after N seconds without activity.",
+            "portal_session_seconds": "Maximum lifetime of a portal login session.",
+            "portal_inactivity_seconds": "Portal auto-logout after N seconds of inactivity.",
+            "portal_otp_seconds": "Portal OTP validity window in seconds.",
+            "audit_retention_days": "Days to retain non-suspicious audit rows before automatic purge.",
+        }
+    })
+
+
+@firewall_bp.route('/settings', methods=['POST'])
+@login_required
+def save_firewall_settings():
+    """Snima nove vrednosti (samo poznati int ključevi) i odmah ih primenjuje."""
+    if not is_admin():
+        return jsonify({"error": "ACCESS_DENIED"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    clean = {}
+    for k in DEFAULT_FIREWALL_SETTINGS:
+        if k in payload:
+            try:
+                v = int(payload[k])
+                if 1 <= v <= 10_000_000:
+                    clean[k] = v
+            except (TypeError, ValueError):
+                pass
+
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('firewall', ?)",
+                         (encrypt_data(clean),))
+            conn.commit()
+    except Exception:
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
+
+    applied = load_firewall_settings()
+    log_audit('EDIT', 'firewall', f"Admin updated firewall settings: {clean}")
+    return jsonify({"status": "success", "applied": applied})

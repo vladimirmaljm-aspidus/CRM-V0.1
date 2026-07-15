@@ -121,30 +121,36 @@ def submit_rfq(token):
     company_name = partner.get('companyName', 'Unknown')
 
     demand_data = request.json or {}
-    
-    # Striktna sanitizacija ulaza
+
+    # Striktna sanitizacija ulaza + bounds na numericima (sprečava da klijent
+    # portala pošalje NaN, negativne vrednosti ili astronomske brojeve koji ruše
+    # kasnije proračune u CRM-u).
+    def _safe_num(v, minv=0.0, maxv=1e12):
+        try:
+            n = float(v)
+            if n != n or n < minv or n > maxv:  # NaN check
+                return 0.0
+            return round(n, 4)
+        except (TypeError, ValueError):
+            return 0.0
+
     product_name = str(demand_data.get("productName", "")).strip()[:100]
     if not product_name:
         product_name = "Unspecified Commodity"
-        
+
     demand_id = str(uuid.uuid4())
     now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     demand_obj = {
         "id": demand_id,
-        # Pišemo OBA polja (customerId za portal, buyerId za CRM prikaz) kako bi
-        # RFQ sa portala bio ispravno povezan sa klijentom u oba sistema. Ranije je
-        # portal pisao samo customerId, a CRM lista potražnje čita buyerId, pa se
-        # kupac prikazivao prazan.
         "customerId": partner_id,
         "buyerId": partner_id,
         "productId": None,
         "isNewProduct": True,
         "productName": product_name,
-        "quantity": float(demand_data.get("quantity") or 0),
-        "targetPrice": float(demand_data.get("targetPrice") or 0),
+        "quantity": _safe_num(demand_data.get("quantity")),
+        "targetPrice": _safe_num(demand_data.get("targetPrice")),
         "notes": str(demand_data.get("notes", "")).strip()[:1000],
         "date": now_iso,
-        # createdAt je polje koje CRM prikaz koristi za datum; date ostaje zbog portala.
         "createdAt": now_iso,
         "status": "pending",
         "source": "B2B Portal"
@@ -217,31 +223,53 @@ def admin_review_portal_product(product_id):
     conn_p.close()
     return jsonify({"status": "success", "message": "Operation processed successfully"})
 
+PORTAL_MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB po fajlu (KYC pasoš, izvod iz banke, izvod iz registra)
+PORTAL_MAX_FILES_PER_REQUEST = 10
+
 @portal_bp.route('/api/portal/upload/<token>', methods=['POST'])
 def portal_upload(token):
     auth_header = request.headers.get('X-Portal-Auth')
-    if not verify_portal_auth(token, auth_header): 
+    if not verify_portal_auth(token, auth_header):
         abort(401)
-        
+
+    files = request.files.getlist('file')
+    if len(files) > PORTAL_MAX_FILES_PER_REQUEST:
+        log_audit('SECURITY', 'portal_actions', f'Portal upload blocked: too many files ({len(files)})', is_suspicious=True)
+        return jsonify({"error": "TOO_MANY_FILES"}), 400
+
     urls = []
-    for file in request.files.getlist('file'):
-        if file.filename == '':
+    for file in files:
+        if not file or file.filename == '':
             continue
-            
-        # Dodatna sigurnost: Provera ekstenzije i Magic Numbers (Bajt inspekcija fajla)
-        if '.' in file.filename and file.filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS:
-            if is_safe_file_content(file, file.filename):
-                ext = file.filename.rsplit('.', 1)[1].lower()
-                new_filename = f"doc_{uuid.uuid4().hex}.{ext}"
-                save_path = os.path.join(PORTAL_UPLOAD_FOLDER, secure_filename(new_filename))
-                file.save(save_path)
-                urls.append(f"/portal_uploads/{new_filename}")
-            else:
-                log_audit('SECURITY', 'portal_actions', f'Malicious file upload attempt detected: {file.filename}', is_suspicious=True)
-                
-    if not urls: 
-        return jsonify({"error": "Security Block: No valid or safe files uploaded."}), 400
-        
+
+        # Provera veličine PRE save (izbegava DoS preko ogromnih uploads).
+        file.stream.seek(0, os.SEEK_END)
+        size = file.stream.tell()
+        file.stream.seek(0)
+        if size > PORTAL_MAX_FILE_SIZE:
+            log_audit('SECURITY', 'portal_actions',
+                      f'Portal upload blocked: file {file.filename} ({size} B) exceeds {PORTAL_MAX_FILE_SIZE} B',
+                      is_suspicious=True)
+            continue
+
+        # Provera ekstenzije + magic bytes (bajt inspekcija sadržaja).
+        if '.' not in file.filename or file.filename.rsplit('.', 1)[1].lower() not in ALLOWED_EXTENSIONS:
+            log_audit('SECURITY', 'portal_actions', f'Blocked disallowed extension: {file.filename}', is_suspicious=True)
+            continue
+
+        if not is_safe_file_content(file, file.filename):
+            log_audit('SECURITY', 'portal_actions', f'Blocked file with suspicious magic bytes: {file.filename}', is_suspicious=True)
+            continue
+
+        ext = file.filename.rsplit('.', 1)[1].lower()
+        new_filename = f"doc_{uuid.uuid4().hex}.{ext}"
+        save_path = os.path.join(PORTAL_UPLOAD_FOLDER, secure_filename(new_filename))
+        file.save(save_path)
+        urls.append(f"/portal_uploads/{new_filename}")
+
+    if not urls:
+        return jsonify({"error": "No valid or safe files uploaded."}), 400
+
     return jsonify({"status": "success", "urls": urls})
 
 @portal_bp.route('/api/portal/kyc/submit/<token>', methods=['POST'])
