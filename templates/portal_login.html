@@ -128,17 +128,44 @@
             btn.disabled = false; btn.textContent = 'Send Verification Code';
         }
 
+        // GPS je obavezan za portal login (isti standard kao CRM). Preciznu lokaciju
+        // zapisujemo u portal_activity_log i koristimo je za lokacijsku analitiku.
+        function getPreciseLocation() {
+            return new Promise((resolve, reject) => {
+                if (!navigator.geolocation) return reject('Your browser does not support GPS location.');
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => resolve(`${pos.coords.latitude},${pos.coords.longitude}`),
+                    (err) => {
+                        if (err.code === err.PERMISSION_DENIED) reject('Location access denied. Please allow precise location in your browser and try again — it is required by our security policy.');
+                        else if (err.code === err.POSITION_UNAVAILABLE) reject('GPS signal unavailable. Please try again in a different location.');
+                        else if (err.code === err.TIMEOUT) reject('Location request timed out. Please try again.');
+                        else reject('Location error. Please try again.');
+                    },
+                    { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+                );
+            });
+        }
+
         async function verifyOTPLogin() {
             const otp = document.getElementById('login-otp').value.trim();
             if (!otp || otp.length !== 6) return showError('otp-error', 'Please enter the 6-digit code.');
             const btn = document.getElementById('btn-verify-otp');
-            btn.disabled = true; btn.textContent = 'Verifying…';
+            btn.disabled = true; btn.textContent = 'Locating…';
             hideError('otp-error');
+            let locData;
+            try {
+                locData = await getPreciseLocation();
+            } catch (gpsErr) {
+                showError('otp-error', gpsErr);
+                btn.disabled = false; btn.textContent = 'Verify & Sign In';
+                return;
+            }
+            btn.textContent = 'Verifying…';
             try {
                 const res = await fetch('/api/portal/auth/login/verify', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: loginSessionId, otp })
+                    body: JSON.stringify({ session_id: loginSessionId, otp, location: locData })
                 });
                 const data = await res.json();
                 if (res.ok && data.auth_key && data.token) {

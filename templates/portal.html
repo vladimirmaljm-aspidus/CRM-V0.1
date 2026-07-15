@@ -198,6 +198,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-7-7z"/><path stroke-linecap="round" stroke-linejoin="round" d="M13 2v7h7"/></svg>
                 <span id="lbl-tab-docs">Documents</span> <span class="count hidden" id="count-docs">0</span>
             </button>
+            <button class="tab-btn" onclick="switchTab('catalog')" id="tab-btn-catalog">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h7"/></svg>
+                <span id="lbl-tab-catalog">Catalog</span>
+            </button>
             <button class="tab-btn" onclick="switchTab('goods')" id="tab-btn-goods">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10M4 7v10l8 4"/></svg>
                 <span id="lbl-tab-goods">My Products</span>
@@ -551,6 +555,23 @@
             </div>
         </div>
 
+        <!-- CATALOG (roba koju je admin obeležio kao vidljivu klijentu, bez cena) -->
+        <div id="tab-catalog" class="tab-content hidden">
+            <div class="panel p-6">
+                <div class="flex justify-between items-center pb-4 mb-5 border-b border-slate-100">
+                    <div>
+                        <h2 class="text-lg font-semibold text-slate-900" id="lbl-catalog-title">Product Catalog</h2>
+                        <p class="text-sm text-slate-500 mt-0.5" id="lbl-catalog-desc">Browse products available to you. Request a quote for anything of interest.</p>
+                    </div>
+                    <input id="catalog-search" placeholder="Search catalog…" class="border border-slate-300 rounded-lg px-3 py-2 text-sm w-64 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"/>
+                </div>
+                <div id="catalog-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+                <div id="catalog-empty" class="hidden text-center text-slate-500 py-16 border-2 border-dashed border-slate-200 rounded-xl">
+                    No products are currently available in your catalog. Please contact your account manager.
+                </div>
+            </div>
+        </div>
+
         <!-- GOODS / MY PRODUCTS -->
         <div id="tab-goods" class="tab-content hidden">
             <div class="panel p-6">
@@ -647,6 +668,58 @@
                     <input type="hidden" id="form-product-id">
 
                     <div id="ptab-general" class="ptab-pane block space-y-4">
+                        <!-- OWNERSHIP: da li je ovo klijentova roba ili robe partnera/preprodavca.
+                             Ako izabere "third_party", ispod se prikazuju polja o firmi ciju robu unosi. -->
+                        <div class="card p-5">
+                            <label class="label">Ownership of this product *</label>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+                                <label class="flex items-start gap-3 border border-slate-200 rounded-lg p-3 cursor-pointer hover:bg-slate-50">
+                                    <input type="radio" name="form-product-ownership" value="own" checked class="mt-1"/>
+                                    <span>
+                                        <span class="block font-semibold text-slate-900 text-sm">This is my company's product</span>
+                                        <span class="block text-xs text-slate-500 mt-0.5">I own or manufacture this product directly.</span>
+                                    </span>
+                                </label>
+                                <label class="flex items-start gap-3 border border-slate-200 rounded-lg p-3 cursor-pointer hover:bg-slate-50">
+                                    <input type="radio" name="form-product-ownership" value="third_party" class="mt-1"/>
+                                    <span>
+                                        <span class="block font-semibold text-slate-900 text-sm">Product from another supplier</span>
+                                        <span class="block text-xs text-slate-500 mt-0.5">I represent this product for another company (supplier / friend / reseller).</span>
+                                    </span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Third-party source company panel — prikazuje se samo kad je 'third_party' odabrano. -->
+                        <div class="card p-5 hidden" id="third-party-panel">
+                            <div class="flex items-center gap-2 pb-3 border-b border-slate-100 mb-4">
+                                <svg class="w-4 h-4 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 0 0 1.73-3l-7.07-12.24a2 2 0 0 0-3.46 0L3.2 16a2 2 0 0 0 1.73 3z"/></svg>
+                                <h4 class="text-sm font-semibold text-slate-900">Source company details</h4>
+                                <span class="text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">Required</span>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div class="md:col-span-2"><label class="label">Company / Manufacturer name *</label><input type="text" id="src-company-name" class="input"></div>
+                                <div><label class="label">Tax ID / VAT *</label><input type="text" id="src-company-taxid" class="input font-mono"></div>
+                                <div><label class="label">Relationship</label>
+                                    <select id="src-company-relationship" class="input">
+                                        <option value="supplier">Supplier</option>
+                                        <option value="reseller">Reseller</option>
+                                        <option value="friend">Friend / Business partner</option>
+                                        <option value="manufacturer">Manufacturer</option>
+                                        <option value="other">Other</option>
+                                    </select>
+                                </div>
+                                <div><label class="label">Country</label><input type="text" id="src-company-country" class="input"></div>
+                                <div><label class="label">City</label><input type="text" id="src-company-city" class="input"></div>
+                                <div class="md:col-span-2"><label class="label">Address</label><input type="text" id="src-company-address" class="input"></div>
+                                <div><label class="label">Website</label><input type="text" id="src-company-website" class="input" placeholder="https://…"></div>
+                                <div><label class="label">Contact email</label><input type="email" id="src-company-email" class="input"></div>
+                                <div><label class="label">Contact phone</label><input type="text" id="src-company-phone" class="input"></div>
+                                <div class="md:col-span-2"><label class="label">Notes about this company</label><textarea id="src-company-notes" class="input" rows="2"></textarea></div>
+                            </div>
+                            <p class="text-[11px] text-slate-500 mt-3 leading-relaxed">The administrator will review this source company and, if approved, register it as a partner in the system linked back to you as the introducer.</p>
+                        </div>
+
                         <div class="card p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div class="md:col-span-2"><label class="label">Product Name *</label><input type="text" id="form-product-name" class="input" required></div>
                             <div><label class="label">Category</label><input type="text" id="form-product-category" class="input"></div>

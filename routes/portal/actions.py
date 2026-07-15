@@ -81,13 +81,41 @@ def submit_portal_product(token):
 
     prod_data = request.json or {}
 
+    # OWNERSHIP: 'own' — klijentova roba (standardna polja); 'third_party' — roba
+    # dobavljača/preprodavca (obavezno sourceCompany.name + taxId; admin ovo
+    # koristi da po odobrenju kreira novog partnera vezanog za klijenta koji ga
+    # je uveo → introducedByPartnerId).
+    ownership = str(prod_data.get('ownership', 'own')).strip().lower()
+    if ownership not in ('own', 'third_party'):
+        ownership = 'own'
+    prod_data['ownership'] = ownership
+    if ownership == 'third_party':
+        src = prod_data.get('sourceCompany') or {}
+        if not isinstance(src, dict): src = {}
+        name = str(src.get('name', '')).strip()[:200]
+        tax_id = str(src.get('taxId', '')).strip()[:80]
+        if not name or not tax_id:
+            return jsonify({"error": "SOURCE_COMPANY_REQUIRED",
+                            "message": "Third-party goods require source company name and tax ID."}), 400
+        prod_data['sourceCompany'] = {
+            'name': name, 'taxId': tax_id,
+            'country': str(src.get('country', '')).strip()[:100],
+            'city': str(src.get('city', '')).strip()[:100],
+            'address': str(src.get('address', '')).strip()[:250],
+            'website': str(src.get('website', '')).strip()[:200],
+            'email': str(src.get('email', '')).strip()[:200],
+            'phone': str(src.get('phone', '')).strip()[:80],
+            'relationship': str(src.get('relationship', '')).strip()[:100],
+            'notes': str(src.get('notes', '')).strip()[:600],
+        }
+    else:
+        prod_data['sourceCompany'] = None
+    prod_data['submittedByPartnerId'] = partner_id
+    prod_data['submittedByPartnerName'] = company_name
+
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     cp = conn_p.cursor()
 
-    # BEZBEDNOST: partner sme da izmeni SAMO sopstveni pending proizvod.
-    # Ako je prosleđen id, mora pripadati ovom partneru; u suprotnom se
-    # generiše nov server-side id. Ovo sprečava da partner (preko client-side id-a)
-    # prepiše tuđi portal-proizvod ili, nakon odobrenja, postojeći proizvod u glavnoj bazi.
     client_id = prod_data.get('id')
     product_id = None
     if client_id:
@@ -100,12 +128,141 @@ def submit_portal_product(token):
     prod_data['id'] = product_id
 
     created_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-    cp.execute("INSERT OR REPLACE INTO portal_products (id, partner_id, data, status, created_at) VALUES (?, ?, ?, ?, ?)", (product_id, partner_id, json.dumps(prod_data), 'pending', created_at))
+    cp.execute("INSERT OR REPLACE INTO portal_products (id, partner_id, data, status, created_at) VALUES (?, ?, ?, ?, ?)",
+               (product_id, partner_id, json.dumps(prod_data), 'pending', created_at))
     conn_p.commit()
     conn_p.close()
-    log_audit('EDIT', 'portal', f"Partner '{company_name}' submitted product: {prod_data.get('name')}", is_suspicious=False)
-    log_portal_activity(partner_id, 'PRODUCT_SUBMIT', f"Submitted product: {prod_data.get('name')}")
-    return jsonify({"status": "success", "message": "Product securely staging for verification"})
+    log_audit('EDIT', 'portal', f"Partner '{company_name}' submitted product: {prod_data.get('name')} (ownership={ownership})", is_suspicious=False)
+    log_portal_activity(partner_id, 'PRODUCT_SUBMIT', f"Submitted product: {prod_data.get('name')} (ownership={ownership})")
+    return jsonify({"status": "success", "message": "Product securely staged for review", "id": product_id})
+
+@portal_bp.route('/api/portal/catalog/<token>', methods=['GET'])
+@rate_limit(max_per_minute=60, key='portal_catalog')
+def portal_catalog(token):
+    """Vraća listu proizvoda vidljivih ovom klijentu — BEZ CENA, bez dobavljača.
+    Vidljivost se kontroliše preko partner.portalVisibleProducts (lista productId).
+    Ako partner nema listu (ili je prazna), i partner ima 'catalog' u
+    portalPermissions vraćamo katalog, ali samo naziv/kategorija/HS/spec. Klijent
+    može da klikne 'Request Quote' i dobija RFQ formu preselektovanu za dati proizvod."""
+    auth_header = request.headers.get('X-Portal-Auth')
+    if not verify_portal_auth(token, auth_header):
+        abort(401)
+
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        partner_id, partner = find_partner_by_token(c, token, enforce_active=True)
+        if not partner_id: abort(403)
+
+        visible_ids = partner.get('portalVisibleProducts')
+        # None ili prazna lista → NEMA katalog pristup (admin mora eksplicitno da doda proizvode).
+        # Prazna lista je jasna namera: klijent ne vidi ništa. Ovo je bezbedniji default nego
+        # "svima sve" — sprečava slučajno curenje kataloga.
+        if not isinstance(visible_ids, list):
+            visible_ids = []
+
+        c.execute("SELECT id, data FROM products")
+        rows = c.fetchall()
+    finally:
+        conn.close()
+
+    catalog = []
+    for row in rows:
+        pd = safe_parse(row[1]) if not isinstance(row[1], dict) else row[1]
+        if not isinstance(pd, dict): continue
+        pid = pd.get('id') or row[0]
+        if pid not in visible_ids:
+            continue
+        # Sanitizuj: NIŠTA što otkriva cenu, dobavljača, marže, interne beleške.
+        supply = pd.get('supplyOffers') or []
+        origins = sorted({str(so.get('country', '')).strip() for so in supply if so.get('country')})
+        certificates = sorted({c.strip() for so in supply for c in str(so.get('certificates', '')).split(',') if c.strip()})
+        catalog.append({
+            'id': pid,
+            'name': pd.get('name', ''),
+            'category': pd.get('category', ''),
+            'hsCode': pd.get('hsCode', ''),
+            'brand': pd.get('brand', ''),
+            'shortDescription': pd.get('shortDescription') or pd.get('detailedSpec', '')[:400],
+            'origins': origins,
+            'certificates': certificates,
+            'packaging': pd.get('packaging', ''),
+            'unit': pd.get('unit') or (supply[0].get('unit') if supply else ''),
+            'imageUrl': pd.get('imageUrl', ''),
+        })
+    catalog.sort(key=lambda x: x['name'].lower())
+    return jsonify({"products": catalog, "count": len(catalog)})
+
+
+@portal_bp.route('/api/portal/quote_request/<token>', methods=['POST'])
+@rate_limit(max_per_minute=10, key='portal_quote_request')
+def portal_quote_request(token):
+    """Klijent klikne 'Request Quote' za specifičan proizvod iz kataloga.
+    Kreira demand (RFQ) sa productId popunjenim iz kataloga (nije novi proizvod
+    kao standardni RFQ)."""
+    auth_header = request.headers.get('X-Portal-Auth')
+    if not verify_portal_auth(token, auth_header): abort(401)
+
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        partner_id, partner = find_partner_by_token(c, token, enforce_active=True)
+        if not partner_id: abort(403)
+    finally:
+        conn.close()
+
+    data = request.json or {}
+    product_id = str(data.get('productId') or '').strip()
+    if not product_id:
+        return jsonify({"error": "PRODUCT_REQUIRED"}), 400
+
+    # Provera da klijent može da vidi taj proizvod (sprečava enumeraciju)
+    visible = partner.get('portalVisibleProducts') or []
+    if product_id not in visible:
+        log_audit('SECURITY', 'portal', f'Blocked quote request for hidden product {product_id} by partner {partner_id}', is_suspicious=True)
+        return jsonify({"error": "PRODUCT_NOT_VISIBLE"}), 403
+
+    def _safe_num(v, minv=0.0, maxv=1e12):
+        try:
+            n = float(v)
+            if n != n or n < minv or n > maxv: return 0.0
+            return round(n, 4)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Nadji ime proizvoda za CRM prikaz
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT data FROM products WHERE id=?", (product_id,))
+        prow = c.fetchone()
+        prod_name = 'Unknown Product'
+        if prow:
+            pd = safe_parse(prow[0])
+            if isinstance(pd, dict): prod_name = pd.get('name', prod_name)
+
+        demand_id = str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        demand_obj = {
+            "id": demand_id,
+            "customerId": partner_id, "buyerId": partner_id,
+            "productId": product_id, "isNewProduct": False,
+            "productName": prod_name,
+            "quantity": _safe_num(data.get("quantity")),
+            "targetPrice": _safe_num(data.get("targetPrice")),
+            "notes": str(data.get("notes", "")).strip()[:1000],
+            "date": now_iso, "createdAt": now_iso,
+            "status": "pending", "source": "B2B Portal Catalog"
+        }
+        c.execute("INSERT INTO demands (id, data) VALUES (?, ?)", (demand_id, json.dumps(demand_obj)))
+        conn.commit()
+    finally:
+        conn.close()
+
+    log_audit('CREATE', 'demands', f"Portal catalog quote request from partner {partner_id} for product {prod_name}", is_suspicious=False)
+    log_portal_activity(partner_id, 'QUOTE_REQUEST', f"Quote request for {prod_name}, qty {demand_obj.get('quantity')}")
+    return jsonify({"status": "success", "message": "Quote request submitted."})
+
 
 @portal_bp.route('/api/portal/rfq/submit/<token>', methods=['POST'])
 @rate_limit(max_per_minute=10, key='portal_rfq_submit')
@@ -183,6 +340,279 @@ def admin_get_portal_products():
     conn_m.close()
     
     return jsonify([{"id": r[0], "partner_id": r[1], "partner_name": partners_map.get(r[1], 'Unknown Partner'), "data": json.loads(r[2]), "status": r[3], "created_at": r[4]} for r in rows])
+
+@portal_bp.route('/api/portal/admin/products/import/<product_id>', methods=['POST'])
+@login_required
+def admin_import_portal_product(product_id):
+    """Admin uvozi predloženu robu iz portal_products u glavnu products bazu.
+    Snima porijeklo: submittedByPartnerId (klijent koji ju je uneo), ownership
+    ('own'/'third_party'), sourceCompany snapshot (ako je 3rd-party).
+
+    Ako je 3rd-party i sourceCompanyPartnerId je već popunjen (npr. admin je već
+    approve-ovao sourceCompany kao partnera), veže se supplyOffers.supplierId
+    na taj partnerId. Inače, admin dobija u odgovoru {needs_company_approval:
+    true, portal_product_id} kako bi frontend znao da pozove companies/approve."""
+    denied = require_portal_admin()
+    if denied: return denied
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    cp = conn_p.cursor()
+    cp.execute("SELECT partner_id, data, status FROM portal_products WHERE id=?", (product_id,))
+    row = cp.fetchone()
+    if not row:
+        conn_p.close()
+        return jsonify({"error": "Product staging entry not found"}), 404
+
+    submitting_partner_id, raw_data, current_status = row
+    prod_data = json.loads(raw_data) if isinstance(raw_data, str) else (raw_data or {})
+    ownership = prod_data.get('ownership', 'own')
+    source_company_partner_id = prod_data.get('sourceCompanyPartnerId')
+
+    # Ako je 3rd-party i sourceCompany nije još pretvoren u partnera → tražimo taj korak prvo
+    if ownership == 'third_party' and not source_company_partner_id:
+        conn_p.close()
+        return jsonify({
+            "needs_company_approval": True,
+            "portal_product_id": product_id,
+            "source_company": prod_data.get('sourceCompany') or {}
+        }), 200
+
+    # OK — kreiraj / update proizvod u glavnoj bazi
+    new_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    new_product = {
+        'id': new_id,
+        'name': prod_data.get('name', ''),
+        'category': prod_data.get('category', ''),
+        'hsCode': prod_data.get('hsCode', ''),
+        'brand': prod_data.get('brand', ''),
+        'sku': prod_data.get('sku', ''),
+        'detailedSpec': prod_data.get('detailedSpec', '') or prod_data.get('shortDescription', ''),
+        'packaging': prod_data.get('packaging', ''),
+        'imageUrl': prod_data.get('imageUrl', ''),
+        'supplyOffers': prod_data.get('supplyOffers') or [],
+        'coaParams': prod_data.get('coaParams') or [],
+        'logistics': prod_data.get('logistics') or {},
+        # Porijeklo — vidljivo u CRM Products
+        'importedFromPortal': True,
+        'submittedByPartnerId': submitting_partner_id,
+        'submittedByPartnerName': prod_data.get('submittedByPartnerName', ''),
+        'ownership': ownership,
+        'sourcePartnerId': source_company_partner_id,   # ako je 3rd-party — partner iz sourceCompany
+        'createdAt': now_iso,
+        'ownerId': session.get('user_id', 'SYSTEM'),
+        'sharedWith': []
+    }
+    # Ako je 3rd-party i imamo sourceCompanyPartnerId, obeleži supplyOffers-e sa tim ID-em
+    if ownership == 'third_party' and source_company_partner_id:
+        for so in new_product['supplyOffers']:
+            if not so.get('supplierId'):
+                so['supplierId'] = source_company_partner_id
+
+    conn_m = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        cm = conn_m.cursor()
+        cm.execute("INSERT INTO products (id, data) VALUES (?, ?)", (new_id, json.dumps(new_product)))
+        conn_m.commit()
+    finally:
+        conn_m.close()
+
+    cp.execute("UPDATE portal_products SET status='imported' WHERE id=?", (product_id,))
+    conn_p.commit()
+    conn_p.close()
+
+    log_audit('CREATE', 'products',
+              f"Admin imported portal product '{new_product['name']}' (from partner {submitting_partner_id}, ownership={ownership})",
+              is_suspicious=False)
+    return jsonify({"status": "success", "product_id": new_id})
+
+
+@portal_bp.route('/api/portal/admin/companies/approve', methods=['POST'])
+@login_required
+def admin_approve_source_company():
+    """Kreira novog partnera iz sourceCompany objekta i veže ga za klijenta koji
+    ga je uveo (introducedByPartnerId). Payload:
+      { portal_product_id, decision: 'approve'|'reject', notes? }
+    Na approve: kreira Partner (type='supplier'), i update-uje portal_product-a
+    sa sourceCompanyPartnerId; admin zatim može da klikne 'Import' na proizvod.
+    Na reject: samo obeležava portal_product kao 'company_rejected'."""
+    denied = require_portal_admin()
+    if denied: return denied
+
+    payload = request.get_json(silent=True) or {}
+    portal_product_id = payload.get('portal_product_id') or ''
+    decision = str(payload.get('decision', 'approve')).lower()
+    notes = str(payload.get('notes', '')).strip()[:800]
+    if decision not in ('approve', 'reject'):
+        return jsonify({"error": "INVALID_DECISION"}), 400
+
+    conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+    try:
+        cp = conn_p.cursor()
+        cp.execute("SELECT partner_id, data FROM portal_products WHERE id=?", (portal_product_id,))
+        row = cp.fetchone()
+        if not row:
+            return jsonify({"error": "PORTAL_PRODUCT_NOT_FOUND"}), 404
+        introducing_partner_id, raw = row
+        pdata = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        src = pdata.get('sourceCompany') or {}
+        if pdata.get('ownership') != 'third_party' or not src.get('name'):
+            return jsonify({"error": "NOT_A_THIRD_PARTY_PRODUCT"}), 400
+
+        if decision == 'reject':
+            cp.execute("UPDATE portal_products SET status='company_rejected' WHERE id=?", (portal_product_id,))
+            conn_p.commit()
+            log_audit('REJECT', 'portal', f"Admin rejected source company {src.get('name')} (portal_product {portal_product_id})",
+                      is_suspicious=False)
+            return jsonify({"status": "success", "message": "Source company rejected."})
+
+        # APPROVE — kreiraj partnera
+        new_partner_id = str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        partner_obj = {
+            'id': new_partner_id,
+            'companyName': src.get('name', ''),
+            'taxId': src.get('taxId', ''),
+            'types': ['Dobavljač'] if (src.get('relationship') or '').lower() in ('supplier', 'dobavljac', 'dobavljač') else ['Partner'],
+            'address': {
+                'street': src.get('address', ''),
+                'city': src.get('city', ''),
+                'country': src.get('country', ''),
+            },
+            'contact': {
+                'email': src.get('email', ''),
+                'phone': src.get('phone', ''),
+                'website': src.get('website', ''),
+            },
+            'notes': notes or src.get('notes', ''),
+            'introducedByPartnerId': introducing_partner_id,   # ★ ključna veza
+            'introducedAt': now_iso,
+            'createdViaPortal': True,
+            'lastModified': now_iso,
+            'ownerId': session.get('user_id', 'SYSTEM'),
+            'sharedWith': [],
+        }
+        conn_m = sqlite3.connect(DB_FILE, timeout=30.0)
+        try:
+            cm = conn_m.cursor()
+            cm.execute("INSERT INTO partners (id, data) VALUES (?, ?)", (new_partner_id, json.dumps(partner_obj)))
+            conn_m.commit()
+        finally:
+            conn_m.close()
+
+        pdata['sourceCompanyPartnerId'] = new_partner_id
+        cp.execute("UPDATE portal_products SET data=?, status='company_approved' WHERE id=?",
+                   (json.dumps(pdata), portal_product_id))
+        conn_p.commit()
+        log_audit('APPROVE', 'partners',
+                  f"Admin approved source company '{partner_obj['companyName']}' → new partner {new_partner_id} (introduced by {introducing_partner_id})",
+                  is_suspicious=False)
+        return jsonify({"status": "success", "partner_id": new_partner_id,
+                        "message": "Source company approved and created as partner."})
+    finally:
+        conn_p.close()
+
+
+@portal_bp.route('/api/portal/admin/preview/<partner_id>', methods=['GET'])
+@login_required
+def admin_portal_preview(partner_id):
+    """Vraća pun snapshot onoga što klijent VIDI u portalu — služi za admin
+    'Impersonate' pregled bez otvaranja novog browser prozora."""
+    denied = require_portal_admin()
+    if denied: return denied
+
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, data FROM partners WHERE id=?", (partner_id,))
+        row = c.fetchone()
+        if not row: return jsonify({"error": "PARTNER_NOT_FOUND"}), 404
+        partner = safe_parse(row[1])
+    finally:
+        conn.close()
+
+    permissions = partner.get('portalPermissions', ['shipments', 'offers', 'kyc', 'goods', 'profile', 'rfq', 'documents', 'catalog'])
+    visible_products = partner.get('portalVisibleProducts') or []
+
+    # Broj vidljivih proizvoda + broj njihovih pending stavki
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM offers")
+        # samo za sanity check; brojevi vezani za partnera se računaju posebno
+        c.execute("SELECT data FROM offers")
+        my_offers = 0
+        for r in c.fetchall():
+            o = safe_parse(r[0])
+            if isinstance(o, dict) and o.get('customerId') == partner_id: my_offers += 1
+        c.execute("SELECT data FROM deals")
+        my_deals = 0
+        for r in c.fetchall():
+            d = safe_parse(r[0])
+            if isinstance(d, dict) and (d.get('customerId') == partner_id or d.get('buyerId') == partner_id): my_deals += 1
+        c.execute("SELECT data FROM demands")
+        my_demands = 0
+        for r in c.fetchall():
+            dm = safe_parse(r[0])
+            if isinstance(dm, dict) and dm.get('customerId') == partner_id: my_demands += 1
+        c.execute("SELECT data FROM shared_documents")
+        my_docs = 0
+        for r in c.fetchall():
+            dc = safe_parse(r[0])
+            if isinstance(dc, dict) and dc.get('partnerId') == partner_id: my_docs += 1
+    finally:
+        conn.close()
+
+    return jsonify({
+        "partner_id": partner_id,
+        "company_name": partner.get('companyName'),
+        "email": partner.get('contact', {}).get('email') or partner.get('email', ''),
+        "isPortalActive": partner.get('isPortalActive', True),
+        "portalToken": partner.get('portalToken') or '',
+        "permissions": permissions,
+        "visible_products_count": len(visible_products),
+        "visible_products": visible_products,
+        "counts": {
+            "offers": my_offers, "deals": my_deals,
+            "demands": my_demands, "documents": my_docs
+        }
+    })
+
+
+@portal_bp.route('/api/portal/admin/permissions/<partner_id>', methods=['POST'])
+@login_required
+def admin_update_portal_permissions(partner_id):
+    """Admin menja koji su tabovi vidljivi u portalu ovog klijenta, i listu
+    proizvoda koje vidi u katalogu."""
+    denied = require_portal_admin()
+    if denied: return denied
+    data = request.get_json(silent=True) or {}
+    permissions = data.get('permissions')
+    visible_products = data.get('visible_products')
+
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
+        row = c.fetchone()
+        if not row: return jsonify({"error": "PARTNER_NOT_FOUND"}), 404
+        partner = safe_parse(row[0])
+        if isinstance(permissions, list):
+            allowed_tabs = {'shipments', 'offers', 'kyc', 'goods', 'profile', 'rfq', 'documents', 'catalog'}
+            partner['portalPermissions'] = [str(p) for p in permissions if str(p) in allowed_tabs]
+        if isinstance(visible_products, list):
+            partner['portalVisibleProducts'] = [str(x) for x in visible_products if x]
+        c.execute("UPDATE partners SET data=? WHERE id=?", (json.dumps(partner), partner_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    log_audit('EDIT', 'portal', f"Admin updated portal permissions for partner {partner_id} "
+                                f"(tabs: {len(partner.get('portalPermissions', []))}, products: {len(partner.get('portalVisibleProducts', []))})",
+              is_suspicious=False)
+    return jsonify({"status": "success", "permissions": partner.get('portalPermissions'),
+                    "visible_products_count": len(partner.get('portalVisibleProducts', []))})
+
 
 @portal_bp.route('/api/portal/admin/products/review/<product_id>', methods=['POST'])
 @login_required
