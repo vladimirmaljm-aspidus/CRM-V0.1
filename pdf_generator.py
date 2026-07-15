@@ -109,10 +109,17 @@ def _brand_color(company):
         return colors.HexColor('#2563eb')
 
 
-def _para(text, style):
-    """Sigurno vraca Paragraph (escape osnovnih html karaktera)."""
+def _esc(text):
+    """Escape user-supplied text for safe embedding in ReportLab Paragraph HTML."""
     s = "" if text is None else str(text)
-    s = s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('\n', '<br/>')
+    return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def _para(text, style):
+    """Returns a Paragraph. Text may contain ReportLab HTML markup (<b>, <br/>, <font> etc).
+    Use _esc() on user-supplied data before embedding it in the markup string."""
+    s = "" if text is None else str(text)
+    s = s.replace('\n', '<br/>')
     return Paragraph(s, style)
 
 
@@ -166,10 +173,10 @@ def build_offer_pdf(offer, company=None, settings=None):
 
     # HEADER (naziv firme + tip dokumenta)
     header_row = [
-        [_para(f"<b>{company.get('name', 'Aspidus')}</b>", styles['h1']),
+        [_para(f"<b>{_esc(company.get('name', 'Aspidus'))}</b>", styles['h1']),
          _para("FIRM CORPORATE OFFER", styles['right'])],
-        [_para(f"{(company.get('address') or '').replace(chr(10), ', ')}<br/>Tax ID: {company.get('taxId', '')}", styles['small']),
-         _para(f"Offer No.: <b>{offer.get('offerNo', '')}</b><br/>Date: {(offer.get('date') or '')[:10]}<br/>Valid until: <b>{offer.get('validUntil') or 'N/A'}</b>", styles['right'])]
+        [_para(f"{_esc((company.get('address') or '').replace(chr(10), ', '))}<br/>Tax ID: {_esc(company.get('taxId', ''))}", styles['small']),
+         _para(f"Offer No.: <b>{_esc(offer.get('offerNo', ''))}</b><br/>Date: {_esc((offer.get('date') or '')[:10])}<br/>Valid until: <b>{_esc(offer.get('validUntil') or 'N/A')}</b>", styles['right'])]
     ]
     header_tbl = Table(header_row, colWidths=[100*mm, 80*mm])
     header_tbl.setStyle(TableStyle([
@@ -182,16 +189,16 @@ def build_offer_pdf(offer, company=None, settings=None):
 
     # PARTIES: FROM / TO
     to_lines = [
-        f"<b>{buyer.get('companyName', '') or 'Buyer'}</b>",
-        buyer.get('contact', {}).get('person', ''),
-        (buyer.get('address', {}).get('street') or ''),
-        f"{(buyer.get('address', {}).get('city') or '')} {(buyer.get('address', {}).get('country') or '')}".strip(),
-        f"Tax ID: {buyer.get('taxId', '')}" if buyer.get('taxId') else '',
-        f"Email: {buyer.get('contact', {}).get('email') or buyer.get('email', '')}" if (buyer.get('contact', {}).get('email') or buyer.get('email')) else ''
+        f"<b>{_esc(buyer.get('companyName', '') or 'Buyer')}</b>",
+        _esc(buyer.get('contact', {}).get('person', '')),
+        _esc(buyer.get('address', {}).get('street') or ''),
+        _esc(f"{(buyer.get('address', {}).get('city') or '')} {(buyer.get('address', {}).get('country') or '')}".strip()),
+        f"Tax ID: {_esc(buyer.get('taxId', ''))}" if buyer.get('taxId') else '',
+        f"Email: {_esc(buyer.get('contact', {}).get('email') or buyer.get('email', ''))}" if (buyer.get('contact', {}).get('email') or buyer.get('email')) else ''
     ]
     parties = Table([
         [_para("<b>FROM:</b>", styles['label']), _para("<b>TO:</b>", styles['label'])],
-        [_para(f"<b>{company.get('name', '')}</b><br/>{(company.get('address') or '').replace(chr(10), '<br/>')}<br/>Tax ID: {company.get('taxId', '')}", styles['body']),
+        [_para(f"<b>{_esc(company.get('name', ''))}</b><br/>{_esc((company.get('address') or '').replace(chr(10), ', '))}<br/>Tax ID: {_esc(company.get('taxId', ''))}", styles['body']),
          _para("<br/>".join([l for l in to_lines if l]), styles['body'])]
     ], colWidths=[90*mm, 90*mm])
     parties.setStyle(TableStyle([
@@ -226,34 +233,29 @@ def build_offer_pdf(offer, company=None, settings=None):
             supply = supply_offers[0]
 
         spec_rows = [
-            ['Product Name', prod.get('name') or item.get('productName', '')],
-            ['HS Code', prod.get('hsCode', '')],
-            ['SKU / Article', prod.get('sku', '')],
-            ['Brand', prod.get('brand', '')],
-            ['Origin', supply.get('country') or prod.get('origin', '')],
-            ['Category', prod.get('category', '')],
-            # Packaging: varijanta > ponuda > globalno na proizvodu
-            ['Packaging', item.get('packaging') or supply.get('packaging') or offer.get('packaging') or prod.get('packaging', '')],
-            ['Lead Time', offer.get('leadTime') or supply.get('leadTime') or prod.get('leadTime', '')],
-            ['Incoterm', item.get('incoterm') or supply.get('incoterm') or offer.get('incoterm', '')],
+            ['Product Name', _esc(prod.get('name') or item.get('productName', ''))],
+            ['HS Code', _esc(prod.get('hsCode', ''))],
+            ['SKU / Article', _esc(prod.get('sku', ''))],
+            ['Brand', _esc(prod.get('brand', ''))],
+            ['Origin', _esc(supply.get('country') or prod.get('origin', ''))],
+            ['Category', _esc(prod.get('category', ''))],
+            ['Packaging', _esc(item.get('packaging') or supply.get('packaging') or offer.get('packaging') or prod.get('packaging', ''))],
+            ['Lead Time', _esc(offer.get('leadTime') or supply.get('leadTime') or prod.get('leadTime', ''))],
+            ['Incoterm', _esc(item.get('incoterm') or supply.get('incoterm') or offer.get('incoterm', ''))],
         ]
-        # Sertifikati iz varijante
         if supply.get('certificates'):
-            spec_rows.append(['Certificates', supply.get('certificates', '')])
-        # COA
+            spec_rows.append(['Certificates', _esc(supply.get('certificates', ''))])
         coa = prod.get('coaParams') or []
         if coa:
-            coa_str = "; ".join(f"{c.get('name')}: {c.get('value')}" for c in coa if c.get('name'))
+            coa_str = "; ".join(f"{_esc(c.get('name'))}: {_esc(c.get('value'))}" for c in coa if c.get('name'))
             spec_rows.append(['COA Parameters', coa_str])
-        # Container
         logistics = prod.get('logistics') or {}
         if logistics.get('cap20') or logistics.get('cap40'):
             spec_rows.append(['Container Capacity',
-                              f"20'FCL: {logistics.get('cap20') or '-'} MT   |   40'FCL: {logistics.get('cap40') or '-'} MT"])
+                              f"20'FCL: {_esc(logistics.get('cap20') or '-')} MT   |   40'FCL: {_esc(logistics.get('cap40') or '-')} MT"])
 
-        story.append(_para(f"<b>Item {idx+1}: {prod.get('name') or item.get('productName', '')}</b>", styles['h2']))
-        # Spec table
-        spec_data = [[_para(f"<b>{k}</b>", styles['small']), _para(str(v or '-'), styles['body'])] for k, v in spec_rows if v]
+        story.append(_para(f"<b>Item {idx+1}: {_esc(prod.get('name') or item.get('productName', ''))}</b>", styles['h2']))
+        spec_data = [[_para(f"<b>{_esc(k)}</b>", styles['small']), _para(str(v or '-'), styles['body'])] for k, v in spec_rows if v]
         if spec_data:
             spec_tbl = Table(spec_data, colWidths=[45*mm, 135*mm])
             spec_tbl.setStyle(TableStyle([
@@ -276,9 +278,9 @@ def build_offer_pdf(offer, company=None, settings=None):
         if detail_spec:
             label = 'Detailed Specification'
             if variant_spec:
-                label = f"Detailed Specification ({supply.get('country', '')})".strip(' ()')
-            story.append(_para(f"<b>{label}</b>", styles['label']))
-            story.append(_para(detail_spec, styles['body']))
+                label = f"Detailed Specification ({_esc(supply.get('country', ''))})"
+            story.append(_para(f"<b>{_esc(label)}</b>", styles['label']))
+            story.append(_para(_esc(detail_spec), styles['body']))
             story.append(Spacer(1, 4*mm))
 
     # FINANCIJE — tabela stavki
@@ -371,11 +373,11 @@ def build_offer_pdf(offer, company=None, settings=None):
     # WEIGHTS / VOLUME (opciono, ako postoji na ponudi/proizvodu)
     weights = offer.get('weights') or {}
     if weights.get('net') or weights.get('gross') or weights.get('cbm'):
-        unit = weights.get('unit') or 'kg'
+        unit = _esc(weights.get('unit') or 'kg')
         w_row = []
-        if weights.get('net'): w_row.append(f"Net: {weights.get('net')} {unit}")
-        if weights.get('gross'): w_row.append(f"Gross: {weights.get('gross')} {unit}")
-        if weights.get('cbm'): w_row.append(f"Volume: {weights.get('cbm')} CBM")
+        if weights.get('net'): w_row.append(f"Net: {_esc(weights.get('net'))} {unit}")
+        if weights.get('gross'): w_row.append(f"Gross: {_esc(weights.get('gross'))} {unit}")
+        if weights.get('cbm'): w_row.append(f"Volume: {_esc(weights.get('cbm'))} CBM")
         w_tbl = Table([[_para(' · '.join(w_row), styles['center'])]], colWidths=[180*mm])
         w_tbl.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f4f6f9')),
@@ -397,7 +399,7 @@ def build_offer_pdf(offer, company=None, settings=None):
     if offer.get('taxClause'): logi_rows.append(['Tax Clause', offer.get('taxClause')])
     if logi_rows:
         story.append(_para("<b>Logistics &amp; Payment</b>", styles['h2']))
-        li_data = [[_para(f"<b>{k}</b>", styles['small']), _para(str(v), styles['body'])] for k, v in logi_rows]
+        li_data = [[_para(f"<b>{_esc(k)}</b>", styles['small']), _para(_esc(v), styles['body'])] for k, v in logi_rows]
         li_tbl = Table(li_data, colWidths=[45*mm, 135*mm])
         li_tbl.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (0,-1), colors.HexColor('#f4f6f9')),
@@ -417,7 +419,7 @@ def build_offer_pdf(offer, company=None, settings=None):
     bank_details = offer.get('bankDetails') or _bank_details_string(company)
     if bank_details:
         story.append(_para("<b>Bank Instructions</b>", styles['h2']))
-        bank_tbl = Table([[_para(bank_details, styles['body'])]], colWidths=[180*mm])
+        bank_tbl = Table([[_para(_esc(bank_details), styles['body'])]], colWidths=[180*mm])
         bank_tbl.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f4f6f9')),
             ('BOX', (0,0), (-1,-1), 0.4, colors.HexColor('#e7eaef')),
@@ -431,7 +433,7 @@ def build_offer_pdf(offer, company=None, settings=None):
 
     if offer.get('notes'):
         story.append(_para("<b>Notes</b>", styles['h2']))
-        story.append(_para(offer.get('notes', ''), styles['body']))
+        story.append(_para(_esc(offer.get('notes', '')), styles['body']))
         story.append(Spacer(1, 5*mm))
 
     # FOOTER: legalna napomena i confidentiality
@@ -439,7 +441,7 @@ def build_offer_pdf(offer, company=None, settings=None):
     story.append(_para(
         "<font color='#667085'>This offer is confidential and intended solely for the recipient. "
         "Any unauthorized use, disclosure or distribution is prohibited. "
-        f"Document generated by {company.get('name', 'Aspidus')} CRM.</font>",
+        f"Document generated by {_esc(company.get('name', 'Aspidus'))} CRM.</font>",
         styles['small']
     ))
 
