@@ -11,10 +11,10 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
     <style>
-        #app-sidebar { transition: width 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); }
+        #app-sidebar { transition: width 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.35s ease; }
         #main-content { transition: margin-left 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); }
         .nav-text { transition: opacity 0.3s ease, transform 0.3s ease; white-space: nowrap; }
-        
+
         body.sidebar-collapsed #app-sidebar { width: 5.5rem; }
         body.sidebar-collapsed #main-content { margin-left: 5.5rem; }
         body.sidebar-collapsed .nav-text { opacity: 0; transform: translateX(-10px); pointer-events: none; display: none; }
@@ -22,11 +22,37 @@
         body.sidebar-collapsed .nav-group-title { opacity: 0; height: 0; margin: 0; overflow: hidden; }
         body.sidebar-collapsed .btn-content-wrapper { justify-content: center; }
         body.sidebar-collapsed #user-profile-plate { background: transparent; border-color: transparent; box-shadow: none; padding: 0.5rem; justify-content: center;}
-        
+
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.2); border-radius: 10px; }
         .custom-scrollbar:hover::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.5); }
+
+        /* MOBILE (<1024px): sidebar postaje off-canvas overlay, otvara se preko hamburgera.
+           Glavni sadržaj zauzima celu širinu i dobija manji padding. */
+        @media (max-width: 1023px) {
+            #app-sidebar { transform: translateX(-100%); box-shadow: none; }
+            body.mobile-sidebar-open #app-sidebar { transform: translateX(0); box-shadow: 0 10px 40px rgba(0,0,0,0.35); }
+            body.mobile-sidebar-open #mobile-sidebar-backdrop { display: block; }
+            #main-content { margin-left: 0 !important; padding: 1rem !important; }
+            #mobile-topbar { display: flex !important; }
+            body.sidebar-collapsed #app-sidebar { width: 18rem; }  /* na mobilnom, "collapsed" ne skuplja — cela širina overlay-a */
+            body.sidebar-collapsed #main-content { margin-left: 0 !important; }
+            #mobile-sidebar-backdrop { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.55); backdrop-filter: blur(2px); z-index: 35; }
+            /* Osiguraj da tabele u modulima ne prelivaju viewport na telefonu */
+            #main-content table { min-width: 100%; }
+            #main-content .overflow-x-auto { -webkit-overflow-scrolling: touch; }
+        }
+        @media (min-width: 1024px) {
+            #mobile-topbar { display: none !important; }
+            #mobile-sidebar-backdrop { display: none !important; }
+        }
+
+        /* Modal na mobilnom: skoro puna visina, manji padding */
+        @media (max-width: 640px) {
+            #modal-content { max-height: 95vh; border-radius: 1rem 1rem 0 0; margin-top: auto; }
+            #modal-backdrop { align-items: flex-end !important; padding: 0 !important; }
+        }
     </style>
 </head>
 <body class="text-main bg-[var(--bg)] font-sans antialiased selection:bg-accent selection:text-white">
@@ -91,7 +117,23 @@
     </div>
 
     <div id="app-wrapper" class="flex min-h-screen hidden bg-[var(--bg)]">
-        
+
+        <!-- MOBILE TOP BAR: prikazuje se samo na <lg, pruža hamburger otvaranje sidebar-a -->
+        <div id="mobile-topbar" class="hidden fixed top-0 left-0 right-0 z-40 items-center justify-between bg-[var(--panel)] border-b border-[var(--border)] h-14 px-4 shadow-sm">
+            <button id="mobile-menu-btn" aria-label="Open menu" class="p-2 rounded-lg hover:bg-[var(--hover-bg)] text-main">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+            </button>
+            <div class="flex items-center gap-2">
+                <div class="w-8 h-8 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-lg flex items-center justify-center text-white font-black text-sm">A</div>
+                <span class="font-black text-main tracking-tighter text-sm">ASPIDUS <span class="text-blue-600">CRM</span></span>
+            </div>
+            <button id="mobile-notif-btn" aria-label="Notifications" class="p-2 rounded-lg hover:bg-[var(--hover-bg)] text-main relative">
+                <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+                <span id="mobile-notif-count" class="absolute top-1 right-1 bg-red-500 text-white text-[9px] font-bold rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center hidden">0</span>
+            </button>
+        </div>
+        <div id="mobile-sidebar-backdrop"></div>
+
         <aside id="app-sidebar" class="flex flex-col fixed top-0 left-0 h-screen z-40 bg-[var(--panel)] border-r border-[var(--border)] shadow-[4px_0_24px_rgba(0,0,0,0.02)] w-72">
             
             <div class="p-5 flex items-center justify-between border-b border-[var(--border)]">
@@ -153,7 +195,7 @@
             </div>
         </aside>
         
-        <main id="main-content" class="ml-72 p-8 flex-1 bg-[var(--bg)] text-main max-w-full overflow-x-hidden min-h-screen"></main>
+        <main id="main-content" class="lg:ml-72 p-8 flex-1 bg-[var(--bg)] text-main max-w-full overflow-x-hidden min-h-screen pt-16 lg:pt-8"></main>
     </div>
 
     <div id="modal-backdrop" class="fixed inset-0 z-[200] modal-backdrop flex items-center justify-center p-4 sm:p-6 md:p-8 hidden backdrop-blur-sm transition-opacity">
@@ -211,6 +253,7 @@
 
     <script src="/static/js/modules/users/users_list.js"></script>
     <script src="/static/js/modules/users/audit_log.js"></script>
+    <script src="/static/js/modules/users/portal_activity.js"></script>
     <script src="/static/js/modules/settings/settings_manager.js"></script>
     <script src="/static/js/core/ui.js"></script>
     <script src="/static/js/modules/integrations/communications.js"></script>
@@ -269,6 +312,40 @@
                     localStorage.setItem('lang', currentLoginLang);
                     updateLoginTexts();
                 });
+            }
+
+            // ==== MOBILE SIDEBAR OVERLAY ====
+            // Otvara/zatvara sidebar preko hamburgera na <lg ekranima. Zatvara na klik izvan,
+            // ESC ili klik na bilo koju nav stavku (delegirano). Automatski zatvara ako se
+            // ekran proširi na >=lg (npr. rotacija tableta).
+            const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+            const mobileBackdrop = document.getElementById('mobile-sidebar-backdrop');
+            const mobileNotifBtn = document.getElementById('mobile-notif-btn');
+            const openSidebar = () => document.body.classList.add('mobile-sidebar-open');
+            const closeSidebar = () => document.body.classList.remove('mobile-sidebar-open');
+            if (mobileMenuBtn) mobileMenuBtn.addEventListener('click', openSidebar);
+            if (mobileBackdrop) mobileBackdrop.addEventListener('click', closeSidebar);
+            document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSidebar(); });
+            // Zatvori sidebar posle klika na bilo koju nav stavku (mobilno UX)
+            document.addEventListener('click', (e) => {
+                if (window.innerWidth < 1024 && e.target.closest('#navigation .nav-item')) closeSidebar();
+            });
+            window.addEventListener('resize', () => { if (window.innerWidth >= 1024) closeSidebar(); });
+            if (mobileNotifBtn) mobileNotifBtn.addEventListener('click', () => {
+                const desktopBtn = document.getElementById('show-notifications-btn');
+                if (desktopBtn) desktopBtn.click();
+            });
+            // Ogledaj badge count sa desktopa u mobilnom topbar-u
+            const desktopCount = document.getElementById('notification-count');
+            const mobileCount = document.getElementById('mobile-notif-count');
+            if (desktopCount && mobileCount) {
+                const sync = () => {
+                    const v = parseInt(desktopCount.textContent || '0', 10);
+                    mobileCount.textContent = v;
+                    mobileCount.classList.toggle('hidden', !(v > 0));
+                };
+                new MutationObserver(sync).observe(desktopCount, {characterData: true, childList: true, subtree: true});
+                sync();
             }
 
             const form = document.getElementById('login-form');
