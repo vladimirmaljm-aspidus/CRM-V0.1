@@ -555,6 +555,168 @@
             </div>
         </div>
 
+        <!-- QUOTE REQUEST MODAL — profesionalna zamena za native prompt().
+             Otvara se iz kataloga (openQuoteRequest) i pruža strukturiran unos:
+             ko traži (ja / u ime treće firme), Incoterm, luka/adresa, banka,
+             logistika, način plaćanja. Automatski prilagođava obavezna polja
+             prema Incotermu i prikazuje AUTOMATION HINTS (npr. za CIF: 'dodatno
+             vreme za konverziju', za EXW: 'obavezan logistički agent'). -->
+        <div id="quote-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col overflow-hidden">
+                <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
+                    <div>
+                        <h3 class="text-lg font-bold text-slate-900">Request Quote</h3>
+                        <p class="text-xs text-slate-500 mt-0.5" id="quote-modal-subtitle">Provide details so our team can prepare an accurate offer.</p>
+                    </div>
+                    <button type="button" onclick="closeQuoteModal()" class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-red-500 hover:text-white text-slate-500 transition-colors">✕</button>
+                </div>
+                <form id="quote-form" class="overflow-y-auto flex-1 p-6 space-y-5">
+                    <input type="hidden" id="quote-product-id">
+                    <input type="hidden" id="quote-product-name">
+                    <input type="hidden" id="quote-product-unit">
+
+                    <!-- REQUESTOR — za sebe ili u ime treće firme -->
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Requesting on behalf of *</label>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <label class="flex items-start gap-2 border border-slate-200 rounded-lg p-3 cursor-pointer hover:bg-slate-50">
+                                <input type="radio" name="quote-requestor" value="self" checked class="mt-1"/>
+                                <span>
+                                    <span class="block text-sm font-semibold text-slate-900">My company</span>
+                                    <span class="block text-[11px] text-slate-500">Quote will be issued to my company.</span>
+                                </span>
+                            </label>
+                            <label class="flex items-start gap-2 border border-slate-200 rounded-lg p-3 cursor-pointer hover:bg-slate-50">
+                                <input type="radio" name="quote-requestor" value="third_party" class="mt-1"/>
+                                <span>
+                                    <span class="block text-sm font-semibold text-slate-900">Third-party buyer</span>
+                                    <span class="block text-[11px] text-slate-500">I represent another buyer; provide their details.</span>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Third-party buyer block (visible only when radio=third_party) -->
+                    <div id="third-party-buyer-block" class="hidden bg-amber-50 border border-amber-200 rounded-lg p-4">
+                        <h4 class="text-sm font-bold text-amber-900 mb-3">End-buyer details</h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div class="md:col-span-2"><label class="block text-[11px] font-semibold text-slate-600 mb-1">Company name *</label><input type="text" id="qb-company" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"/></div>
+                            <div><label class="block text-[11px] font-semibold text-slate-600 mb-1">Tax ID / VAT</label><input type="text" id="qb-taxid" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none"/></div>
+                            <div><label class="block text-[11px] font-semibold text-slate-600 mb-1">Country</label><input type="text" id="qb-country" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"/></div>
+                            <div><label class="block text-[11px] font-semibold text-slate-600 mb-1">Contact email</label><input type="email" id="qb-email" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"/></div>
+                            <div><label class="block text-[11px] font-semibold text-slate-600 mb-1">Contact phone</label><input type="text" id="qb-phone" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"/></div>
+                        </div>
+                    </div>
+
+                    <!-- QUANTITY / TARGET PRICE -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Quantity *</label>
+                            <div class="flex gap-2">
+                                <input type="number" step="0.01" min="0.01" id="quote-qty" required class="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none"/>
+                                <span id="quote-unit-label" class="inline-flex items-center px-3 py-2 text-xs font-bold text-slate-500 bg-slate-100 border border-slate-300 rounded-lg">unit</span>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Target price</label>
+                            <div class="flex gap-2">
+                                <input type="number" step="0.01" id="quote-target-price" placeholder="Optional" class="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none"/>
+                                <select id="quote-currency" class="px-2 py-2 border border-slate-300 rounded-lg text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none">
+                                    <option value="USD">USD</option><option value="EUR">EUR</option><option value="AED">AED</option><option value="GBP">GBP</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Needed by</label>
+                            <input type="date" id="quote-deadline" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"/>
+                        </div>
+                    </div>
+
+                    <!-- INCOTERM (dropdown Incoterms 2020) + DELIVERY LOCATION -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Incoterm *</label>
+                            <select id="quote-incoterm" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none">
+                                <option value="">Select…</option>
+                                <optgroup label="Any mode">
+                                    <option value="EXW">EXW – Ex Works</option>
+                                    <option value="FCA">FCA – Free Carrier</option>
+                                    <option value="CPT">CPT – Carriage Paid To</option>
+                                    <option value="CIP">CIP – Carriage & Insurance Paid</option>
+                                    <option value="DAP">DAP – Delivered at Place</option>
+                                    <option value="DPU">DPU – Delivered at Place Unloaded</option>
+                                    <option value="DDP">DDP – Delivered Duty Paid</option>
+                                </optgroup>
+                                <optgroup label="Sea / inland waterway">
+                                    <option value="FAS">FAS – Free Alongside Ship</option>
+                                    <option value="FOB">FOB – Free on Board</option>
+                                    <option value="CFR">CFR – Cost & Freight</option>
+                                    <option value="CIF">CIF – Cost, Insurance & Freight</option>
+                                </optgroup>
+                            </select>
+                        </div>
+                        <div>
+                            <label id="quote-loc-label" class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Delivery location *</label>
+                            <input type="text" id="quote-destination" placeholder="Please select an Incoterm first" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"/>
+                            <p id="quote-loc-hint" class="text-[11px] text-slate-500 mt-1"></p>
+                        </div>
+                    </div>
+
+                    <!-- LOGISTICS AGENT — obavezan za EXW/FCA/FAS (klijent preuzima) -->
+                    <div id="quote-logistics-block" class="hidden bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <h4 class="text-sm font-bold text-blue-900 mb-1">Logistics arrangement</h4>
+                        <p class="text-[11px] text-blue-800 mb-3">For this Incoterm the goods will be collected by <strong>your</strong> logistics provider. Please tell us which forwarder/agent will handle pickup so we can coordinate loading and documents.</p>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div><label class="block text-[11px] font-semibold text-slate-600 mb-1">Freight forwarder / agent *</label><input type="text" id="quote-agent" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"/></div>
+                            <div><label class="block text-[11px] font-semibold text-slate-600 mb-1">Agent contact (email/phone)</label><input type="text" id="quote-agent-contact" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"/></div>
+                        </div>
+                    </div>
+
+                    <!-- PAYMENT TERMS + BANK -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Payment terms *</label>
+                            <select id="quote-payment" required class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none">
+                                <option value="">Select…</option>
+                                <option value="TT_100_advance">100% T/T in advance</option>
+                                <option value="TT_50_50">50% advance / 50% before shipment</option>
+                                <option value="TT_30_70">30% advance / 70% against B/L copy</option>
+                                <option value="TT_30_days">T/T 30 days after B/L</option>
+                                <option value="TT_60_days">T/T 60 days after B/L</option>
+                                <option value="LC_sight">L/C at sight (Irrevocable, Confirmed)</option>
+                                <option value="LC_30_days">L/C 30 days after B/L</option>
+                                <option value="LC_60_days">L/C 60 days after B/L</option>
+                                <option value="LC_90_days">L/C 90 days after B/L</option>
+                                <option value="CAD">Cash Against Documents (D/P)</option>
+                                <option value="DA">Documents Against Acceptance (D/A)</option>
+                                <option value="Escrow">Escrow / Trade Assurance</option>
+                                <option value="OpenAccount">Open Account (existing relationship)</option>
+                                <option value="Other">Other (specify in notes)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2" id="quote-bank-label">Buyer bank</label>
+                            <input type="text" id="quote-bank" placeholder="Bank name / SWIFT (if known)" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"/>
+                            <p class="text-[11px] text-slate-500 mt-1">The bank that will fund this transaction on the buyer side.</p>
+                        </div>
+                    </div>
+
+                    <!-- NOTES -->
+                    <div>
+                        <label class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Additional notes / packaging / certificates</label>
+                        <textarea id="quote-notes" rows="3" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Packaging, certificates required, delivery window, special handling…"></textarea>
+                    </div>
+
+                    <!-- AUTOMATION HINTS — dinamički prikazuju upozorenja u zavisnosti od izbora -->
+                    <div id="quote-hints" class="hidden space-y-2"></div>
+                </form>
+                <div class="flex items-center justify-end gap-2 px-6 py-4 border-t border-slate-200 bg-slate-50">
+                    <button type="button" onclick="closeQuoteModal()" class="px-5 py-2 border border-slate-300 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-100">Cancel</button>
+                    <button type="button" onclick="submitQuoteRequest()" id="btn-submit-quote" class="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 shadow-sm">Send Quote Request</button>
+                </div>
+            </div>
+        </div>
+
         <!-- CATALOG (roba koju je admin obeležio kao vidljivu klijentu, bez cena) -->
         <div id="tab-catalog" class="tab-content hidden">
             <div class="panel p-6">

@@ -104,21 +104,221 @@ function renderCatalog(products) {
     }).join('');
 }
 
-// Bezbedan otvarač kotacije — koristi native prompt jer je jednostavno i mobile-friendly.
-async function openQuoteRequest(productId, productName, unit) {
-    const qtyRaw = prompt(`Requested quantity${unit ? ' (' + unit + ')' : ''} for "${productName}"?`);
-    if (qtyRaw === null) return;
-    const qty = parseFloat(qtyRaw);
+// ==========================================================
+//  QUOTE REQUEST MODAL — profesionalna zamena za prompt()
+// ==========================================================
+// Otvara modal sa svim relevantnim poljima (Incoterm, banka, plaćanje,
+// logistika, treće lice). Sadrži automation hints koji se menjaju u realnom
+// vremenu prema izboru Incotermsa i porekla robe:
+//   EXW/FCA/FAS  → klijent preuzima; obavezan freight forwarder + upozorenje
+//   CIF/CFR/CIP/CPT → obavezna luka/mesto dostave + upozorenje "extra time"
+//   DAP/DPU/DDP  → obavezna tačna adresa dostave
+//   ako klijent traži CIF a supplier nudi EXW → hint "conversion needs lead time"
+
+const INCOTERM_META = {
+    EXW: { needsAgent: true,  destLabel: 'Pickup location (warehouse address)',  destHint: 'Address where your carrier will collect the goods.',              category: 'buyer_arranges' },
+    FCA: { needsAgent: true,  destLabel: 'Named place / carrier hand-over',      destHint: 'Where the seller hands goods to your nominated carrier.',        category: 'buyer_arranges' },
+    FAS: { needsAgent: true,  destLabel: 'Port of loading (alongside vessel)',   destHint: 'Named port where goods will be placed alongside the vessel.',    category: 'buyer_arranges' },
+    FOB: { needsAgent: true,  destLabel: 'Port of loading',                      destHint: 'Named port where goods will be loaded on board the vessel.',     category: 'buyer_arranges' },
+    CPT: { needsAgent: false, destLabel: 'Named destination',                    destHint: 'Named place (city/terminal) where seller pays carriage to.',     category: 'seller_arranges' },
+    CIP: { needsAgent: false, destLabel: 'Named destination',                    destHint: 'Named place where seller pays carriage + insurance.',            category: 'seller_arranges' },
+    CFR: { needsAgent: false, destLabel: 'Port of destination',                  destHint: 'Named port to which seller pays sea freight (no insurance).',    category: 'seller_arranges' },
+    CIF: { needsAgent: false, destLabel: 'Port of destination',                  destHint: 'Named port to which seller pays sea freight AND insurance.',     category: 'seller_arranges' },
+    DAP: { needsAgent: false, destLabel: 'Delivery address',                     destHint: 'Full address where goods are delivered (unloaded by buyer).',    category: 'seller_delivers' },
+    DPU: { needsAgent: false, destLabel: 'Delivery address (unloaded)',          destHint: 'Full address where goods are delivered AND unloaded by seller.', category: 'seller_delivers' },
+    DDP: { needsAgent: false, destLabel: 'Delivery address (duty paid)',         destHint: 'Full address where goods are delivered with all duties paid.',   category: 'seller_delivers' }
+};
+
+let __currentQuoteProduct = null;   // za pristup supplyOffers.origin/incoterm iz kataloga
+
+function openQuoteRequest(productId, productName, unit) {
+    __currentQuoteProduct = (__catalog_cache || []).find(p => p.id === productId) || { id: productId, name: productName, unit: unit };
+    document.getElementById('quote-product-id').value = productId;
+    document.getElementById('quote-product-name').value = productName || '';
+    document.getElementById('quote-product-unit').value = unit || '';
+    document.getElementById('quote-unit-label').textContent = unit || 'unit';
+    document.getElementById('quote-modal-subtitle').innerHTML = `<strong>${escapeHtml(productName || '')}</strong> · Fill in the details below for an accurate quote.`;
+    // Reset polja
+    const f = document.getElementById('quote-form');
+    if (f) f.reset();
+    // Presetuj radio na 'self' (reset ga ne diram jer je već checked, ali osiguraj)
+    const selfRadio = document.querySelector('input[name="quote-requestor"][value="self"]');
+    if (selfRadio) selfRadio.checked = true;
+    document.getElementById('third-party-buyer-block').classList.add('hidden');
+    document.getElementById('quote-logistics-block').classList.add('hidden');
+    document.getElementById('quote-hints').classList.add('hidden');
+    document.getElementById('quote-hints').innerHTML = '';
+    // Otvori
+    const modal = document.getElementById('quote-modal');
+    if (modal) { modal.classList.remove('hidden'); modal.classList.add('flex'); }
+    // Fokusiraj količinu
+    setTimeout(() => document.getElementById('quote-qty')?.focus(), 100);
+    // Prvi rerender hint-ova
+    refreshQuoteHints();
+}
+
+function closeQuoteModal() {
+    const modal = document.getElementById('quote-modal');
+    if (modal) { modal.classList.add('hidden'); modal.classList.remove('flex'); }
+    __currentQuoteProduct = null;
+}
+
+// Kad se Incoterm promeni: prilagodi labelu polja destinacije + obaveznost, i
+// prikaži/ukloni logistics blok. Sve automation hint-ove ponovo iscrtava.
+document.addEventListener('change', (ev) => {
+    if (!ev.target) return;
+    if (ev.target.name === 'quote-requestor') {
+        const block = document.getElementById('third-party-buyer-block');
+        const bankLabel = document.getElementById('quote-bank-label');
+        if (block) block.classList.toggle('hidden', ev.target.value !== 'third_party');
+        if (bankLabel) bankLabel.textContent = ev.target.value === 'third_party' ? 'End-buyer bank' : 'Buyer bank';
+        refreshQuoteHints();
+    }
+    if (ev.target.id === 'quote-incoterm') {
+        const meta = INCOTERM_META[ev.target.value];
+        const destInput = document.getElementById('quote-destination');
+        const destLabel = document.getElementById('quote-loc-label');
+        const destHint = document.getElementById('quote-loc-hint');
+        const logBlock = document.getElementById('quote-logistics-block');
+        if (meta) {
+            destInput.placeholder = meta.destLabel;
+            destLabel.textContent = meta.destLabel + ' *';
+            destHint.textContent = meta.destHint;
+            logBlock.classList.toggle('hidden', !meta.needsAgent);
+        } else {
+            destInput.placeholder = 'Please select an Incoterm first';
+            destLabel.textContent = 'Delivery location *';
+            destHint.textContent = '';
+            logBlock.classList.add('hidden');
+        }
+        refreshQuoteHints();
+    }
+    if (['quote-payment', 'quote-destination', 'quote-agent'].includes(ev.target.id)) {
+        refreshQuoteHints();
+    }
+});
+document.addEventListener('input', (ev) => {
+    if (['quote-destination', 'quote-agent', 'quote-qty'].includes(ev.target.id)) refreshQuoteHints();
+});
+
+function refreshQuoteHints() {
+    const hintBox = document.getElementById('quote-hints');
+    if (!hintBox) return;
+    const hints = [];
+    const push = (icon, cls, text) => hints.push(`<div class="flex items-start gap-2 border ${cls} rounded-lg px-3 py-2 text-xs"><span class="text-base leading-none">${icon}</span><span class="flex-1">${text}</span></div>`);
+
+    const inc = document.getElementById('quote-incoterm')?.value;
+    const meta = INCOTERM_META[inc];
+    const prod = __currentQuoteProduct;
+    // 1. Incoterm mismatch između supplierovog i traženog
+    const supplierIncoterms = new Set();
+    const supplierOrigins = new Set();
+    if (prod && Array.isArray(prod.origins)) prod.origins.forEach(o => supplierOrigins.add(o));
+    // (katalog vraća samo origins listu, ne incoterms — pa nudimo generalna upozorenja)
+
+    // 2. CIF/CFR: obavesti da će konverzija iz EXW/FOB dodati vreme
+    if (inc === 'CIF' || inc === 'CFR' || inc === 'CIP' || inc === 'CPT') {
+        push('⏱', 'border-amber-200 bg-amber-50 text-amber-900',
+             `<strong>${inc}</strong> quotes typically require <strong>3–7 additional working days</strong> because our team needs to price freight${inc === 'CIF' || inc === 'CIP' ? ' and marine insurance' : ''} for the requested route.`);
+    }
+    // 3. EXW/FCA/FAS/FOB: klijent mora da navede agenta
+    if (inc && meta && meta.needsAgent) {
+        const agent = document.getElementById('quote-agent')?.value?.trim();
+        if (!agent) {
+            push('🚚', 'border-blue-200 bg-blue-50 text-blue-900',
+                 `Under <strong>${inc}</strong>, pickup is arranged by <strong>your side</strong>. Please fill in your freight forwarder / agent above so we can coordinate loading.`);
+        }
+    }
+    // 4. DAP/DPU/DDP: obavezna tačna adresa
+    if (['DAP', 'DPU', 'DDP'].includes(inc)) {
+        const dest = document.getElementById('quote-destination')?.value?.trim();
+        if (dest && !/\d/.test(dest)) {
+            push('📍', 'border-amber-200 bg-amber-50 text-amber-900',
+                 `<strong>${inc}</strong> requires a full delivery address (street + number). Please make sure the destination field has a specific address, not just a city.`);
+        }
+    }
+    // 5. DDP: dodatna napomena o carini
+    if (inc === 'DDP') {
+        push('🛃', 'border-orange-200 bg-orange-50 text-orange-900',
+             '<strong>DDP</strong> means the seller pays <strong>all import duties, VAT and customs charges</strong> in the destination country. This may add significant cost — CIP or DAP are often preferred alternatives.');
+    }
+    // 6. L/C plaćanje — dodatno vreme
+    const pay = document.getElementById('quote-payment')?.value;
+    if (pay && pay.startsWith('LC_')) {
+        push('🏦', 'border-slate-200 bg-slate-50 text-slate-800',
+             'Payment by <strong>Letter of Credit</strong> requires our bank to review the L/C draft before shipment. Please plan an extra <strong>5–10 days</strong> for L/C document workflow.');
+    }
+    // 7. Third-party buyer
+    const requestor = document.querySelector('input[name="quote-requestor"]:checked')?.value;
+    if (requestor === 'third_party') {
+        push('👥', 'border-indigo-200 bg-indigo-50 text-indigo-900',
+             'You are requesting <strong>on behalf of an end-buyer</strong>. Please provide the end-buyer\'s company details above — the quote will reference your intermediary role.');
+    }
+    // 8. Origin awareness — ako je poznato poreklo
+    if (supplierOrigins.size > 0 && inc && meta && meta.category === 'seller_arranges') {
+        push('🌍', 'border-slate-200 bg-slate-50 text-slate-700',
+             `This product is currently sourced from: <strong>${[...supplierOrigins].map(escapeHtml).join(', ')}</strong>. Your requested Incoterm (${inc}) means we will arrange transport from origin to your named destination.`);
+    }
+
+    hintBox.innerHTML = hints.join('');
+    hintBox.classList.toggle('hidden', hints.length === 0);
+}
+
+async function submitQuoteRequest() {
+    const requestor = document.querySelector('input[name="quote-requestor"]:checked')?.value || 'self';
+    const inc = document.getElementById('quote-incoterm').value;
+    const meta = INCOTERM_META[inc];
+    const qty = parseFloat(document.getElementById('quote-qty').value);
+    const dest = document.getElementById('quote-destination').value.trim();
+    const pay = document.getElementById('quote-payment').value;
+    const agent = document.getElementById('quote-agent').value.trim();
+
+    // Client-side validacije (server je i dalje autoritativan)
     if (!qty || qty <= 0) return showToast('Please enter a valid quantity.', 'error');
-    const notes = prompt('Any specific requirements? (optional — Incoterm, target price, delivery period)') || '';
+    if (!inc) return showToast('Please select an Incoterm.', 'error');
+    if (!dest) return showToast('Please provide a delivery location.', 'error');
+    if (!pay) return showToast('Please select payment terms.', 'error');
+    if (meta && meta.needsAgent && !agent) return showToast('This Incoterm requires a freight forwarder / agent.', 'error');
+
+    const val = id => (document.getElementById(id)?.value || '').trim();
+    const payload = {
+        productId: document.getElementById('quote-product-id').value,
+        quantity: qty,
+        targetPrice: parseFloat(val('quote-target-price')) || 0,
+        currency: val('quote-currency'),
+        neededBy: val('quote-deadline'),
+        incoterm: inc,
+        destination: dest,
+        paymentTerms: pay,
+        buyerBank: val('quote-bank'),
+        logisticsAgent: agent,
+        logisticsAgentContact: val('quote-agent-contact'),
+        notes: val('quote-notes'),
+        requestor: requestor,
+        endBuyer: requestor === 'third_party' ? {
+            companyName: val('qb-company'),
+            taxId: val('qb-taxid'),
+            country: val('qb-country'),
+            email: val('qb-email'),
+            phone: val('qb-phone')
+        } : null
+    };
+
+    if (requestor === 'third_party' && !payload.endBuyer.companyName) {
+        return showToast('Please provide the end-buyer company name.', 'error');
+    }
+
+    const btn = document.getElementById('btn-submit-quote');
+    btn.disabled = true; btn.textContent = 'Sending…';
     try {
         const res = await fetch(`/api/portal/quote_request/${TOKEN}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
-            body: JSON.stringify({ productId, quantity: qty, notes })
+            body: JSON.stringify(payload)
         });
         if (res.ok) {
-            showToast('Quote request submitted. We will contact you shortly.', 'success');
+            showToast('Quote request submitted. Our team will respond shortly.', 'success');
+            closeQuoteModal();
         } else {
             const err = await res.json().catch(() => ({}));
             showToast(err.message || err.error || 'Failed to submit quote request.', 'error');
@@ -126,7 +326,11 @@ async function openQuoteRequest(productId, productName, unit) {
     } catch (e) {
         showToast('Network error. Please try again.', 'error');
     }
+    btn.disabled = false; btn.textContent = 'Send Quote Request';
 }
+window.openQuoteRequest = openQuoteRequest;
+window.closeQuoteModal = closeQuoteModal;
+window.submitQuoteRequest = submitQuoteRequest;
 
 function escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));

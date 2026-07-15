@@ -161,15 +161,42 @@ function renderDemandsView() {
         <tbody class="divide-y divide-slate-100">
             ${state.data.demands.map(d => {
                 const isNewIndicator = d.isNewProduct ? `<span class="bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 text-[9px] rounded-full font-black uppercase ml-2 shadow-sm whitespace-nowrap">✨ ${Utils.t('misc.newTag') || 'NOVO (VAN KATALOGA)'}</span>` : '';
-                const sourceIndicator = d.source === 'B2B Portal' ? `<span class="bg-indigo-100 text-indigo-800 border border-indigo-300 px-2 py-0.5 text-[9px] rounded-full font-black uppercase ml-2 shadow-sm whitespace-nowrap">🌐 B2B PORTAL</span>` : '';
+                const isPortalRFQ = (d.source || '').startsWith('B2B Portal');
+                const sourceIndicator = isPortalRFQ ? `<span class="bg-indigo-100 text-indigo-800 border border-indigo-300 px-2 py-0.5 text-[9px] rounded-full font-black uppercase ml-2 shadow-sm whitespace-nowrap">🌐 ${d.source === 'B2B Portal Catalog' ? 'CATALOG RFQ' : 'B2B PORTAL'}</span>` : '';
                 const bC = stColors[d.status || 'open'] || stColors['open'];
                 const bL = stLabels[d.status || 'open'] || (d.status || 'open').toUpperCase();
                 const dateVal = d.createdAt || d.date;
 
+                // Ekstra detalji iz portal catalog RFQ-a — Incoterm, destinacija, plaćanje, banka, agent, end-buyer, automation hints
+                const incotermBadge = d.incoterm ? `<span class="bg-slate-800 text-white text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider mr-1 shadow-sm">${Utils.escapeHtml(d.incoterm)}</span>` : '';
+                const requestorBadge = d.requestor === 'third_party' ? `<span class="bg-purple-100 text-purple-800 border border-purple-300 px-2 py-0.5 text-[9px] rounded-full font-black uppercase ml-1 shadow-sm whitespace-nowrap">👥 FOR 3RD PARTY</span>` : '';
+                let extraRow = '';
+                if (isPortalRFQ && (d.incoterm || d.destination || d.paymentTerms || d.logisticsAgent || d.endBuyer || (d.autoHints && d.autoHints.length))) {
+                    const pill = (label, value, cls) => value ? `<span class="inline-flex items-center gap-1 text-[11px] ${cls || 'bg-slate-50 border-slate-200 text-slate-700'} border rounded-md px-2 py-1"><strong>${label}:</strong> ${Utils.escapeHtml(String(value))}</span>` : '';
+                    const hints = (d.autoHints || []).map(h => `<div class="text-[11px] flex items-start gap-1.5 text-amber-900 bg-amber-50 border border-amber-200 rounded-md px-2 py-1"><span>⚡</span><span>${Utils.escapeHtml(h)}</span></div>`).join('');
+                    extraRow = `
+                    <tr class="bg-slate-50/50 border-t-0">
+                      <td colspan="6" class="px-5 py-3">
+                        <div class="flex flex-wrap gap-1.5 mb-2">
+                          ${pill('Incoterm', d.incoterm, 'bg-blue-50 border-blue-200 text-blue-800')}
+                          ${pill('Destination', d.destination)}
+                          ${pill('Payment', (d.paymentTerms || '').replace(/_/g, ' '))}
+                          ${pill('Bank', d.buyerBank)}
+                          ${pill('Agent', d.logisticsAgent)}
+                          ${pill('Needed by', d.neededBy)}
+                          ${pill('Target', d.targetPrice ? (d.targetPrice + ' ' + (d.currency || '')) : '')}
+                          ${d.endBuyer && d.endBuyer.companyName ? pill('End-buyer', d.endBuyer.companyName + (d.endBuyer.country ? ' (' + d.endBuyer.country + ')' : ''), 'bg-purple-50 border-purple-200 text-purple-800') : ''}
+                        </div>
+                        ${hints ? `<div class="space-y-1 mt-2">${hints}</div>` : ''}
+                        ${d.notes ? `<div class="mt-2 text-xs text-slate-600 border-l-2 border-slate-300 pl-2 italic">"${Utils.escapeHtml(d.notes)}"</div>` : ''}
+                      </td>
+                    </tr>`;
+                }
+
                 return `
                 <tr class="hover:bg-slate-50 transition-colors">
-                    <td class="p-5 text-sm font-black text-slate-900">🏢 ${Utils.escapeHtml(Utils.getPartnerNameById(d.buyerId || d.customerId) || d.buyerName || tLang('(Nepoznat kupac)', '(Unknown client)'))}</td>
-                    <td class="p-5 text-sm font-bold text-slate-700">${Utils.escapeHtml(d.productName || '')} ${isNewIndicator}${sourceIndicator}</td>
+                    <td class="p-5 text-sm font-black text-slate-900">🏢 ${Utils.escapeHtml(Utils.getPartnerNameById(d.buyerId || d.customerId) || d.buyerName || tLang('(Nepoznat kupac)', '(Unknown client)'))}${requestorBadge}</td>
+                    <td class="p-5 text-sm font-bold text-slate-700">${incotermBadge}${Utils.escapeHtml(d.productName || '')} ${isNewIndicator}${sourceIndicator}</td>
                     <td class="p-5 font-black text-blue-700 text-lg">${Utils.escapeHtml(d.quantity || '')}</td>
                     <td class="p-5"><span class="px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider border shadow-sm ${bC}">${bL}</span></td>
                     <td class="p-5 text-xs text-slate-500 font-bold">${dateVal ? new Date(dateVal).toLocaleDateString(currentLang) : 'N/A'}</td>
@@ -178,7 +205,7 @@ function renderDemandsView() {
                         <button class="bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors mr-2 edit-demand" data-id="${d.id}">✏️ ${Utils.t('actions.edit') || 'Izmeni'}</button>
                         <button class="bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors del-demand" data-id="${d.id}">🗑️</button>
                     </td>
-                </tr>`;
+                </tr>${extraRow}`;
             }).join('') || `<tr><td colspan="6" class="p-10 text-center text-slate-400 font-bold border-dashed border-2 border-slate-200 text-sm">${Utils.t('product_search.noResults') || 'Nema zahteva.'}</td></tr>`}
         </tbody>
     </table>`;
