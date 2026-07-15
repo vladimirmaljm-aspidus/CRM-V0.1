@@ -18,10 +18,20 @@ portal_otps = {}
 portal_auth_sessions = {}
 pending_email_sessions = {}
 
+# Podrazumevani TTL-ovi (u sekundama). Admin ih menja preko settings.firewall
+# i vrednosti se učitavaju u FirewallCache pri startu / posle svakog save-a.
 PORTAL_SESSION_TTL = 3600
 PORTAL_INACTIVITY_TTL = 900
 PORTAL_OTP_TTL = 300
 PORTAL_OTP_MAX_ATTEMPTS = 5
+
+
+def _fw_ttl(key, default):
+    """Uzmi konfigurabilnu vrednost iz FirewallCache (postavlja je admin), inače default."""
+    try:
+        return int(FirewallCache.settings.get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def init_portal_db():
@@ -67,9 +77,10 @@ def safe_parse(data_str):
 def _cleanup_expired():
     """Sprečava neograničeno rastenje memorije od isteklih OTP-ova i sesija."""
     now = time.time()
+    inactivity = _fw_ttl('portal_inactivity', PORTAL_INACTIVITY_TTL)
     for tok in [t for t, v in portal_otps.items() if v.get('expires', 0) < now]:
         portal_otps.pop(tok, None)
-    for tok in [t for t, v in portal_auth_sessions.items() if v.get('expires', 0) < now or now - v.get('last_active', 0) > PORTAL_INACTIVITY_TTL]:
+    for tok in [t for t, v in portal_auth_sessions.items() if v.get('expires', 0) < now or now - v.get('last_active', 0) > inactivity]:
         portal_auth_sessions.pop(tok, None)
     for sid in [s for s, v in pending_email_sessions.items() if v.get('expires', 0) < now]:
         pending_email_sessions.pop(sid, None)
@@ -79,7 +90,7 @@ def create_portal_otp(token):
     """Generiše novi OTP i resetuje brojač pokušaja za dati token."""
     _cleanup_expired()
     otp = str(secrets.randbelow(900000) + 100000)
-    portal_otps[token] = {'otp': otp, 'expires': time.time() + PORTAL_OTP_TTL, 'attempts': 0}
+    portal_otps[token] = {'otp': otp, 'expires': time.time() + _fw_ttl('portal_otp', PORTAL_OTP_TTL), 'attempts': 0}
     return otp
 
 
@@ -107,15 +118,21 @@ def verify_portal_otp(token, user_otp):
 def create_portal_session(token, partner_id=None):
     key = secrets.token_hex(32)
     now = time.time()
+    from flask import request as _req
+    ip = _req.headers.get('X-Forwarded-For', _req.remote_addr) if _req else ''
+    if ip and ',' in ip: ip = ip.split(',')[0].strip()
     portal_auth_sessions[token] = {
-        'key': key, 'expires': now + PORTAL_SESSION_TTL,
-        'last_active': now, 'partner_id': partner_id
+        'key': key, 'expires': now + _fw_ttl('portal_session', PORTAL_SESSION_TTL),
+        'last_active': now, 'partner_id': partner_id,
+        # BEZBEDNOST: vežemo sesiju za IP koji je prošao OTP verifikaciju.
+        # Ako se auth_key pojavi sa druge IP adrese, to je pokušaj krađe sesije.
+        'bound_ip': ip or None
     }
     return key
 
 
 def verify_portal_session(token, auth_header):
-    """Constant-time provera portal sesije sa isticanjem (TTL + inactivity)."""
+    """Constant-time provera portal sesije sa isticanjem (TTL + inactivity + IP binding)."""
     if not token or not auth_header:
         return False
     sess = portal_auth_sessions.get(token)
@@ -125,11 +142,30 @@ def verify_portal_session(token, auth_header):
     if sess['expires'] < now:
         portal_auth_sessions.pop(token, None)
         return False
-    if now - sess.get('last_active', 0) > PORTAL_INACTIVITY_TTL:
+    if now - sess.get('last_active', 0) > _fw_ttl('portal_inactivity', PORTAL_INACTIVITY_TTL):
         portal_auth_sessions.pop(token, None)
         return False
     if not secrets.compare_digest(sess['key'], auth_header):
         return False
+
+    # IP binding — ako se sesija koristi sa druge IP-e, poništi je i loguj kao suspicious.
+    try:
+        from flask import request as _req
+        cur_ip = _req.headers.get('X-Forwarded-For', _req.remote_addr) if _req else ''
+        if cur_ip and ',' in cur_ip: cur_ip = cur_ip.split(',')[0].strip()
+        if sess.get('bound_ip') and cur_ip and cur_ip != sess['bound_ip']:
+            portal_auth_sessions.pop(token, None)
+            try:
+                log_portal_activity(sess.get('partner_id'),
+                                    'SESSION_HIJACK_BLOCKED',
+                                    f'Portal auth_key seen from {cur_ip}, bound to {sess["bound_ip"]}',
+                                    ip=cur_ip)
+            except Exception:
+                pass
+            return False
+    except Exception:
+        pass
+
     sess['last_active'] = now
     return True
 

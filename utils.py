@@ -3,12 +3,17 @@ import time
 import uuid
 import sqlite3
 import json
+import secrets
+import logging
+import threading
 import urllib.request
 import ipaddress
 from functools import wraps
 from flask import request, session, jsonify, redirect, url_for
 from config import DB_FILE, AUDIT_DB_FILE, ALLOWED_EXTENSIONS, ENCRYPTION_KEY
 from cryptography.fernet import Fernet, InvalidToken
+
+_util_logger = logging.getLogger(__name__)
 
 cipher_suite = Fernet(ENCRYPTION_KEY)
 
@@ -240,3 +245,154 @@ def safe_parse(val):
         return val if val is not None else {}
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+# ==========================================================
+#  CSRF ZAŠTITA — double-submit token vezan za sesiju
+# ==========================================================
+# Klijent u prvom zahtevu dobije X-CSRF-Token header (izlaže se preko
+# /api/auth/me i /api/csrf/token). Svaki mutating (POST/PUT/DELETE) zahtev
+# koji ide iz browsera MORA da postavi X-CSRF-Token header koji se poredi
+# constant-time sa vrednošću u sesiji. Ovim se blokira klasičan CSRF (napadač
+# ne vidi header iz cross-origin fetch-a).
+
+def _ensure_csrf_token():
+    """Vraća CSRF token za trenutnu sesiju; kreira ga pri prvom pristupu."""
+    tok = session.get('_csrf_token')
+    if not tok:
+        tok = secrets.token_urlsafe(32)
+        session['_csrf_token'] = tok
+    return tok
+
+
+def verify_csrf_token():
+    """Vraća True ako je zahtev CSRF-safe, False u suprotnom.
+    Zahtev je safe ako:
+      - method je GET/HEAD/OPTIONS (idempotent) ILI
+      - X-CSRF-Token header se poklapa sa session tokenom (constant-time) ILI
+      - dolazi sa portal auth headerom (portal koristi zasebnu OTP-based auth,
+        ne oslanja se na cookie sesiju CRM-a; CSRF je za /api/* CRM ruta)"""
+    if request.method in ('GET', 'HEAD', 'OPTIONS'):
+        return True
+    # Portal endpointi imaju sopstvenu X-Portal-Auth zaštitu i ne dele cookie
+    # sesiju sa CRM-om; CSRF token nema smisla tamo.
+    if request.path.startswith('/api/portal/'):
+        return True
+    # Login endpoint mora da radi bez CSRF (token dobija tek nakon login-a).
+    if request.endpoint in ('auth.login',):
+        return True
+    header_tok = request.headers.get('X-CSRF-Token', '')
+    session_tok = session.get('_csrf_token', '')
+    if not header_tok or not session_tok:
+        return False
+    return secrets.compare_digest(str(header_tok), str(session_tok))
+
+
+# ==========================================================
+#  FIREWALL / SESSION POSTAVKE — čitaju se iz admin Settings modula
+# ==========================================================
+# Podrazumevane vrednosti; admin ih menja preko `settings.firewall`.
+DEFAULT_FIREWALL_SETTINGS = {
+    'max_login_attempts': 10,          # koliko neuspešnih login-a pre auto-blacklist (5 min prozor)
+    'max_portal_requests_per_min': 50, # portal per-IP rate limit
+    'crm_inactivity_seconds': 1200,    # CRM auto-logout posle X sekundi neaktivnosti
+    'portal_session_seconds': 3600,    # trajanje portal sesije
+    'portal_inactivity_seconds': 900,  # portal auto-logout
+    'portal_otp_seconds': 300,         # trajanje portal OTP koda
+    'audit_retention_days': 180,       # koliko dana čuvamo audit logove (starije se automatski brišu)
+}
+
+
+def load_firewall_settings():
+    """Učitava firewall postavke iz DB (settings.firewall), spaja sa default-ima
+    i primenjuje na FirewallCache. Zove se na startup i posle svakog admin save."""
+    merged = dict(DEFAULT_FIREWALL_SETTINGS)
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            c = conn.cursor()
+            c.execute("SELECT value FROM settings WHERE key='firewall'")
+            row = c.fetchone()
+        if row and row[0]:
+            stored = decrypt_data(row[0])
+            if isinstance(stored, dict):
+                # samo poznati ključevi (sprečava injekciju smeća)
+                for k in DEFAULT_FIREWALL_SETTINGS:
+                    if k in stored:
+                        try:
+                            v = int(stored[k])
+                            if v > 0:
+                                merged[k] = v
+                        except (TypeError, ValueError):
+                            pass
+    except Exception:
+        _util_logger.warning('load_firewall_settings: falling back to defaults', exc_info=True)
+
+    FirewallCache.settings['max_login'] = merged['max_login_attempts']
+    FirewallCache.settings['max_portal'] = merged['max_portal_requests_per_min']
+    FirewallCache.settings['crm_inactivity'] = merged['crm_inactivity_seconds']
+    FirewallCache.settings['portal_session'] = merged['portal_session_seconds']
+    FirewallCache.settings['portal_inactivity'] = merged['portal_inactivity_seconds']
+    FirewallCache.settings['portal_otp'] = merged['portal_otp_seconds']
+    FirewallCache.settings['audit_retention_days'] = merged['audit_retention_days']
+    return merged
+
+
+# ==========================================================
+#  AUTOMATSKO ODRŽAVANJE — rotacija audit loga, čišćenje sesija
+# ==========================================================
+
+_housekeeping_started = False
+_housekeeping_lock = threading.Lock()
+
+
+def _housekeeping_loop():
+    """Periodični posao (na svaki sat): rotira stari audit log,
+    prazni istekle geoip cache stavke, resetuje login-attempts kešove.
+    Sve u pozadinskom thread-u pa ne blokira request handling."""
+    import gc
+    while True:
+        try:
+            # 1) audit log retention
+            days = int(FirewallCache.settings.get('audit_retention_days', 180))
+            if days > 0:
+                cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat().replace('+00:00', 'Z')
+                try:
+                    with sqlite3.connect(AUDIT_DB_FILE, timeout=30.0) as conn:
+                        conn.execute('PRAGMA journal_mode=WAL;')
+                        c = conn.cursor()
+                        c.execute('DELETE FROM audit_logs WHERE timestamp < ? AND is_suspicious = 0', (cutoff,))
+                        deleted = c.rowcount
+                        conn.commit()
+                    if deleted:
+                        _util_logger.info(f'HOUSEKEEPING: purged {deleted} audit rows older than {days}d')
+                except Exception:
+                    _util_logger.warning('HOUSEKEEPING: audit purge failed', exc_info=True)
+
+            # 2) geoip cache — obriši istekle
+            now = time.time()
+            expired = [ip for ip, v in IP_INFO_CACHE.items() if now - v[3] > IP_INFO_CACHE_TTL * 2]
+            for ip in expired:
+                IP_INFO_CACHE.pop(ip, None)
+
+            # 3) login_attempts prozor je 300 s; obriši IP-ove bez skorašnjih pokušaja
+            stale_ips = [ip for ip, ts_list in FirewallCache.login_attempts.items()
+                         if not ts_list or now - max(ts_list) > 3600]
+            for ip in stale_ips:
+                FirewallCache.login_attempts.pop(ip, None)
+
+            gc.collect()
+        except Exception:
+            _util_logger.warning('HOUSEKEEPING: iteration failed', exc_info=True)
+        time.sleep(3600)  # jednom na sat
+
+
+def start_housekeeping():
+    """Pokreće pozadinski thread jedanput — ostaje aktivan tokom života procesa.
+    Idempotentno: dvostruki poziv ne otvara drugi thread."""
+    global _housekeeping_started
+    with _housekeeping_lock:
+        if _housekeeping_started:
+            return
+        _housekeeping_started = True
+    t = threading.Thread(target=_housekeeping_loop, name='crm-housekeeping', daemon=True)
+    t.start()
