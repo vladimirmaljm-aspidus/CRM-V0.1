@@ -13,7 +13,8 @@ const NAV_ICONS = {
   network: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M6.7 7.5l4 8.5m6.6-8.5l-4 8.5M7 6h10"/>',
   users: '<circle cx="12" cy="8" r="3.2"/><path d="M5 20a7 7 0 0 1 14 0"/>',
   audit: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9.5 12l1.8 1.8 3.2-3.6"/>',
-  portal_activity: '<path d="M3 3v18h18"/><path d="M7 15l4-4 4 3 5-6"/>'
+  portal_activity: '<path d="M3 3v18h18"/><path d="M7 15l4-4 4 3 5-6"/>',
+  portal_preview: '<circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>'
 };
 
 let fullNavigationItems = [
@@ -30,7 +31,8 @@ let fullNavigationItems = [
 
   { view:'users', icon:'users', labelPath:'users.manage', adminOnly: true, group: 'admin' },
   { view:'audit', icon:'audit', labelPath:'audit.title', adminOnly: true, permKey: 'audit_view', group: 'admin' },
-  { view:'portal_activity', icon:'portal_activity', labelPath:'portalActivity.navLabel', adminOnly: true, permKey: 'portal_activity_view', group: 'admin' }
+  { view:'portal_activity', icon:'portal_activity', labelPath:'portalActivity.navLabel', adminOnly: true, permKey: 'portal_activity_view', group: 'admin' },
+  { view:'portal_preview', icon:'portal_preview', labelPath:'portalPreview.navLabel', adminOnly: true, permKey: 'portal_preview_manage', group: 'admin' }
 ];
 
 function navIconSvg(key) {
@@ -75,7 +77,7 @@ function buildNavigation() {
       nav.appendChild(grpHeader);
 
       grp.items.forEach(item => {
-          const labelText = item.labelPath.startsWith('nav.') || item.labelPath.startsWith('users.') || item.labelPath.startsWith('audit.') || item.labelPath.startsWith('portalActivity.') ? t(item.labelPath) : item.labelPath;
+          const labelText = item.labelPath.startsWith('nav.') || item.labelPath.startsWith('users.') || item.labelPath.startsWith('audit.') || item.labelPath.startsWith('portalActivity.') || item.labelPath.startsWith('portalPreview.') ? t(item.labelPath) : item.labelPath;
           const isActive = state.currentView === item.view;
 
           const activeClasses = isActive
@@ -123,6 +125,7 @@ function render() {
       else if(state.currentView === 'users' && state.user.role === 'admin') { if(typeof renderUsersView==='function') renderUsersView(); } 
       else if(state.currentView === 'audit' && (state.user.role === 'admin' || (state.user.permissions && state.user.permissions.audit_view))) { if(typeof renderAuditLogView==='function') renderAuditLogView(); }
       else if(state.currentView === 'portal_activity' && (state.user.role === 'admin' || (state.user.permissions && state.user.permissions.portal_activity_view))) { if(typeof renderPortalActivityView==='function') renderPortalActivityView(); }
+      else if(state.currentView === 'portal_preview' && (state.user.role === 'admin' || (state.user.permissions && state.user.permissions.portal_preview_manage))) { if(typeof renderPortalPreviewView==='function') renderPortalPreviewView(); }
       else {
           main.innerHTML = `<div class="p-10 text-center"><h2 class="text-3xl text-red-500 font-bold mb-4">${t('users.accessDenied')}</h2><p class="text-gray-400">${t('users.accessDeniedMsg')}</p></div>`;
       }
@@ -288,8 +291,53 @@ function showProfileModal() {
     if (rmBtn) rmBtn.addEventListener('click', () => saveSignature(''));
 }
 
+// ==========================================================
+//  DISMISSED NOTIFICATIONS — localStorage per user
+// ==========================================================
+// Notifikacije se izvode iz podataka pa "delete" u pravom smislu nema smisla
+// (na sledeći render bi se ponovo pojavile). Umesto toga pratimo koje su dismiss-ovane
+// u localStorage; sledeći put ih preskačemo dok se stanje ne promeni (deal se plati,
+// partner osvezi itd.). Ključ se veže za trenutnog korisnika.
+function _dismissKey() {
+    const uid = (state.user && state.user.id) || 'anon';
+    return `crm_dismissed_notifs_${uid}`;
+}
+function _loadDismissed() {
+    try { return new Set(JSON.parse(localStorage.getItem(_dismissKey()) || '[]')); } catch (e) { return new Set(); }
+}
+function _saveDismissed(setObj) {
+    try { localStorage.setItem(_dismissKey(), JSON.stringify([...setObj].slice(-500))); } catch (e) {}
+}
+function _notifId(n) {
+    // Stabilan potpis notifikacije za dismiss listu (bez datuma jer se ponavlja).
+    return `${n.type}:${n.dealId || n.goto || ''}:${(n.message || '').replace(/\d+d\)/g, 'Nd)').slice(0, 120)}`;
+}
+window.dismissNotification = function(id) {
+    const set = _loadDismissed(); set.add(id); _saveDismissed(set);
+    // Ponovo iscrtaj listu bez ove
+    state.notifications = state.notifications.filter(n => _notifId(n) !== id);
+    updateNotificationCounter();
+    if (typeof showNotificationsModal === 'function') showNotificationsModal();
+};
+window.dismissAllNotifications = function() {
+    const set = _loadDismissed();
+    state.notifications.forEach(n => set.add(_notifId(n)));
+    _saveDismissed(set);
+    state.notifications = [];
+    updateNotificationCounter();
+    if (typeof closeModal === 'function') closeModal();
+    if (typeof showToast === 'function') showToast('All notifications dismissed.', 'success');
+};
+window.resetDismissedNotifications = function() {
+    try { localStorage.removeItem(_dismissKey()); } catch (e) {}
+    if (typeof checkAllNotifications === 'function') checkAllNotifications();
+    if (typeof showToast === 'function') showToast('Notifications reset.', 'info');
+};
+
 function checkAllNotifications(){
   state.notifications = []; const now = new Date();
+  const _dismissed = _loadDismissed();
+  const _push = (n) => { if (!_dismissed.has(_notifId(n))) _push(n); };
   const warningDays = state.settings.paymentWarningDays || 7;
   
   if(state.data.deals) {
@@ -297,26 +345,26 @@ function checkAllNotifications(){
         const checkDueDate = (dateStr, type) => {
             if(dateStr && (type === 'Kupac' ? !d.buyerPaidOn : !d.supplierPaidOn)){
               const dt = new Date(dateStr); const diff = Math.ceil((dt - now)/(1000*60*60*24));
-              if(diff <= warningDays && diff >= 0) state.notifications.push({ type:'payment', message: `${t('notifications.paymentDue')} (${type === 'Kupac' ? t('finances.buyer') : t('finances.supplier')} ${type === 'Kupac' ? escapeHtml(d.buyerName) : escapeHtml(d.supplierName)}): ${escapeHtml(d.contractId || '')} (${diff}d)`, dealId: d.id });
+              if(diff <= warningDays && diff >= 0) _push({ type:'payment', message: `${t('notifications.paymentDue')} (${type === 'Kupac' ? t('finances.buyer') : t('finances.supplier')} ${type === 'Kupac' ? escapeHtml(d.buyerName) : escapeHtml(d.supplierName)}): ${escapeHtml(d.contractId || '')} (${diff}d)`, dealId: d.id });
             }
         }; checkDueDate(d.paymentDates?.buyer, 'Kupac'); checkDueDate(d.paymentDates?.supplier, 'Dobavljač');
       });
   }
   
   if(state.data.partners) {
-      state.data.partners.forEach(p=>{ const lm = p.lastModified ? new Date(p.lastModified) : null; if(lm && Math.floor((now - lm)/(1000*60*60*24)) > 365) state.notifications.push({ type:'oldPartner', message: `${t('notifications.oldPartner')}: ${escapeHtml(p.companyName)}` }); });
+      state.data.partners.forEach(p=>{ const lm = p.lastModified ? new Date(p.lastModified) : null; if(lm && Math.floor((now - lm)/(1000*60*60*24)) > 365) _push({ type:'oldPartner', message: `${t('notifications.oldPartner')}: ${escapeHtml(p.companyName)}` }); });
   }
   
   if(state.data.demands) {
       state.data.demands.forEach(d=>{ 
           const cr = d.createdAt ? new Date(d.createdAt) : null; 
-          if(cr && Math.floor((now - cr)/(1000*60*60*24)) > 30) state.notifications.push({ type:'oldDemand', message: `${t('notifications.oldDemand')}: ${escapeHtml(getPartnerNameById(d.buyerId) || '')}` }); 
-          if(d.isNewProduct && d.productName && state.data.products && state.data.products.some(p => p.name.toLowerCase() === d.productName.toLowerCase())) state.notifications.push({ type:'productAvailable', message: `${t('notifications.productAvailable')}: ${escapeHtml(d.productName)}` }); 
+          if(cr && Math.floor((now - cr)/(1000*60*60*24)) > 30) _push({ type:'oldDemand', message: `${t('notifications.oldDemand')}: ${escapeHtml(getPartnerNameById(d.buyerId) || '')}` }); 
+          if(d.isNewProduct && d.productName && state.data.products && state.data.products.some(p => p.name.toLowerCase() === d.productName.toLowerCase())) _push({ type:'productAvailable', message: `${t('notifications.productAvailable')}: ${escapeHtml(d.productName)}` }); 
       });
   }
   
   if(state.data.recurringExpenses) {
-      state.data.recurringExpenses.forEach(re => { const diff = Math.ceil((new Date(now.getFullYear(), now.getMonth(), Math.min(re.dayOfMonth, 28)) - now)/(1000*60*60*24)); if(diff <= 3 && diff > 0) state.notifications.push({ type:'recurring', message: `${t('notifications.reminder')}: ${escapeHtml(re.description)} (${diff}d)` }); });
+      state.data.recurringExpenses.forEach(re => { const diff = Math.ceil((new Date(now.getFullYear(), now.getMonth(), Math.min(re.dayOfMonth, 28)) - now)/(1000*60*60*24)); if(diff <= 3 && diff > 0) _push({ type:'recurring', message: `${t('notifications.reminder')}: ${escapeHtml(re.description)} (${diff}d)` }); });
   }
 
   // Notifikacije o pending stavkama iz B2B portala (KYC, roba, izmene profila, RFQ).
@@ -325,10 +373,10 @@ function checkAllNotifications(){
       fetch('/api/portal/admin/pending_counts').then(r => r.ok ? r.json() : null).then(counts => {
           if (!counts) return;
           const tLang = (sr, en) => Utils.getLang() === 'sr' ? sr : en;
-          if (counts.kyc > 0)               state.notifications.push({ type: 'portal_kyc', message: tLang(`KYC prijave sa portala čekaju pregled: ${counts.kyc}`, `KYC submissions awaiting review: ${counts.kyc}`), goto: 'portal_kyc' });
-          if (counts.products > 0)          state.notifications.push({ type: 'portal_products', message: tLang(`Nova roba sa portala na odobrenje: ${counts.products}`, `New products from partners awaiting approval: ${counts.products}`), goto: 'portal_products' });
-          if (counts.profile_requests > 0)  state.notifications.push({ type: 'portal_profile', message: tLang(`Zahtevi za izmenu profila: ${counts.profile_requests}`, `Profile change requests: ${counts.profile_requests}`), goto: 'portal_profile' });
-          if (counts.rfqs > 0)              state.notifications.push({ type: 'portal_rfq', message: tLang(`Novi RFQ zahtevi sa portala: ${counts.rfqs}`, `New RFQs from portal: ${counts.rfqs}`), goto: 'demands' });
+          if (counts.kyc > 0)               _push({ type: 'portal_kyc', message: tLang(`KYC prijave sa portala čekaju pregled: ${counts.kyc}`, `KYC submissions awaiting review: ${counts.kyc}`), goto: 'portal_kyc' });
+          if (counts.products > 0)          _push({ type: 'portal_products', message: tLang(`Nova roba sa portala na odobrenje: ${counts.products}`, `New products from partners awaiting approval: ${counts.products}`), goto: 'portal_products' });
+          if (counts.profile_requests > 0)  _push({ type: 'portal_profile', message: tLang(`Zahtevi za izmenu profila: ${counts.profile_requests}`, `Profile change requests: ${counts.profile_requests}`), goto: 'portal_profile' });
+          if (counts.rfqs > 0)              _push({ type: 'portal_rfq', message: tLang(`Novi RFQ zahtevi sa portala: ${counts.rfqs}`, `New RFQs from portal: ${counts.rfqs}`), goto: 'demands' });
           updateNotificationCounter();
       }).catch(() => {});
   }
@@ -345,16 +393,36 @@ function updateNotificationCounter(){
 
 function showNotificationsModal(){
   const listHtml = state.notifications.length ? state.notifications.map(n => {
-      const cls = 'notification-item block p-3 rounded-lg hover:bg-[var(--hover-bg)] cursor-pointer border border-transparent hover:border-[var(--border)] transition-colors mb-1.5';
+      const nid = _notifId(n);
+      const cls = 'notification-item group flex items-center justify-between gap-2 p-3 rounded-lg hover:bg-[var(--hover-bg)] border border-transparent hover:border-[var(--border)] transition-colors mb-1.5';
       let attrs = '';
       if (n.dealId) attrs = `data-deal-id="${escapeHtml(n.dealId)}"`;
       else if (n.goto) attrs = `data-goto="${escapeHtml(n.goto)}"`;
       const icon = { 'portal_kyc': '🛡️', 'portal_products': '📦', 'portal_profile': '👤', 'portal_rfq': '📝', 'payment': '💳', 'oldPartner': '⏳', 'oldDemand': '🔎', 'productAvailable': '🎯', 'recurring': '🔁' }[n.type] || '•';
       return `<div class="${cls}" ${attrs}>
-        <span class="mr-2">${icon}</span><span class="text-sm text-main">${escapeHtml(n.message)}</span>
+        <button class="flex items-center flex-1 min-w-0 text-left cursor-pointer notif-open-btn">
+          <span class="mr-2">${icon}</span><span class="text-sm text-main break-words">${escapeHtml(n.message)}</span>
+        </button>
+        <button class="notif-dismiss-btn text-[var(--muted)] hover:text-red-600 opacity-70 group-hover:opacity-100 text-lg leading-none flex-shrink-0 w-7 h-7 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                data-nid="${escapeHtml(nid)}" title="Dismiss">×</button>
       </div>`;
   }).join('') : `<div class="text-[var(--muted)] p-6 text-center border-2 border-dashed border-[var(--border)] rounded-xl text-sm">${t('notifications.noNotifications')}</div>`;
-  openModal(t('notifications.title'), `<div class="space-y-1">${listHtml}</div>`, null);
+  const actionsBar = state.notifications.length ? `
+    <div class="flex items-center justify-between gap-2 mb-3 pb-3 border-b border-[var(--border)]">
+      <span class="text-xs text-[var(--muted)]">${state.notifications.length} ${state.notifications.length === 1 ? 'notification' : 'notifications'}</span>
+      <div class="flex gap-2">
+        <button onclick="window.dismissAllNotifications()" class="text-xs font-bold text-red-600 hover:text-red-700 hover:underline">Dismiss all</button>
+        <button onclick="window.resetDismissedNotifications()" class="text-xs font-medium text-blue-600 hover:underline">Reset hidden</button>
+      </div>
+    </div>` : '';
+  openModal(t('notifications.title'), `<div>${actionsBar}<div class="space-y-1">${listHtml}</div></div>`, null);
+  // Dismiss buttons
+  document.querySelectorAll('.notif-dismiss-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          window.dismissNotification(btn.dataset.nid);
+      });
+  });
   document.querySelectorAll('.notification-item').forEach(link => {
       link.addEventListener('click', (e) => {
           const dealId = e.currentTarget.dataset.dealId;

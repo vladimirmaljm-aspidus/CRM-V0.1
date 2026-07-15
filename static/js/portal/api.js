@@ -22,6 +22,30 @@ async function saveProductItem() {
     const val = id => (document.getElementById(id)?.value || '').trim();
     const num = id => { const v = parseFloat(document.getElementById(id)?.value); return isNaN(v) ? null : v; };
 
+    // Ownership: 'own' ili 'third_party'. Ako je third_party, obavezno source
+    // company polja (server odbija SOURCE_COMPANY_REQUIRED bez name+taxId).
+    const ownership = (document.querySelector('input[name="form-product-ownership"]:checked') || {}).value || 'own';
+    let sourceCompany = null;
+    if (ownership === 'third_party') {
+        const sName = val('src-company-name');
+        const sTax = val('src-company-taxid');
+        if (!sName || !sTax) {
+            if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
+            return showToast('Source company name and Tax ID are required for third-party goods.', 'error');
+        }
+        sourceCompany = {
+            name: sName, taxId: sTax,
+            relationship: val('src-company-relationship'),
+            country: val('src-company-country'),
+            city: val('src-company-city'),
+            address: val('src-company-address'),
+            website: val('src-company-website'),
+            email: val('src-company-email'),
+            phone: val('src-company-phone'),
+            notes: val('src-company-notes')
+        };
+    }
+
     const payload = {
         id: document.getElementById('form-product-id').value || null,
         name: nameEl.value,
@@ -42,6 +66,8 @@ async function saveProductItem() {
             cap40: num('form-product-cap40')
         },
         coaParams: activeCOAParams,
+        ownership: ownership,
+        sourceCompany: sourceCompany,
         supplyOffers: [{
             price: parseFloat(priceEl.value),
             currency: val('form-product-currency'),
@@ -242,11 +268,28 @@ async function requestOTP() {
 async function verifyOTP() {
     const code = document.getElementById('otp-code')?.value;
     if (!code || code.length !== 6) return showToast(t('enter_code'), 'error');
+    // GPS je obavezan (server će odbiti bez lokacije). Isti standard kao CRM.
+    let locData;
+    try {
+        locData = await new Promise((resolve, reject) => {
+            if (!navigator.geolocation) return reject('Browser does not support GPS.');
+            navigator.geolocation.getCurrentPosition(
+                (pos) => resolve(`${pos.coords.latitude},${pos.coords.longitude}`),
+                (err) => {
+                    if (err.code === err.PERMISSION_DENIED) reject('Precise location is required to access the portal. Please allow location and try again.');
+                    else reject('Location error. Please try again.');
+                },
+                { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+            );
+        });
+    } catch (gpsErr) {
+        return showToast(gpsErr, 'error');
+    }
     try {
         const res = await fetch(`/api/portal/auth/verify_otp/${TOKEN}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ otp: code })
+            body: JSON.stringify({ otp: code, location: locData })
         });
         const data = await res.json();
         if (res.ok) {
@@ -254,7 +297,7 @@ async function verifyOTP() {
             sessionStorage.setItem(`portal_auth_${TOKEN}`, authKey);
             loadPortalData();
         } else {
-            showToast(t('err_bad_otp'), 'error');
+            showToast(data.error === 'LOCATION_REQUIRED' ? 'Precise location must be shared.' : t('err_bad_otp'), 'error');
         }
     } catch (e) { showToast(t('err_network'), 'error'); }
 }
