@@ -19,6 +19,7 @@ from routes.comms import comms_bp
 from routes.portal import portal_bp
 from routes.firewall import firewall_bp
 from routes.vault import vault_bp
+from routes.system import system_bp
 
 # Konfiguracija sistemskog logovanja (sprečava ispisivanje osetljivih grešaka korisnicima)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -73,6 +74,7 @@ app.register_blueprint(comms_bp)
 app.register_blueprint(portal_bp)
 app.register_blueprint(firewall_bp)
 app.register_blueprint(vault_bp)
+app.register_blueprint(system_bp)
 
 @app.before_request
 def enforce_csrf():
@@ -180,6 +182,22 @@ def apply_brutal_security_headers(response):
     
     # HSTS - Prisiljava pretraživač da narednih godinu dana komunicira isključivo preko HTTPS-a
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains; preload'
+
+    # Dodatni sloj: onemogući curenje referrer-a, isključi opasne browser API-je
+    # (kamera/mikrofon/USB/serial), izoluj window od cross-origin popup-a, i
+    # blokiraj Adobe/Silverlight cross-domain policy fajlove.
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = (
+        'accelerometer=(), autoplay=(), camera=(), clipboard-read=(self), '
+        'display-capture=(), encrypted-media=(), fullscreen=(self), '
+        'geolocation=(self), gyroscope=(), hid=(), magnetometer=(), '
+        'microphone=(), midi=(), payment=(), picture-in-picture=(), '
+        'publickey-credentials-get=(self), screen-wake-lock=(), '
+        'serial=(), sync-xhr=(self), usb=(), xr-spatial-tracking=()'
+    )
+    response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
+    response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+    response.headers['X-Permitted-Cross-Domain-Policies'] = 'none'
     
     # Sadržajna polisa (CSP) je pooštrena
     # Ograničeni su izvori slika na tačno definisane sigurne lokacije, umesto divljeg "http://*"

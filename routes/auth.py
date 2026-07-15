@@ -6,7 +6,7 @@ import logging
 from flask import Blueprint, request, jsonify, session
 from werkzeug.security import generate_password_hash, check_password_hash
 from config import DB_FILE
-from utils import log_audit, login_required, FirewallCache
+from utils import log_audit, login_required, FirewallCache, bump_user_token_version, get_user_token_version, get_ip_info
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +77,43 @@ def login():
         session['username'] = user[1]
         session['role'] = user[3]
         session['login_time'] = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        
+
         session['login_ip'] = client_ip
         session['login_ua'] = request.user_agent.string if request.user_agent else "Unknown"
         session['login_ua_family'] = f"{request.user_agent.browser or ''}|{request.user_agent.platform or ''}"
-        
+        # Snimi aktuelnu token_version u sesiju; promena lozinke uveća broj u bazi
+        # i sve stare sesije padnu na prvoj sledećoj zaštićenoj ruti.
+        session['token_version'] = get_user_token_version(user[0])
+
         if client_ip in FirewallCache.login_attempts:
             del FirewallCache.login_attempts[client_ip]
-            
+
+        # ANOMALY DETEKCIJA: iznenadna prijava iz druge zemlje u odnosu na prethodnu.
+        try:
+            _, ip_location, _tz = get_ip_info(client_ip) if client_ip else ('', '', '')
+            # last_login_country se čuva u users tabeli (šema migrirana); poredimo
+            # ipapi.co "network_info" reprezentaciju grada/zemlje.
+            with sqlite3.connect(DB_FILE, timeout=15.0) as _conn:
+                _c = _conn.cursor()
+                _c.execute("SELECT last_login_country FROM users WHERE id=?", (user[0],))
+                prev = _c.fetchone()
+                prev_country = (prev[0] or '').strip() if prev else ''
+                # Grubo poređenje po "Country" tokenu (poslednji token u ipapi label-u)
+                new_country = ''
+                for _piece in [location, ip_location]:
+                    if _piece and ',' in _piece:
+                        new_country = _piece.split(',')[-1].strip()
+                        if new_country: break
+                if prev_country and new_country and prev_country != new_country:
+                    log_audit('SECURITY', 'system',
+                              f'ANOMALY: user {username} logged in from {new_country} — previous session was {prev_country}',
+                              is_suspicious=True, location=location)
+                if new_country:
+                    _c.execute("UPDATE users SET last_login_country=? WHERE id=?", (new_country, user[0]))
+                    _conn.commit()
+        except Exception:
+            logger.warning('anomaly detection failed', exc_info=True)
+
         full_details = f"Successful login. Device: {device_info}"
         log_audit('LOGIN', 'system', full_details, location=location)
         return jsonify({"status": "success", "user": {"id": user[0], "username": user[1], "role": user[3], "permissions": json.loads(user[4]) if user[4] else {}, "signature": user[5] if len(user) > 5 else None}})
@@ -145,17 +174,41 @@ def change_password():
         return jsonify({"error": "WEAK_PASSWORD"}), 400
     
     try:
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
         with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
             conn.execute('PRAGMA journal_mode=WAL;')
             conn.execute('PRAGMA busy_timeout=30000;')
             c = conn.cursor()
             pw_hash = generate_password_hash(new_password, method='scrypt:32768:8:1')
-            c.execute('UPDATE users SET password=? WHERE id=?', (pw_hash, session['user_id']))
+            c.execute('UPDATE users SET password=?, last_password_change_at=? WHERE id=?', (pw_hash, now_iso, session['user_id']))
             conn.commit()
     except Exception:
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
-    
-    log_audit('EDIT', 'users', 'User successfully changed their own password.')
+
+    # Invalidate SVE prethodne sesije (uključujući trenutnu) — korisnik mora ponovo
+    # da se prijavi novom lozinkom. Ovim se hvataju napadi "kradja sesijskog cookie-a
+    # pa promena lozinke ostaje trajna" — stari cookie odmah prestaje da radi.
+    bump_user_token_version(session['user_id'])
+    session.clear()
+
+    log_audit('EDIT', 'users', 'User successfully changed their own password. All sessions invalidated.')
+    return jsonify({"status": "success", "message": "Password changed. Please log in again."})
+
+
+@auth_bp.route('/api/auth/logout_all', methods=['POST'])
+@login_required
+def logout_all_sessions():
+    """Admin ili sam korisnik može da izbaci sve sesije za dati user_id.
+    Ako user_id nije prosleđen, primenjuje se na sebe."""
+    payload = request.get_json(silent=True) or {}
+    target_id = (payload.get('user_id') or session['user_id']).strip()
+    if target_id != session['user_id'] and session.get('role') != 'admin':
+        log_audit('SECURITY', 'users', f'Prevented unauthorized logout_all for {target_id}', is_suspicious=True)
+        return jsonify({"error": "Unauthorized"}), 403
+    bump_user_token_version(target_id)
+    log_audit('SECURITY', 'users', f'All sessions invalidated for user {target_id}', is_suspicious=False)
+    if target_id == session['user_id']:
+        session.clear()
     return jsonify({"status": "success"})
 
 @auth_bp.route('/api/auth/signature', methods=['POST'])

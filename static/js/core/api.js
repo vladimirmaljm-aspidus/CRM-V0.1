@@ -1,34 +1,49 @@
 // static/js/core/api.js
 
 async function handleApiError(res) {
+    const _notify = (msg, type) => {
+        if (typeof window.showToast === 'function') window.showToast(msg, type || 'error', 5000);
+        else alert(msg);
+    };
     if (res.status === 401) {
-        alert(Utils.t('misc.sessionExpired') || 'Session expired. Please login again.');
+        // SESSION_INVALIDATED (nakon promene lozinke) je specijalan slučaj — ista logika:
+        // klijent mora ponovo da se prijavi.
+        try {
+            const j = await res.clone().json();
+            if (j && j.error === 'SESSION_INVALIDATED') {
+                _notify('Session ended (password changed or admin logout). Please log in again.', 'warn');
+            } else {
+                _notify(Utils.t('misc.sessionExpired') || 'Session expired. Please login again.', 'warn');
+            }
+        } catch(e) {
+            _notify(Utils.t('misc.sessionExpired') || 'Session expired. Please login again.', 'warn');
+        }
         localStorage.clear();
-        window.location.reload();
+        setTimeout(() => window.location.reload(), 500);
         throw new Error('Unauthorized');
     }
     if (res.status === 403) {
-        alert(Utils.t('users.accessDeniedEdit') || 'Access denied.');
+        _notify(Utils.t('users.accessDeniedEdit') || 'Access denied.', 'error');
         throw new Error('Forbidden');
     }
     if (res.status === 429) {
-        alert(Utils.t('api.rateLimited') || 'Too many requests. Please wait.');
+        _notify(Utils.t('api.rateLimited') || 'Too many requests. Please wait.', 'warn');
         throw new Error('Rate Limited');
     }
     if (res.status >= 500) {
         let errMsg = Utils.t('api.serverError') || 'Internal server error.';
-        try { 
-            const errObj = await res.json(); 
-            if(errObj.error) errMsg = Utils.t(errObj.error) || errObj.error; 
+        try {
+            const errObj = await res.json();
+            if(errObj.error) errMsg = Utils.t(errObj.error) || errObj.error;
         } catch(e){}
-        alert(errMsg);
+        _notify(errMsg, 'error');
         throw new Error(errMsg);
     }
     if (!res.ok) {
         let errMsg = `HTTP error! status: ${res.status}`;
-        try { 
-            const errObj = await res.json(); 
-            if(errObj.error) errMsg = Utils.t(errObj.error) || errObj.error; 
+        try {
+            const errObj = await res.json();
+            if(errObj.error) errMsg = Utils.t(errObj.error) || errObj.error;
         } catch(e){}
         throw new Error(errMsg);
     }

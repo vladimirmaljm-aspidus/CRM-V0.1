@@ -54,6 +54,18 @@ def init_db():
             cols = [r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()]
             if 'signature' not in cols:
                 c.execute('ALTER TABLE users ADD COLUMN signature TEXT')
+            # MIGRACIJA: token_version — broj koji se povećava pri izmeni lozinke ili
+            # ručnom odjavi svih sesija; svaki request u login_required proverava da
+            # sesija (session.token_version) odgovara aktuelnoj vrednosti korisnika.
+            # Ovim promena lozinke odmah izbacuje SVE ranije otvorene sesije.
+            if 'token_version' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 1")
+            # MIGRACIJA: last_password_change_at + last_login_country — telemetrija za
+            # anomaly detekciju (npr. iznenadna prijava iz druge zemlje).
+            if 'last_password_change_at' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN last_password_change_at TEXT")
+            if 'last_login_country' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN last_login_country TEXT")
             
             # Kreiranje tabela za sve entitete
             tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
