@@ -194,12 +194,60 @@ def portal_catalog(token):
     return jsonify({"products": catalog, "count": len(catalog)})
 
 
+# Poznati Incoterms 2020 skup + kategorije koje koristimo za automation upozorenja
+_INCOTERMS_ANY = {'EXW', 'FCA', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'}
+_INCOTERMS_SEA = {'FAS', 'FOB', 'CFR', 'CIF'}
+_INCOTERMS_ALL = _INCOTERMS_ANY | _INCOTERMS_SEA
+_INCOTERMS_BUYER_ARRANGES = {'EXW', 'FCA', 'FAS', 'FOB'}
+_INCOTERMS_SELLER_INSURES = {'CIF', 'CIP'}
+
+_PAYMENT_TERMS_ALLOWED = {
+    'TT_100_advance', 'TT_50_50', 'TT_30_70', 'TT_30_days', 'TT_60_days',
+    'LC_sight', 'LC_30_days', 'LC_60_days', 'LC_90_days',
+    'CAD', 'DA', 'Escrow', 'OpenAccount', 'Other'
+}
+
+
+def _analyze_incoterm_mismatch(product_data, requested_incoterm):
+    """Pretvara supplyOffers.incoterm listu u set i poredi sa traženim.
+    Vraća listu čitljivih automation hint-ova koji idu u CRM (demand.autoHints).
+    Ovo omogućava adminu koji vidi RFQ da odmah vidi upozorenja: 'traži CIF a
+    imamo samo EXW ponudu → dodatna kalkulacija freight+insurance'.
+    """
+    hints = []
+    if not isinstance(product_data, dict):
+        return hints
+    supply_offers = product_data.get('supplyOffers') or []
+    supplier_incoterms = {str(so.get('incoterm', '')).upper() for so in supply_offers if so.get('incoterm')}
+    supplier_countries = {str(so.get('country', '')).strip() for so in supply_offers if so.get('country')}
+
+    req = (requested_incoterm or '').upper()
+    if req and req in _INCOTERMS_ALL and supplier_incoterms and req not in supplier_incoterms:
+        hints.append(f"INCOTERM_CONVERSION: Client requests {req} but supplier offers only "
+                     f"{sorted(supplier_incoterms)}. Additional lead time required for freight"
+                     f"{'+insurance' if req in _INCOTERMS_SELLER_INSURES else ''} calculation.")
+
+    # Ako je CIF/CFR (sea-mode) a nijedan supplier nema sea Incoterm ranije
+    if req in _INCOTERMS_SEA and supplier_incoterms and not (supplier_incoterms & _INCOTERMS_SEA):
+        hints.append(f"MODE_MISMATCH: Client asks for sea-mode {req} but supplier offers are "
+                     f"road/multi-modal only. Consider whether sea freight is feasible from origin.")
+
+    if supplier_countries:
+        hints.append(f"KNOWN_ORIGINS: Product currently sourced from {sorted(supplier_countries)}.")
+
+    return hints
+
+
 @portal_bp.route('/api/portal/quote_request/<token>', methods=['POST'])
 @rate_limit(max_per_minute=10, key='portal_quote_request')
 def portal_quote_request(token):
-    """Klijent klikne 'Request Quote' za specifičan proizvod iz kataloga.
-    Kreira demand (RFQ) sa productId popunjenim iz kataloga (nije novi proizvod
-    kao standardni RFQ)."""
+    """Klijent klikne 'Request Quote' iz kataloga. Prihvata pun payload:
+    Incoterm, destination, payment terms, banka, logistički agent, notes,
+    optional end-buyer (ako klijent traži za drugu firmu).
+
+    Automation: computes Incoterm mismatch (npr. klijent CIF vs supplier EXW),
+    upisuje autoHints u demand kako bi admin u CRM-u odmah video šta treba
+    dodatno da izračuna (freight, insurance, lead time)."""
     auth_header = request.headers.get('X-Portal-Auth')
     if not verify_portal_auth(token, auth_header): abort(401)
 
@@ -216,7 +264,7 @@ def portal_quote_request(token):
     if not product_id:
         return jsonify({"error": "PRODUCT_REQUIRED"}), 400
 
-    # Provera da klijent može da vidi taj proizvod (sprečava enumeraciju)
+    # Provera da klijent može da vidi taj proizvod
     visible = partner.get('portalVisibleProducts') or []
     if product_id not in visible:
         log_audit('SECURITY', 'portal', f'Blocked quote request for hidden product {product_id} by partner {partner_id}', is_suspicious=True)
@@ -230,16 +278,42 @@ def portal_quote_request(token):
         except (TypeError, ValueError):
             return 0.0
 
-    # Nadji ime proizvoda za CRM prikaz
+    # Sanitizuj i validiraj enum polja
+    incoterm = str(data.get('incoterm', '')).upper().strip()
+    if incoterm and incoterm not in _INCOTERMS_ALL:
+        return jsonify({"error": "INVALID_INCOTERM"}), 400
+
+    payment_terms = str(data.get('paymentTerms', '')).strip()
+    if payment_terms and payment_terms not in _PAYMENT_TERMS_ALLOWED:
+        return jsonify({"error": "INVALID_PAYMENT_TERMS"}), 400
+
+    requestor = str(data.get('requestor', 'self')).lower()
+    if requestor not in ('self', 'third_party'):
+        requestor = 'self'
+
+    end_buyer = None
+    if requestor == 'third_party':
+        eb = data.get('endBuyer') or {}
+        if not isinstance(eb, dict) or not str(eb.get('companyName', '')).strip():
+            return jsonify({"error": "END_BUYER_REQUIRED"}), 400
+        end_buyer = {
+            'companyName': str(eb.get('companyName', '')).strip()[:200],
+            'taxId': str(eb.get('taxId', '')).strip()[:80],
+            'country': str(eb.get('country', '')).strip()[:100],
+            'email': str(eb.get('email', '')).strip()[:200],
+            'phone': str(eb.get('phone', '')).strip()[:80],
+        }
+
+    # Uzmi proizvod iz baze radi mismatch analize + prikaza imena
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
     try:
         c = conn.cursor()
         c.execute("SELECT data FROM products WHERE id=?", (product_id,))
         prow = c.fetchone()
-        prod_name = 'Unknown Product'
-        if prow:
-            pd = safe_parse(prow[0])
-            if isinstance(pd, dict): prod_name = pd.get('name', prod_name)
+        product_data = safe_parse(prow[0]) if prow else {}
+        prod_name = product_data.get('name', 'Unknown Product') if isinstance(product_data, dict) else 'Unknown Product'
+
+        auto_hints = _analyze_incoterm_mismatch(product_data, incoterm)
 
         demand_id = str(uuid.uuid4())
         now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -250,7 +324,18 @@ def portal_quote_request(token):
             "productName": prod_name,
             "quantity": _safe_num(data.get("quantity")),
             "targetPrice": _safe_num(data.get("targetPrice")),
-            "notes": str(data.get("notes", "")).strip()[:1000],
+            "currency": str(data.get("currency", "USD")).strip()[:10],
+            "neededBy": str(data.get("neededBy", "")).strip()[:20],
+            "incoterm": incoterm,
+            "destination": str(data.get("destination", "")).strip()[:250],
+            "paymentTerms": payment_terms,
+            "buyerBank": str(data.get("buyerBank", "")).strip()[:150],
+            "logisticsAgent": str(data.get("logisticsAgent", "")).strip()[:200],
+            "logisticsAgentContact": str(data.get("logisticsAgentContact", "")).strip()[:200],
+            "notes": str(data.get("notes", "")).strip()[:1500],
+            "requestor": requestor,
+            "endBuyer": end_buyer,
+            "autoHints": auto_hints,
             "date": now_iso, "createdAt": now_iso,
             "status": "pending", "source": "B2B Portal Catalog"
         }
@@ -259,9 +344,37 @@ def portal_quote_request(token):
     finally:
         conn.close()
 
-    log_audit('CREATE', 'demands', f"Portal catalog quote request from partner {partner_id} for product {prod_name}", is_suspicious=False)
-    log_portal_activity(partner_id, 'QUOTE_REQUEST', f"Quote request for {prod_name}, qty {demand_obj.get('quantity')}")
-    return jsonify({"status": "success", "message": "Quote request submitted."})
+    log_audit('CREATE', 'demands',
+              f"Portal quote request from partner {partner_id} for '{prod_name}' "
+              f"(qty {demand_obj['quantity']}, incoterm {incoterm}, requestor {requestor}, "
+              f"hints: {len(auto_hints)})",
+              is_suspicious=False)
+    log_portal_activity(partner_id, 'QUOTE_REQUEST',
+                        f"Quote for '{prod_name}' qty {demand_obj['quantity']} {incoterm or ''} → {demand_obj['destination'][:60]}")
+
+    # Obavesti admina emailom ako je konfigurisan (best-effort)
+    try:
+        from utils_email import _send_smtp
+        hints_txt = "\n".join(f"  · {h}" for h in auto_hints) if auto_hints else "  (no automation flags)"
+        body = (f"New quote request received via B2B Portal Catalog.\n\n"
+                f"Client:      {partner.get('companyName', partner_id)}\n"
+                f"Product:     {prod_name}\n"
+                f"Quantity:    {demand_obj['quantity']}\n"
+                f"Incoterm:    {incoterm or '(not specified)'}\n"
+                f"Destination: {demand_obj['destination']}\n"
+                f"Payment:     {payment_terms or '(not specified)'}\n"
+                f"Requestor:   {requestor}\n"
+                f"{('End-buyer:   ' + end_buyer['companyName']) if end_buyer else ''}\n"
+                f"Notes:       {demand_obj['notes'] or '(none)'}\n\n"
+                f"Automation flags:\n{hints_txt}\n")
+        # ne bacamo — samo best effort
+        try: _send_smtp(subject=f"[Portal] New quote request — {prod_name}", body=body)
+        except Exception: pass
+    except Exception:
+        pass
+
+    return jsonify({"status": "success", "message": "Quote request submitted.",
+                    "auto_hints": auto_hints})
 
 
 @portal_bp.route('/api/portal/rfq/submit/<token>', methods=['POST'])
