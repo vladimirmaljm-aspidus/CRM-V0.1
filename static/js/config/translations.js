@@ -18,6 +18,15 @@ const translations = {
     },
     log_actions: { LOGIN: 'Prijava', LOGOUT: 'Odjava', CREATE: 'Kreiranje', EDIT: 'Izmena', DELETE: 'Brisanje', DOWNLOAD: 'Preuzimanje', SCREENSHOT: 'Snimak Ekrana', SECURITY: 'Bezbednost' },
     modules: { system: 'Sistem', audit: 'Dnevnik', users: 'Zaposleni', files: 'Fajlovi', database: 'Baza Podataka', partners: 'Partneri', products: 'Proizvodi', deals: 'Poslovi', demands: 'Potražnja', accounts: 'Računi', transactions: 'Transakcije', recurringExpenses: 'Ponavljajući Troškovi', connections: 'Povezanosti', offers: 'Ponude' },
+    portalPreview: {
+        navLabel: 'Portal Pregled', title: 'Portal Pregled i Kontrola Pristupa',
+        desc: 'Vidite šta svaki klijent tačno vidi u portalu, i podesite mu vidljivost tabova i proizvoda u katalogu.',
+        selectClient: 'Izaberi klijenta', pickHint: 'Izaberite klijenta levo za pregled i uređivanje.',
+        previewingFor: 'Prikaz za',
+        tabAccess: 'Pristup tabovima', tabAccessDesc: 'Isključite tab koji ne želite da klijent vidi.',
+        catalogAccess: 'Vidljivost kataloga', catalogAccessDesc: 'Izaberite proizvode koje klijent vidi u katalogu. Prazna lista = klijent ne vidi ništa u katalogu.',
+        noPartners: 'Nema partnera.', noProducts: 'Nema proizvoda.'
+    },
     portalActivity: {
         navLabel: 'Portal Aktivnost', title: 'Aktivnost Klijenata Portala',
         desc: 'Prati prijave, KYC podneske, upload-e i preuzimanja klijenata sa lokacijama.',
@@ -117,6 +126,15 @@ const translations = {
     },
     log_actions: { LOGIN: 'Login', LOGOUT: 'Logout', CREATE: 'Create', EDIT: 'Modify', DELETE: 'Delete', DOWNLOAD: 'Download', SCREENSHOT: 'Screenshot', SECURITY: 'Security' },
     modules: { system: 'System', audit: 'Audit', users: 'Employees', files: 'Files', database: 'Database', partners: 'Partners', products: 'Products', deals: 'Deals', demands: 'Demands', accounts: 'Accounts', transactions: 'Transactions', recurringExpenses: 'Recurring Expenses', connections: 'Connections', offers: 'Offers' },
+    portalPreview: {
+        navLabel: 'Portal Preview', title: 'Portal Preview & Access Control',
+        desc: 'See exactly what each client sees, and control their tab-level access and product catalog visibility.',
+        selectClient: 'Select client', pickHint: 'Choose a client on the left to view and edit their portal access.',
+        previewingFor: 'Previewing for',
+        tabAccess: 'Tab access', tabAccessDesc: 'Uncheck a tab to hide it from this client.',
+        catalogAccess: 'Catalog visibility', catalogAccessDesc: 'Select which products this client sees. Empty list = client sees nothing in the catalog.',
+        noPartners: 'No partners.', noProducts: 'No products.'
+    },
     portalActivity: {
         navLabel: 'Portal Activity', title: 'Portal Client Activity',
         desc: 'Track client logins, KYC submissions, uploads, and downloads with locations.',

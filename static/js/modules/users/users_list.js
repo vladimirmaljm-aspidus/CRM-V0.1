@@ -281,6 +281,10 @@ function showUserForm(user = null) {
                         <input type="checkbox" name="perm_portal_activity_view" ${perms['portal_activity_view'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-sky-600 border-slate-400">
                         ${tLang('Pregled Portal Aktivnosti', 'View Portal Activity Log')}
                     </label>
+                    <label class="inline-flex items-center cursor-pointer text-[11px] font-black text-teal-700 dark:text-teal-400 hover:text-teal-900 uppercase">
+                        <input type="checkbox" name="perm_portal_preview_manage" ${perms['portal_preview_manage'] ? 'checked' : ''} class="w-4 h-4 mr-2 rounded text-teal-600 border-slate-400">
+                        ${tLang('Portal Pregled i Vidljivost', 'Portal Preview & Visibility')}
+                    </label>
                 </div>
             `;
         }
@@ -409,6 +413,7 @@ function showUserForm(user = null) {
         if (fd.get('perm_settings_manage')) payload.permissions['settings_manage'] = true;
         if (fd.get('perm_audit_view')) payload.permissions['audit_view'] = true;
         if (fd.get('perm_portal_activity_view')) payload.permissions['portal_activity_view'] = true;
+        if (fd.get('perm_portal_preview_manage')) payload.permissions['portal_preview_manage'] = true;
         if (fd.get('perm_firewall_manage')) payload.permissions['firewall_manage'] = true;
         if (fd.get('perm_firewall_manage')) payload.permissions['firewall_manage'] = true;
   
