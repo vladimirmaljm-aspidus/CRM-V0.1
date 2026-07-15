@@ -34,10 +34,114 @@ async function handleApiError(res) {
     }
 }
 
+// CSRF token cache — server generiše token po sesiji; ovde ga držimo u
+// memoriji i dodajemo na svaki mutating (POST/PUT/DELETE/PATCH) zahtev.
+// Globalni monkey-patch nad window.fetch garantuje da svaka POST/PUT/DELETE ruta
+// (uključujući raw fetch pozive u ui.js/utils.js) dobije CSRF header, bez ručnog
+// dodavanja u desetinama call-site-ova.
+let __CSRF_TOKEN = null;
+
+(function _installCsrfInterceptor(){
+    if (window.__csrfFetchPatched) return;
+    window.__csrfFetchPatched = true;
+    const __origFetch = window.fetch.bind(window);
+
+    async function _getToken() {
+        if (__CSRF_TOKEN) return __CSRF_TOKEN;
+        try {
+            const r = await __origFetch('/api/csrf/token', { credentials: 'same-origin' });
+            if (r.ok) {
+                const j = await r.json();
+                __CSRF_TOKEN = j.csrf_token || null;
+            }
+        } catch (e) {}
+        return __CSRF_TOKEN;
+    }
+
+    function _needs(method, url) {
+        const m = (method || 'GET').toUpperCase();
+        if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return false;
+        const u = (typeof url === 'string') ? url : (url && url.url) || '';
+        if (u.startsWith('/api/portal/')) return false;
+        if (u.startsWith('http://') || u.startsWith('https://')) return false;  // cross-origin
+        return true;
+    }
+
+    window.fetch = async function(input, init) {
+        init = init || {};
+        if (_needs(init.method, input)) {
+            const tok = await _getToken();
+            if (tok) {
+                const headers = new Headers(init.headers || {});
+                if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', tok);
+                init.headers = headers;
+            }
+        }
+        let res = await __origFetch(input, init);
+        // Ako je CSRF pao (401/403 sa CSRF_TOKEN_INVALID), povuci nov token i pokušaj još jednom.
+        if (res.status === 403 && _needs(init.method, input)) {
+            try {
+                const j = await res.clone().json();
+                if (j && j.error === 'CSRF_TOKEN_INVALID') {
+                    __CSRF_TOKEN = null;
+                    const tok = await _getToken();
+                    if (tok) {
+                        const headers = new Headers(init.headers || {});
+                        headers.set('X-CSRF-Token', tok);
+                        init.headers = headers;
+                        res = await __origFetch(input, init);
+                    }
+                }
+            } catch (e) {}
+        }
+        return res;
+    };
+})();
+
+async function ensureCsrfToken() {
+    if (__CSRF_TOKEN) return __CSRF_TOKEN;
+    try {
+        const r = await fetch('/api/csrf/token', { credentials: 'same-origin' });
+        if (r.ok) {
+            const j = await r.json();
+            __CSRF_TOKEN = j.csrf_token || null;
+        }
+    } catch (e) { /* biće ponovo pokušano na sledeći zahtev */ }
+    return __CSRF_TOKEN;
+}
+
+function _needsCsrf(method, url) {
+    const m = (method || 'GET').toUpperCase();
+    if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return false;
+    if (typeof url === 'string' && url.startsWith('/api/portal/')) return false;  // portal koristi X-Portal-Auth
+    return true;
+}
+
 async function fetchWithRetry(url, options = {}, retries = 2, delay = 1000) {
+    // Ubaci CSRF header za mutating zahteve (idempotentno; ne menja postojeće).
+    if (_needsCsrf(options.method, url)) {
+        const tok = await ensureCsrfToken();
+        if (tok) {
+            options.headers = Object.assign({}, options.headers || {}, { 'X-CSRF-Token': tok });
+        }
+    }
     for (let i = 0; i <= retries; i++) {
         try {
             const res = await fetch(url, options);
+            // Ako je CSRF token zastareo (npr. sesija resetovana), povuci nov i pokušaj ponovo jednom.
+            if (res.status === 403 && _needsCsrf(options.method, url) && i === 0) {
+                try {
+                    const errJson = await res.clone().json();
+                    if (errJson && errJson.error === 'CSRF_TOKEN_INVALID') {
+                        __CSRF_TOKEN = null;
+                        const tok = await ensureCsrfToken();
+                        if (tok) {
+                            options.headers = Object.assign({}, options.headers || {}, { 'X-CSRF-Token': tok });
+                            continue;
+                        }
+                    }
+                } catch (e) { /* nije JSON, propagiraj */ }
+            }
             if (res.status === 503 && i < retries) {
                 await new Promise(r => setTimeout(r, delay * (i + 1)));
                 continue;

@@ -1,9 +1,12 @@
 import json
+import logging
 import sqlite3
 import uuid
 from flask import Blueprint, request, jsonify, session
 from config import DB_FILE
 from utils import log_audit, login_required, encrypt_data, decrypt_data
+
+logger = logging.getLogger(__name__)
 
 data_bp = Blueprint('data', __name__)
 
@@ -22,7 +25,7 @@ def get_db_connection():
 OWNERSHIP_MODULES = {'partners', 'deals', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'demands', 'shared_documents'}
 
 # Settings kljucevi koji sadrze kredencijale/osetljive podatke i smeju se citati/pisati samo od strane admina.
-SENSITIVE_SETTINGS_KEYS = {'comms_settings'}
+SENSITIVE_SETTINGS_KEYS = {'comms_settings', 'firewall'}
 
 def filter_by_ownership(key, item, module_name, permissions, user_id, role):
     """Vraca False ako korisnik NE sme da vidi ovaj zapis (nema view_all i nije vlasnik/deljeno sa njim)."""
@@ -108,7 +111,9 @@ def get_data(key):
             return jsonify({"value": decrypt_data(row[0]) if row else None})
             
     except Exception as e:
-        return jsonify({"error": f"Database error. ({str(e)})"}), 503
+        logger.error(f"get_data({key}) failed", exc_info=True)
+        log_audit('ERROR', 'database', f'Read failed for module {key}', is_suspicious=True)
+        return jsonify({"error": "DATABASE_ERROR"}), 503
     finally:
         if conn: conn.close()
 
@@ -193,7 +198,7 @@ def save_single_item(key):
             c.execute(f'INSERT OR REPLACE INTO {key} (id, data) VALUES (?, ?)', (item_id, json.dumps(item)))
             action_log_msg = (action, key, f'Updated item ID: {item_id}', False)
         
-        elif key == 'settings' or key == 'company' or key in SENSITIVE_SETTINGS_KEYS:
+        elif key == 'settings' or key == 'company' or key == 'firewall' or key in SENSITIVE_SETTINGS_KEYS:
             # KRITICNA ISPRAVKA: ova grana ranije uopste nije proveravala rolu, pa je
             # SVAKI ulogovani korisnik mogao da prepise SMTP lozinku, podatke firme i
             # druge sistemske postavke preko ovog endpointa.
@@ -204,6 +209,13 @@ def save_single_item(key):
             # ENKRIPCIJA: Podešavanja ostaju bezbedna u trezoru
             c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, encrypt_data(item)))
             action_log_msg = ('EDIT', 'settings', f'Updated settings for {key}', False)
+            # Ako je admin promenio firewall postavke, odmah ih primeni bez rekstart-a.
+            if key == 'firewall':
+                try:
+                    from utils import load_firewall_settings as _reload_fw
+                    _reload_fw()
+                except Exception:
+                    pass
         
         conn.commit()
         
@@ -213,8 +225,10 @@ def save_single_item(key):
         return jsonify({"status": "success", "id": item_id})
         
     except Exception as e:
-        if conn: conn.rollback() 
-        return jsonify({"error": f"Internal server error. ({str(e)})"}), 500
+        if conn: conn.rollback()
+        logger.error(f"save_single_item({key}) failed", exc_info=True)
+        log_audit('ERROR', 'database', f'Save failed for module {key}', is_suspicious=True)
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
     finally:
         if conn: conn.close()
 
@@ -269,7 +283,9 @@ def delete_single_item(key, item_id):
         
     except Exception as e:
         if conn: conn.rollback()
-        return jsonify({"error": f"Internal server error. ({str(e)})"}), 500
+        logger.error(f"delete_single_item({key}, {item_id}) failed", exc_info=True)
+        log_audit('ERROR', 'database', f'Delete failed for module {key}', is_suspicious=True)
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
     finally:
         if conn: conn.close()
 
@@ -318,8 +334,10 @@ def save_data(key):
         return jsonify({"status": "success"})
         
     except Exception as e:
-        if conn: conn.rollback() 
-        return jsonify({"error": f"Critical error. ({str(e)})"}), 500
+        if conn: conn.rollback()
+        logger.error(f"save_data({key}) failed", exc_info=True)
+        log_audit('ERROR', 'database', f'Bulk save failed for module {key}', is_suspicious=True)
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
     finally:
         if conn: conn.close()
 
@@ -440,8 +458,9 @@ def create_deal_from_offer(offer_id):
         return jsonify({"status": "success", "dealId": deal_id, "deal": deal})
     except Exception as e:
         if conn: conn.rollback()
-        log_audit('ERROR', 'offers', f'offer→deal conversion failed: {e}', is_suspicious=True)
-        return jsonify({"error": f"Internal error: {e}"}), 500
+        logger.error(f"create_deal_from_offer({offer_id}) failed", exc_info=True)
+        log_audit('ERROR', 'offers', 'offer→deal conversion failed', is_suspicious=True)
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
     finally:
         if conn: conn.close()
 
@@ -490,6 +509,7 @@ def generate_offer_pdf_endpoint(offer_id):
         return jsonify({"error": "PDF_GENERATION_FAILED"}), 500
 
     # Poveži ponudu sa dokumentom kako bi klijent u portalu imao dugme download
+    from datetime import datetime as _dt, timezone as _tz
     conn = get_db_connection()
     try:
         c = conn.cursor()
@@ -500,7 +520,7 @@ def generate_offer_pdf_endpoint(offer_id):
             if not isinstance(of, dict): of = json.loads(row[0]) if isinstance(row[0], str) else {}
             of['documentId'] = doc_id
             of['pdfFileUrl'] = file_url
-            of['pdfGeneratedAt'] = datetime.utcnow().isoformat() + 'Z' if False else __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat().replace('+00:00', 'Z')
+            of['pdfGeneratedAt'] = _dt.now(_tz.utc).isoformat().replace('+00:00', 'Z')
             c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(of), offer_id))
             conn.commit()
     finally:
