@@ -1,6 +1,7 @@
 import datetime
 import time
 import uuid
+import os
 import sqlite3
 import json
 import secrets
@@ -234,6 +235,17 @@ def login_required(f):
                 return jsonify({"error": "SESSION_HIJACKED"}), 401
             return redirect(url_for('auth.login'))
 
+        # TOKEN VERSION: ako je admin izmenio lozinku ili ručno odjavio sve sesije,
+        # token_version u bazi je uvećan. Bilo koja starija sesija se odmah odbija.
+        session_tv = session.get('token_version', 1)
+        current_tv = get_user_token_version(session['user_id'])
+        if int(session_tv) != int(current_tv):
+            log_audit('SECURITY', 'system', f'Stale session token invalidated for user_id {session["user_id"]} (v{session_tv} vs v{current_tv})', is_suspicious=False)
+            session.clear()
+            if is_api:
+                return jsonify({"error": "SESSION_INVALIDATED"}), 401
+            return redirect(url_for('auth.login'))
+
         return f(*args, **kwargs)
     return decorated_function
 
@@ -396,3 +408,146 @@ def start_housekeeping():
         _housekeeping_started = True
     t = threading.Thread(target=_housekeeping_loop, name='crm-housekeeping', daemon=True)
     t.start()
+    # Isto tako pokreni backup thread (zaseban od housekeeping-a; posao je I/O-težak).
+    tb = threading.Thread(target=_backup_loop, name='crm-backup', daemon=True)
+    tb.start()
+
+
+# ==========================================================
+#  AUTOMATSKI ŠIFROVANI BACKUP BAZE — dnevni snapshot, zadrži poslednjih 14
+# ==========================================================
+
+def _backup_loop():
+    """Jedanput dnevno pravi Fernet-šifrovan snapshot svih .db fajlova i briše
+    starije od 14 dana. Ako DATA_DIR/backups direktorijum nije upisiv, tiho
+    preskoči — housekeeping se ne sme sabotirati zbog produkcionih FS problema.
+    Backup je šifrovan istim ENCRYPTION_KEY-om koji se koristi za Fernet vault
+    upisa u DB, tako da napadač koji dobije samo snapshot ne može da pročita."""
+    from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE, DATA_DIR
+    backups_dir = os.path.join(DATA_DIR, 'backups')
+    try:
+        os.makedirs(backups_dir, exist_ok=True)
+    except Exception:
+        return
+    # Sačekaj 60s posle starta pa počni (ne blokiraj boot).
+    time.sleep(60)
+    while True:
+        try:
+            ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+            for db_path in (DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE):
+                if not os.path.exists(db_path):
+                    continue
+                # Bezbedan snapshot — sqlite backup API garantuje konzistentnost
+                # čak i dok drugi procesi pišu u WAL.
+                tmp_copy = os.path.join(backups_dir, f'.tmp_{os.path.basename(db_path)}')
+                try:
+                    src_conn = sqlite3.connect(db_path, timeout=30.0)
+                    dst_conn = sqlite3.connect(tmp_copy, timeout=30.0)
+                    with dst_conn:
+                        src_conn.backup(dst_conn)
+                    dst_conn.close()
+                    src_conn.close()
+                    with open(tmp_copy, 'rb') as f:
+                        raw = f.read()
+                    enc = cipher_suite.encrypt(raw)
+                    out = os.path.join(backups_dir, f'{os.path.basename(db_path)}.{ts}.fernet')
+                    with open(out, 'wb') as f:
+                        f.write(enc)
+                    os.remove(tmp_copy)
+                    try:
+                        os.chmod(out, 0o600)
+                    except Exception:
+                        pass
+                except Exception:
+                    _util_logger.warning(f'BACKUP: snapshot failed for {db_path}', exc_info=True)
+                    try:
+                        if os.path.exists(tmp_copy): os.remove(tmp_copy)
+                    except Exception:
+                        pass
+
+            # Retention: obriši backup-ove starije od 14 dana
+            cutoff_s = time.time() - 14 * 86400
+            for name in os.listdir(backups_dir):
+                if name.endswith('.fernet'):
+                    p = os.path.join(backups_dir, name)
+                    try:
+                        if os.path.getmtime(p) < cutoff_s:
+                            os.remove(p)
+                    except Exception:
+                        pass
+            _util_logger.info('BACKUP: snapshot complete.')
+        except Exception:
+            _util_logger.warning('BACKUP: iteration failed', exc_info=True)
+        # svakih 24h; malo drema između da uzeti prvi rezultat ne bude odmah dupli
+        time.sleep(24 * 3600)
+
+
+# ==========================================================
+#  PER-ENDPOINT RATE LIMITER — sliding window 1 min
+# ==========================================================
+# Koristi se kao dekorator na svakom osetljivom endpointu (upload, KYC, RFQ...).
+# Ograničava broj poziva iste IP-e u prozoru; nezavisno od globalnog IP blacklist-a
+# (koji se aktivira samo za login brute force).
+
+_endpoint_hits = {}   # (endpoint_name, ip) -> [timestamp, ...]
+_endpoint_hits_lock = threading.Lock()
+
+
+def rate_limit(max_per_minute=30, key='endpoint'):
+    """Dekorator: dozvoljava max_per_minute zahteva po IP-i u minuti.
+    key: string koji ide u ključ (podržava razdvojene limite po ruti)."""
+    from functools import wraps as _wraps
+
+    def _decorator(fn):
+        @_wraps(fn)
+        def _wrapped(*args, **kwargs):
+            ip = get_client_ip() or 'unknown'
+            if ip in FirewallCache.whitelist:
+                return fn(*args, **kwargs)
+            now = time.time()
+            k = (key or fn.__name__, ip)
+            with _endpoint_hits_lock:
+                bucket = _endpoint_hits.get(k, [])
+                bucket = [t for t in bucket if now - t < 60]
+                if len(bucket) >= max_per_minute:
+                    _util_logger.warning(f'RATE_LIMIT hit on {k[0]} from {ip}')
+                    log_audit('SECURITY_BLOCK', 'firewall',
+                              f'Rate limit exceeded on {k[0]} from {ip}', is_suspicious=True)
+                    return jsonify({"error": "RATE_LIMIT_EXCEEDED"}), 429
+                bucket.append(now)
+                _endpoint_hits[k] = bucket
+            return fn(*args, **kwargs)
+        return _wrapped
+    return _decorator
+
+
+# ==========================================================
+#  TOKEN VERSION — invalidira sve sesije kad korisnik menja lozinku
+# ==========================================================
+
+def bump_user_token_version(user_id):
+    """Povećava token_version korisnika za 1. Svaka sesija koja u sebi drži
+    stariji broj biće odbijena pri sledećem zahtevu (login_required)."""
+    if not user_id:
+        return
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            conn.execute('PRAGMA busy_timeout=15000;')
+            conn.execute("UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = ?", (user_id,))
+            conn.commit()
+    except Exception:
+        _util_logger.warning(f'bump_user_token_version({user_id}) failed', exc_info=True)
+
+
+def get_user_token_version(user_id):
+    """Vraća aktuelnu token_version iz baze (1 ako nije postavljena)."""
+    if not user_id:
+        return 1
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            c = conn.cursor()
+            c.execute("SELECT token_version FROM users WHERE id = ?", (user_id,))
+            row = c.fetchone()
+        return int(row[0]) if row and row[0] is not None else 1
+    except Exception:
+        return 1
