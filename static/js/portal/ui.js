@@ -28,7 +28,120 @@ function switchTab(tabId) {
     document.querySelectorAll('#portal-content > div.flex.gap-1 .tab-btn').forEach(el => el.classList.remove('active'));
     const tc = document.getElementById('tab-' + tabId); if (tc) { tc.classList.remove('hidden'); tc.classList.add('fade-in'); setTimeout(() => tc.classList.remove('fade-in'), 300); }
     const tb = document.getElementById('tab-btn-' + tabId); if (tb) tb.classList.add('active');
+    // Lazy-load katalog kad klijent prvi put klikne (bez cena, samo vidljivi proizvodi)
+    if (tabId === 'catalog' && typeof loadCatalog === 'function') loadCatalog();
 }
+
+// ==========================================================
+//  CATALOG (klijent vidi listu proizvoda bez cena, može da traži ponudu)
+// ==========================================================
+let __catalog_cache = null;
+
+async function loadCatalog() {
+    const grid = document.getElementById('catalog-grid');
+    const emptyEl = document.getElementById('catalog-empty');
+    if (!grid) return;
+    grid.innerHTML = '<div class="col-span-full text-center text-slate-500 py-8">Loading catalog…</div>';
+    try {
+        const res = await fetch(`/api/portal/catalog/${TOKEN}`, { headers: { 'X-Portal-Auth': authKey } });
+        if (!res.ok) throw new Error('http ' + res.status);
+        const data = await res.json();
+        __catalog_cache = data.products || [];
+        renderCatalog(__catalog_cache);
+    } catch (e) {
+        grid.innerHTML = `<div class="col-span-full text-center text-red-500 py-8">Failed to load catalog.</div>`;
+    }
+
+    const searchEl = document.getElementById('catalog-search');
+    if (searchEl && !searchEl.__wired) {
+        searchEl.__wired = true;
+        searchEl.addEventListener('input', () => {
+            const q = searchEl.value.toLowerCase().trim();
+            if (!__catalog_cache) return;
+            const filtered = q ? __catalog_cache.filter(p =>
+                (p.name || '').toLowerCase().includes(q) ||
+                (p.category || '').toLowerCase().includes(q) ||
+                (p.hsCode || '').toLowerCase().includes(q) ||
+                (p.brand || '').toLowerCase().includes(q) ||
+                (p.origins || []).some(o => o.toLowerCase().includes(q))
+            ) : __catalog_cache;
+            renderCatalog(filtered);
+        });
+    }
+}
+
+function renderCatalog(products) {
+    const grid = document.getElementById('catalog-grid');
+    const emptyEl = document.getElementById('catalog-empty');
+    if (!grid) return;
+    if (!products || products.length === 0) {
+        grid.innerHTML = '';
+        if (emptyEl) emptyEl.classList.remove('hidden');
+        return;
+    }
+    if (emptyEl) emptyEl.classList.add('hidden');
+    grid.innerHTML = products.map(p => {
+        const originsHtml = (p.origins || []).map(o => `<span class="text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200 rounded px-1.5 py-0.5">${escapeHtml(o)}</span>`).join('');
+        const certsHtml = (p.certificates || []).slice(0, 3).map(c => `<span class="text-[10px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 rounded px-1.5 py-0.5">${escapeHtml(c)}</span>`).join('');
+        return `
+        <div class="border border-slate-200 rounded-xl p-4 bg-white shadow-sm hover:shadow-md transition-shadow flex flex-col">
+            <div class="flex items-start justify-between mb-2 gap-2">
+                <div>
+                    <h3 class="font-semibold text-slate-900 text-sm leading-tight">${escapeHtml(p.name)}</h3>
+                    <div class="text-[11px] text-slate-500 mt-0.5">${escapeHtml(p.category || 'General')}${p.brand ? ' · ' + escapeHtml(p.brand) : ''}</div>
+                </div>
+                ${p.hsCode ? `<span class="text-[10px] font-mono bg-blue-50 text-blue-800 border border-blue-200 rounded px-1.5 py-0.5 whitespace-nowrap">HS ${escapeHtml(p.hsCode)}</span>` : ''}
+            </div>
+            <p class="text-xs text-slate-600 mb-3 line-clamp-3 flex-1">${escapeHtml(p.shortDescription || '')}</p>
+            ${originsHtml ? `<div class="flex flex-wrap gap-1 mb-2"><span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mr-1">Origins:</span>${originsHtml}</div>` : ''}
+            ${certsHtml ? `<div class="flex flex-wrap gap-1 mb-3">${certsHtml}</div>` : ''}
+            ${p.packaging ? `<div class="text-[11px] text-slate-500 mb-3"><strong>Packaging:</strong> ${escapeHtml(p.packaging)}</div>` : ''}
+            <button class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-2 rounded-md uppercase tracking-wider transition-colors mt-auto"
+                    onclick="openQuoteRequest('${escapeHtml(p.id)}', '${escapeHtml((p.name || '').replace(/'/g, "\\'"))}', '${escapeHtml(p.unit || '')}')">
+              Request quote
+            </button>
+        </div>`;
+    }).join('');
+}
+
+// Bezbedan otvarač kotacije — koristi native prompt jer je jednostavno i mobile-friendly.
+async function openQuoteRequest(productId, productName, unit) {
+    const qtyRaw = prompt(`Requested quantity${unit ? ' (' + unit + ')' : ''} for "${productName}"?`);
+    if (qtyRaw === null) return;
+    const qty = parseFloat(qtyRaw);
+    if (!qty || qty <= 0) return showToast('Please enter a valid quantity.', 'error');
+    const notes = prompt('Any specific requirements? (optional — Incoterm, target price, delivery period)') || '';
+    try {
+        const res = await fetch(`/api/portal/quote_request/${TOKEN}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
+            body: JSON.stringify({ productId, quantity: qty, notes })
+        });
+        if (res.ok) {
+            showToast('Quote request submitted. We will contact you shortly.', 'success');
+        } else {
+            const err = await res.json().catch(() => ({}));
+            showToast(err.message || err.error || 'Failed to submit quote request.', 'error');
+        }
+    } catch (e) {
+        showToast('Network error. Please try again.', 'error');
+    }
+}
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+}
+
+// Ownership radio toggler — prikazuje/sakriva third-party panel
+document.addEventListener('change', (ev) => {
+    if (ev.target && ev.target.name === 'form-product-ownership') {
+        const panel = document.getElementById('third-party-panel');
+        if (panel) {
+            if (ev.target.value === 'third_party') panel.classList.remove('hidden');
+            else panel.classList.add('hidden');
+        }
+    }
+});
 
 function logoutPortal() {
     sessionStorage.removeItem(`portal_auth_${TOKEN}`);
@@ -742,7 +855,8 @@ window.applyPermissions = function(permissions) {
         'tab-btn-rfq': 'rfq',
         'tab-btn-kyc': 'kyc',
         'tab-btn-goods': 'goods',
-        'tab-btn-docs': 'documents'
+        'tab-btn-docs': 'documents',
+        'tab-btn-catalog': 'catalog'
     };
     Object.entries(map).forEach(([id, permKey]) => {
         const el = document.getElementById(id);

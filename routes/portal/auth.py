@@ -169,14 +169,24 @@ def verify_otp(token):
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if not check_portal_rate_limit(ip): abort(429)
 
-    user_otp = (request.get_json(silent=True) or {}).get('otp')
+    payload = request.get_json(silent=True) or {}
+    user_otp = payload.get('otp')
+    location = str(payload.get('location', '')).strip()
+    # GPS OBAVEZAN — isti standard kao CRM login. Blokira automated bots i
+    # forsira klijenta da odobri deljenje lokacije preko browsera.
+    if not location or ',' not in location:
+        log_audit('SECURITY', 'portal', f'Portal login blocked: missing GPS location for token {token[:8]}...', is_suspicious=True)
+        return jsonify({"error": "LOCATION_REQUIRED",
+                        "message": "Precise location must be shared to access the portal."}), 403
+
     auth_key = verify_portal_otp(token, user_otp)
     if auth_key:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
         c = conn.cursor()
         partner_id, _ = find_partner_by_token(c, token, enforce_active=False)
         conn.close()
-        log_portal_activity(partner_id, 'LOGIN_SUCCESS', 'OTP login via direct link')
+        # log_portal_activity već ubacuje IP geo; dodajemo GPS koordinate u details.
+        log_portal_activity(partner_id, 'LOGIN_SUCCESS', f'OTP login (GPS: {location})')
         return jsonify({"status": "success", "auth_key": auth_key})
 
     return jsonify({"error": "Invalid or expired OTP"}), 401
@@ -258,6 +268,11 @@ def portal_login_verify():
     data = request.get_json(silent=True) or {}
     session_id = data.get('session_id')
     user_otp = data.get('otp')
+    location = str(data.get('location', '')).strip()
+    if not location or ',' not in location:
+        log_audit('SECURITY', 'portal', 'Portal login blocked: missing GPS location', is_suspicious=True)
+        return jsonify({"error": "LOCATION_REQUIRED",
+                        "message": "Precise location must be shared to access the portal."}), 403
 
     pending = pending_email_sessions.get(session_id)
     if not pending or pending.get('expires', 0) < time.time():
@@ -268,8 +283,8 @@ def portal_login_verify():
     auth_key = verify_portal_otp(token, user_otp)
     if auth_key:
         pending_email_sessions.pop(session_id, None)
-        log_portal_activity(pending['partner_id'], 'LOGIN_SUCCESS', f'Email login from {pending["email"]}')
-        log_audit('LOGIN', 'portal', f'Portal email login: {pending["email"]}', is_suspicious=False)
+        log_portal_activity(pending['partner_id'], 'LOGIN_SUCCESS', f'Email login from {pending["email"]} (GPS: {location})')
+        log_audit('LOGIN', 'portal', f'Portal email login: {pending["email"]} (GPS: {location})', is_suspicious=False)
         return jsonify({"status": "success", "auth_key": auth_key, "token": token})
 
     return jsonify({"error": "Invalid or expired verification code."}), 401
