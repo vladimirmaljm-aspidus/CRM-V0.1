@@ -200,19 +200,28 @@ def portal_login_request():
 
     partner_id, partner = find_partner_by_email(email)
 
+    # BEZBEDNOST: uvek vraćamo istu poruku bez obzira da li je nalog nađen,
+    # blokiran ili nema tokena. Ranije su različiti error kodovi (404 vs 403
+    # vs 200) omogućavali napadaču da enumeracijom otkrije koje su email
+    # adrese registrovane u sistemu. Sve interne razlike se i dalje beleže
+    # u audit trag za analitiku, ali klijent vidi jedinstvenu poruku.
+    generic_msg = "If this email is registered, a verification code has been sent."
+    session_id = secrets.token_hex(16)
+
     if not partner:
         log_portal_activity(None, 'LOGIN_FAILED', f'Unregistered email attempt: {email}')
         log_audit('SECURITY', 'portal', f'Portal login attempt with unregistered email: {email}', is_suspicious=True)
-        return jsonify({"error": "This email address is not registered in our system. Please contact your account manager."}), 404
+        return jsonify({"status": "success", "session_id": session_id, "message": generic_msg})
 
     if partner.get('isPortalActive', True) is False:
         log_portal_activity(partner_id, 'LOGIN_BLOCKED', f'Portal access revoked for {email}')
         log_audit('SECURITY', 'portal', f'Login attempt on revoked portal for {email}', is_suspicious=True)
-        return jsonify({"error": "Your portal access has been suspended. Please contact your account manager."}), 403
+        return jsonify({"status": "success", "session_id": session_id, "message": generic_msg})
 
     token = partner.get('portalToken')
     if not token:
-        return jsonify({"error": "Portal access has not been configured for your account yet. Please contact your account manager."}), 403
+        log_audit('SECURITY', 'portal', f'Portal login for {email} but no token configured', is_suspicious=True)
+        return jsonify({"status": "success", "session_id": session_id, "message": generic_msg})
 
     otp = create_portal_otp(token)
 
@@ -227,18 +236,17 @@ def portal_login_request():
     except Exception:
         pass
 
-    print(f"\n========================================================")
-    print(f"B2B PORTAL LOGIN OTP CODE: {otp} (For: {partner.get('companyName')})")
-    print(f"========================================================\n")
+    # Ispis OTP u konzolu je moguć samo u dev/no-SMTP okruženju i pomaže admin dijagnostici;
+    # u produkciji SMTP mora biti podešen i tada se OTP ne štampa u log.
+    if not email_sent:
+        print(f"\n[DEV] B2B PORTAL OTP: {otp} (For: {partner.get('companyName')})\n")
 
-    session_id = secrets.token_hex(16)
     pending_email_sessions[session_id] = {
         'token': token, 'partner_id': partner_id, 'email': email,
         'expires': time.time() + 300
     }
 
-    msg = "A verification code has been sent to your email." if email_sent else "Verification code generated. Check your email or contact your administrator."
-    return jsonify({"status": "success", "session_id": session_id, "message": msg})
+    return jsonify({"status": "success", "session_id": session_id, "message": generic_msg})
 
 
 @portal_bp.route('/api/portal/auth/login/verify', methods=['POST'])

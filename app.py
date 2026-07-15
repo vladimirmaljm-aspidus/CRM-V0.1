@@ -7,7 +7,8 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from config import SECRET_KEY, MAX_CONTENT_LENGTH, UPLOAD_FOLDER, PORTAL_UPLOAD_FOLDER
 from database import init_db
-from utils import FirewallCache, log_audit
+from utils import (FirewallCache, log_audit, verify_csrf_token, _ensure_csrf_token,
+                   load_firewall_settings, start_housekeeping)
 
 from routes.auth import auth_bp
 from routes.users import users_bp
@@ -57,6 +58,11 @@ if not app.config['SESSION_COOKIE_SECURE']:
 # (npr. kolona 'signature') se ne bi primenile. Sada se izvršava uvek.
 init_db()
 
+# Učitaj firewall/session postavke (admin ih menja preko Settings modula) i
+# pokreni pozadinsko održavanje (rotacija audit log-a, čišćenje kešova).
+load_firewall_settings()
+start_housekeeping()
+
 # Registracija modula (Blueprints)
 app.register_blueprint(auth_bp)
 app.register_blueprint(users_bp)
@@ -68,7 +74,16 @@ app.register_blueprint(portal_bp)
 app.register_blueprint(firewall_bp)
 app.register_blueprint(vault_bp)
 
-CRM_INACTIVITY_TTL = 1200
+@app.before_request
+def enforce_csrf():
+    """Odbija POST/PUT/DELETE/PATCH bez validnog X-CSRF-Token header-a.
+    Portal rute i login se preskaču (imaju drugu odbranu — OTP odn. brute-force
+    limit). GET/HEAD/OPTIONS su prirodno idempotentni."""
+    if request.path.startswith('/static'):
+        return
+    if not verify_csrf_token():
+        log_audit('SECURITY', 'system', f'CSRF token missing/invalid for {request.method} {request.path}', is_suspicious=True)
+        return jsonify({"error": "CSRF_TOKEN_INVALID"}), 403
 
 @app.before_request
 def check_crm_session_timeout():
@@ -76,7 +91,8 @@ def check_crm_session_timeout():
     if 'user_id' in flask_session and not request.path.startswith('/portal') and not request.path.startswith('/static'):
         now = time.time()
         last = flask_session.get('last_active', flask_session.get('login_time', 0))
-        if now - last > CRM_INACTIVITY_TTL:
+        ttl = int(FirewallCache.settings.get('crm_inactivity', 1200))
+        if now - last > ttl:
             username = flask_session.get('username', 'unknown')
             log_audit('SECURITY', 'system', f'Session expired due to inactivity for user: {username}', is_suspicious=False)
             flask_session.clear()
@@ -182,8 +198,16 @@ def apply_brutal_security_headers(response):
     
     return response
 
+@app.route('/api/csrf/token', methods=['GET'])
+def csrf_token_endpoint():
+    """Vraća aktuelni CSRF token trenutne sesije. Frontend ga poziva pri startu
+    i posle svakog login-a; drži ga u memoriji i šalje u X-CSRF-Token header."""
+    return jsonify({"csrf_token": _ensure_csrf_token()})
+
+
 @app.route('/')
 def index():
+    _ensure_csrf_token()
     return render_template('index.html')
 
 if __name__ == '__main__':

@@ -13,10 +13,16 @@ logger = logging.getLogger(__name__)
 auth_bp = Blueprint('auth', __name__)
 
 def is_strong_password(password):
-    """Vojni standard: Min 10 karaktera, 1 veliko slovo, 1 broj."""
-    if len(password) < 10: return False
+    """Vojni standard: Min 12 karaktera, veliko + malo slovo, broj i specijalni znak.
+    Ovim se pooštrava ranija provera (10 char + uppercase + broj) koja je puštala
+    npr. 'Password12' — trivijalnu za rečničke napade."""
+    if not isinstance(password, str): return False
+    if len(password) < 12: return False
+    if len(password) > 200: return False
     if not re.search(r"[A-Z]", password): return False
+    if not re.search(r"[a-z]", password): return False
     if not re.search(r"[0-9]", password): return False
+    if not re.search(r"[^A-Za-z0-9]", password): return False
     return True
 
 @auth_bp.route('/api/auth/login', methods=['POST'])
