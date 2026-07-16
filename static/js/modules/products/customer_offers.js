@@ -118,6 +118,21 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
               
               <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.leadTime')}</label><input id="off-lead" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.leadTime || '')}" placeholder="${Utils.t('placeholders.lead')}" /></div>
               <div class="md:col-span-3"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.paymentTerms')}</label><input id="off-pay-terms" list="payment-terms-list" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm font-bold outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.paymentTerms || '')}" placeholder="${Utils.t('placeholders.pay')}" /></div>
+              <!-- PAYMENT BANK — bira jedan od company.bankAccounts. Klijent
+                   dobija tačne bank instrukcije u PDF-u, admin ne mora ništa
+                   ručno da prepisuje. -->
+              <div class="md:col-span-4">
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">🏦 ${tLang('Banka za uplatu (Kupac plaća na)', 'Buyer pays to (payment bank)')}</label>
+                <select id="off-payment-bank" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500">
+                    ${(() => {
+                        const banks = (state.company && Array.isArray(state.company.bankAccounts)) ? state.company.bankAccounts : [];
+                        if (banks.length === 0) return `<option value="">${tLang('— Nema banaka (dodajte u Podešavanja → Bank Accounts) —', '— No banks configured (add in Settings → Bank Accounts) —')}</option>`;
+                        const savedIdx = (savedOfferData.paymentBankIdx == null ? 0 : savedOfferData.paymentBankIdx);
+                        return banks.map((b, i) => `<option value="${i}" ${i === savedIdx ? 'selected' : ''}>${Utils.escapeHtml(b.bankName || 'Bank')} — ${Utils.escapeHtml(b.accountNumber || '')} (${Utils.escapeHtml(b.currency || '')})</option>`).join('');
+                    })()}
+                </select>
+                <p class="text-[10px] text-slate-500 mt-1">${tLang('Bank instrukcije se automatski popune u PDF-u.', 'Bank instructions will auto-fill on the PDF.')}</p>
+              </div>
               <div class="md:col-span-4"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.specificNotes')}</label><textarea id="off-notes" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-3 text-sm outline-none focus:border-blue-500" rows="2">${Utils.escapeHtml(savedOfferData.notes || state.settings.defaultOfferNotes || Utils.t('offer.default_note'))}</textarea></div>
           </div>
           
@@ -454,6 +469,33 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
             ownerId: savedOfferData.ownerId || state.user?.id || 'SYSTEM',
             sharedWith: savedOfferData.sharedWith || []
         };
+
+        // === PAYMENT BANK AUTO-FILL ===
+        // Ako je admin izabrao banku iz dropdown-a, generišemo bankDetails string
+        // koji server-side PDF generator preuzima direktno. Ovim se garantuje da
+        // ono što admin izabere ovde bude tačno ono što klijent vidi u PDF-u i
+        // na koji račun uplaćuje. Rešava klasu bagova gde je admin ručno pisao
+        // instrukcije i mešao valute/računa.
+        const bankSelEl = document.getElementById('off-payment-bank');
+        if (bankSelEl && bankSelEl.value !== '' && state.company && Array.isArray(state.company.bankAccounts)) {
+            const idx = parseInt(bankSelEl.value, 10);
+            const bank = state.company.bankAccounts[idx];
+            if (bank) {
+                offerObj.paymentBankIdx = idx;
+                const bd = [];
+                if (bank.bankName)      bd.push(`Bank: ${bank.bankName}`);
+                if (bank.bankAddress)   bd.push(bank.bankAddress);
+                if (bank.accountNumber) bd.push(`IBAN / Account: ${bank.accountNumber}`);
+                if (bank.swiftCode)     bd.push(`SWIFT / BIC: ${bank.swiftCode}`);
+                if (bank.correspondentBank) bd.push(`Correspondent bank: ${bank.correspondentBank}`);
+                if (bank.currency)      bd.push(`Currency: ${bank.currency}`);
+                offerObj.bankDetails = bd.join('\n');
+            }
+        } else if (savedOfferData.bankDetails) {
+            // Sačuvaj postojeći manual bankDetails ako korisnik nije birao iz dropdown-a
+            offerObj.bankDetails = savedOfferData.bankDetails;
+            if (savedOfferData.paymentBankIdx != null) offerObj.paymentBankIdx = savedOfferData.paymentBankIdx;
+        }
         
         if (!state.data.offers) state.data.offers = [];
         if (savedOfferId) {

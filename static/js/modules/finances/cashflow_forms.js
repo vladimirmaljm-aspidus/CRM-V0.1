@@ -1,9 +1,23 @@
 // static/js/modules/finances/cashflow_forms.js
 function showAccountForm() {
+    // Company bank accounts (nabrojani u Settings) — cashflow račun MOŽE biti
+    // povezan sa jednim od njih. Time se automatski, kada admin izabere ovaj
+    // cashflow račun pri kreiranju ponude/dila, klijent dobija tačne bankarske
+    // instrukcije za uplatu (bez ručnog prepisivanja).
+    const companyBanks = (state.company && Array.isArray(state.company.bankAccounts))
+        ? state.company.bankAccounts : [];
+
+    const bankBadge = (acc) => {
+        if (!acc.linkedCompanyBankIdx && acc.linkedCompanyBankIdx !== 0) return '';
+        const b = companyBanks[acc.linkedCompanyBankIdx];
+        if (!b) return `<span class="ml-2 text-[10px] text-red-500 font-bold uppercase">Linked bank missing</span>`;
+        return `<span class="ml-2 text-[10px] text-blue-700 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 rounded px-1.5 py-0.5 font-bold">🏦 ${Utils.escapeHtml(b.bankName || 'Bank')}</span>`;
+    };
+
     const listHtml = (state.data.accounts || []).map(acc => `
         <div class="flex items-center justify-between p-3 border-b border-[var(--border)] hover:bg-[var(--hover-bg)] transition-colors">
             <div>
-                <span class="font-bold text-main">${Utils.escapeHtml(acc.name)}</span><br>
+                <span class="font-bold text-main">${Utils.escapeHtml(acc.name)}</span>${bankBadge(acc)}<br>
                 <span class="text-sm font-black ${acc.initialBalance >= 0 ? 'text-success' : 'text-danger'}">${Utils.formatCurrency(acc.initialBalance, acc.currency)}</span>
             </div>
             <div>
@@ -11,7 +25,13 @@ function showAccountForm() {
                 <button class="delete-account-btn text-danger font-bold hover:underline" data-id="${acc.id}">${Utils.t('actions.delete')}</button>
             </div>
         </div>`).join('');
-        
+
+    // Dropdown opcije za povezivanje sa company bankAccounts
+    const bankOptionsHtml = companyBanks.length === 0
+        ? `<option value="">— No company banks configured (add in Settings → Bank Accounts) —</option>`
+        : `<option value="">— None (standalone cash account) —</option>` +
+          companyBanks.map((b, i) => `<option value="${i}">${Utils.escapeHtml(b.bankName || 'Bank')} — ${Utils.escapeHtml(b.accountNumber || '')} (${Utils.escapeHtml(b.currency || '')})</option>`).join('');
+
     const html = `
     <div class="space-y-4">
         <div id="accounts-list" class="max-h-60 overflow-y-auto">${listHtml}</div>
@@ -24,27 +44,35 @@ function showAccountForm() {
                 <label class="block font-bold text-main">${Utils.t('cashflow.initialBalance')}<input name="initialBalance" type="number" step="0.01" class="form-input mt-1 border-blue-200" required/></label>
                 <label class="block font-bold text-main">${Utils.t('cashflow.currency')}<select name="currency" class="form-input mt-1 border-blue-200">${(typeof CURRENCIES !== 'undefined' ? CURRENCIES : ['USD','EUR']).map(c => `<option value="${c}">${c}</option>`).join('')}</select></label>
             </div>
+            <label class="block font-bold text-main">
+                🏦 Link to company bank account
+                <select name="linkedCompanyBankIdx" class="form-input mt-1 border-blue-200">${bankOptionsHtml}</select>
+                <p class="text-[11px] font-normal text-slate-500 mt-1">When you generate an invoice/offer that receives money on this cashflow account, the linked bank's payment instructions (IBAN, SWIFT, bank name) will auto-fill on the document.</p>
+            </label>
             <div class="flex justify-end gap-2 mt-4 pt-3 border-t border-[var(--border)]">
                 <button type="button" id="cancel-edit-account" class="btn bg-[var(--panel)] border border-[var(--border)] hidden text-main">${Utils.t('actions.cancel')}</button>
                 <button type="submit" class="btn bg-blue-600 text-white shadow">${Utils.t('actions.save')}</button>
             </div>
         </form>
     </div>`;
-    
+
     Utils.openModal(Utils.t('cashflow.manageAccounts'), html, async (fd) => {
-        const id = fd.get('id') || Utils.generateId(); 
-        const account = { 
-            id, 
-            name: fd.get('name'), 
-            initialBalance: parseFloat(fd.get('initialBalance')) || 0, 
+        const id = fd.get('id') || Utils.generateId();
+        const linkedIdxRaw = fd.get('linkedCompanyBankIdx');
+        const linkedIdx = (linkedIdxRaw === '' || linkedIdxRaw == null) ? null : parseInt(linkedIdxRaw, 10);
+        const account = {
+            id,
+            name: fd.get('name'),
+            initialBalance: parseFloat(fd.get('initialBalance')) || 0,
             currency: fd.get('currency'),
+            linkedCompanyBankIdx: (Number.isFinite(linkedIdx) ? linkedIdx : null),
             createdAt: state.editingItem?.createdAt || new Date().toISOString(),
             lastModified: new Date().toISOString()
         };
-        if (state.editingItem) state.data.accounts[state.data.accounts.findIndex(a => a.id === id)] = account; 
+        if (state.editingItem) state.data.accounts[state.data.accounts.findIndex(a => a.id === id)] = account;
         else state.data.accounts.push(account);
-        
-        await saveSingleItem('accounts', account); 
+
+        await saveSingleItem('accounts', account);
         state.editingItem = null; Utils.closeModal(); render(); showAccountForm();
     });
     
@@ -58,17 +86,19 @@ function showAccountForm() {
         cancelBtn.classList.add('hidden'); state.editingItem = null; 
     });
     
-    document.querySelectorAll('.edit-account-btn').forEach(btn => btn.addEventListener('click', (e) => { 
-        const acc = state.data.accounts.find(a => a.id === e.currentTarget.dataset.id); 
-        if(acc) { 
-            state.editingItem = acc; 
-            form.querySelector('[name="id"]').value = acc.id; 
-            form.querySelector('[name="name"]').value = acc.name; 
-            form.querySelector('[name="initialBalance"]').value = acc.initialBalance; 
-            form.querySelector('[name="currency"]').value = acc.currency; 
-            title.innerText = Utils.t('actions.edit'); 
-            cancelBtn.classList.remove('hidden'); 
-        } 
+    document.querySelectorAll('.edit-account-btn').forEach(btn => btn.addEventListener('click', (e) => {
+        const acc = state.data.accounts.find(a => a.id === e.currentTarget.dataset.id);
+        if(acc) {
+            state.editingItem = acc;
+            form.querySelector('[name="id"]').value = acc.id;
+            form.querySelector('[name="name"]').value = acc.name;
+            form.querySelector('[name="initialBalance"]').value = acc.initialBalance;
+            form.querySelector('[name="currency"]').value = acc.currency;
+            const linkedSelect = form.querySelector('[name="linkedCompanyBankIdx"]');
+            if (linkedSelect) linkedSelect.value = (acc.linkedCompanyBankIdx == null ? '' : String(acc.linkedCompanyBankIdx));
+            title.innerText = Utils.t('actions.edit');
+            cancelBtn.classList.remove('hidden');
+        }
     }));
     
     document.querySelectorAll('.delete-account-btn').forEach(btn => btn.addEventListener('click', (e) => { 
