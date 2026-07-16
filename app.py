@@ -198,6 +198,13 @@ def apply_brutal_security_headers(response):
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
     response.headers['X-Permitted-Cross-Domain-Policies'] = 'none'
+
+    # NOINDEX za PORTAL — B2B portal ne sme da se pojavi u Google/Bing rezultatima.
+    # Zaposleni CRM je već iza login-a, ali portal linkovi kruže preko emaila i
+    # neko može slučajno da ga podeli javno. Ovaj zaglavlje eksplicitno kaže
+    # svim ozbiljnim crawler-ima da ga NE indeksiraju.
+    if request.path.startswith('/portal') or request.path.startswith('/api/portal'):
+        response.headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive, nosnippet'
     
     # Sadržajna polisa (CSP) je pooštrena
     # Ograničeni su izvori slika na tačno definisane sigurne lokacije, umesto divljeg "http://*"
@@ -215,6 +222,19 @@ def apply_brutal_security_headers(response):
     response.headers.pop('Server', None)
     
     return response
+
+@app.route('/robots.txt', methods=['GET'])
+def robots_txt():
+    """Search engines dobiju eksplicitno Disallow za sve /portal i /api rute."""
+    from flask import Response
+    return Response(
+        "User-agent: *\n"
+        "Disallow: /portal\n"
+        "Disallow: /portal/\n"
+        "Disallow: /api/\n",
+        mimetype='text/plain'
+    )
+
 
 @app.route('/api/csrf/token', methods=['GET'])
 def csrf_token_endpoint():

@@ -1447,17 +1447,25 @@ def portal_download_document(token, doc_id):
 # ==========================================================
 
 @portal_bp.route('/api/portal/offers/accept/<token>/<offer_id>', methods=['POST'])
+@rate_limit(max_per_minute=20, key='portal_offer_response')
 def portal_accept_offer(token, offer_id):
-    """Klijent u portalu potvrđuje prihvatanje ponude. Ponuda dobija status
-    'client_accepted' + timestamp. Admin u CRM-u tada može jednim klikom
-    ('Kreiraj dil') da konvertuje ponudu u dil."""
+    """Klijent u portalu potvrđuje ili odbija ponudu. Server:
+      1. čuva clientStatus + timestamp + clientNote (razlog odbijanja)
+      2. postavlja adminReviewedByClient = False → CRM notifikacija se pojavi
+         adminu na dashboard-u dok je ne pregleda ('Client responded')
+      3. šalje SMTP obaveštenje adminu (best-effort)
+      4. loguje u portal_activity_log sa razlogom odbijanja"""
     auth_header = request.headers.get('X-Portal-Auth')
     if not verify_portal_session(token, auth_header):
         return jsonify({"error": "UNAUTHORIZED"}), 401
 
     payload = request.get_json(silent=True) or {}
-    action = str(payload.get('action', 'accept')).lower()  # accept, decline
-    note = str(payload.get('note', '')).strip()[:500]
+    action = str(payload.get('action', 'accept')).lower()
+    note = str(payload.get('note', '')).strip()[:1000]
+
+    if action == 'decline' and len(note) < 3:
+        return jsonify({"error": "DECLINE_REASON_REQUIRED",
+                        "message": "Please provide a short reason for declining."}), 400
 
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
     try:
@@ -1471,7 +1479,6 @@ def portal_accept_offer(token, offer_id):
         if not row:
             return jsonify({"error": "OFFER_NOT_FOUND"}), 404
         offer = safe_parse(row[0])
-        # Ponuda mora pripadati OVOM partneru
         if offer.get('customerId') != partner_id:
             log_audit('SECURITY', 'portal', f'Blocked cross-partner offer accept attempt: offer {offer_id} by {partner_id}', is_suspicious=True)
             return jsonify({"error": "FORBIDDEN"}), 403
@@ -1490,14 +1497,68 @@ def portal_accept_offer(token, offer_id):
         else:
             return jsonify({"error": "INVALID_ACTION"}), 400
 
+        # KLJUČNO: obeleži da klijentov odgovor još nije pregledao admin.
+        # Ovo se koristi u pending_counts/notifications da se pojavi badge
+        # 'Client responded to offer X' dok admin ne otvori i klikne 'Mark seen'.
+        offer['adminReviewedByClient'] = False
+        offer['clientResponseAt'] = now_iso
+
         c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(offer), offer_id))
         conn.commit()
     finally:
         conn.close()
 
-    log_audit(log_action, 'portal', f"Client '{partner.get('companyName')}' {action}ed offer {offer.get('offerNo', offer_id)}", is_suspicious=False)
-    log_portal_activity(partner_id, f'OFFER_{action.upper()}', f"Offer {offer.get('offerNo', offer_id)}")
-    return jsonify({"status": "success", "clientStatus": offer.get('clientStatus'), "at": offer.get('clientAcceptedAt') or offer.get('clientDeclinedAt')})
+    log_audit(log_action, 'portal',
+              f"Client '{partner.get('companyName')}' {action}ed offer {offer.get('offerNo', offer_id)}"
+              + (f" — Reason: {note[:200]}" if action == 'decline' else ''),
+              is_suspicious=False)
+    log_portal_activity(partner_id, f'OFFER_{action.upper()}',
+                        f"Offer {offer.get('offerNo', offer_id)}"
+                        + (f" — {note[:200]}" if note else ''))
+
+    # Email obaveštenje adminu (best effort)
+    try:
+        from utils_email import _send_smtp
+        subject = ('✅ Offer ACCEPTED' if action == 'accept' else '❌ Offer DECLINED') + f" — {partner.get('companyName')} · {offer.get('offerNo', offer_id)}"
+        body = (
+            f"Client:       {partner.get('companyName')}\n"
+            f"Offer:        {offer.get('offerNo', offer_id)}\n"
+            f"Response:     {action.upper()} at {now_iso}\n"
+            f"Client note:  {note or '(none)'}\n"
+        )
+        try: _send_smtp(subject=subject, body=body)
+        except Exception: pass
+    except Exception:
+        pass
+
+    return jsonify({"status": "success", "clientStatus": offer.get('clientStatus'),
+                    "at": offer.get('clientAcceptedAt') or offer.get('clientDeclinedAt')})
+
+
+@portal_bp.route('/api/portal/admin/offers/mark_seen/<offer_id>', methods=['POST'])
+@login_required
+def admin_mark_offer_response_seen(offer_id):
+    """Admin klikne 'Mark seen' na notifikaciji da klijent odgovorio na ponudu.
+    Skida offer.adminReviewedByClient flag → notifikacija nestaje sa dashboard-a."""
+    denied = require_portal_admin()
+    if denied: return denied
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+        offer = safe_parse(row[0])
+        offer['adminReviewedByClient'] = True
+        offer['clientResponseReviewedAt'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        offer['clientResponseReviewedBy'] = session.get('username', 'admin')
+        c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(offer), offer_id))
+        conn.commit()
+    finally:
+        conn.close()
+    log_audit('EDIT', 'portal', f'Admin acknowledged client response on offer {offer_id}', is_suspicious=False)
+    return jsonify({"status": "success"})
 
 
 # ==========================================================
@@ -1643,7 +1704,7 @@ def admin_portal_pending_counts():
     denied = require_portal_admin()
     if denied: return denied
 
-    counts = {"kyc": 0, "products": 0, "profile_requests": 0, "rfqs": 0}
+    counts = {"kyc": 0, "products": 0, "profile_requests": 0, "rfqs": 0, "offer_responses": 0, "offer_responses_detail": []}
     try:
         conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
         cp = conn_p.cursor()
@@ -1662,7 +1723,7 @@ def admin_portal_pending_counts():
     except Exception:
         pass
 
-    # RFQ (potraživnje) iz portala u glavnoj bazi
+    # RFQ (potraživnje) iz portala u glavnoj bazi + neviđeni odgovori na ponude
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
         c = conn.cursor()
@@ -1670,12 +1731,36 @@ def admin_portal_pending_counts():
         rfq_pending = 0
         for r in c.fetchall():
             d = safe_parse(r[0])
-            if d.get('source') == 'B2B Portal' and d.get('status') == 'pending':
+            if isinstance(d, dict) and (d.get('source') or '').startswith('B2B Portal') and d.get('status') == 'pending':
                 rfq_pending += 1
         counts["rfqs"] = rfq_pending
+
+        # Client offer response feed — svaki accept/decline za koji admin nije
+        # kliknuo 'Mark seen' pojavljuje se kao stavka u obaveštenjima.
+        c.execute("SELECT id, data FROM offers")
+        partner_names = {}
+        c.execute("SELECT id, data FROM partners")
+        for pr in c.fetchall():
+            partner_names[pr[0]] = safe_parse(pr[1]).get('companyName', 'Unknown')
+        c.execute("SELECT id, data FROM offers")
+        for r in c.fetchall():
+            o = safe_parse(r[1])
+            if not isinstance(o, dict): continue
+            if o.get('clientStatus') in ('accepted', 'declined') and o.get('adminReviewedByClient') is False:
+                counts["offer_responses_detail"].append({
+                    "offer_id": o.get('id') or r[0],
+                    "offer_no": o.get('offerNo', ''),
+                    "client_name": partner_names.get(o.get('customerId'), 'Unknown'),
+                    "status": o.get('clientStatus'),
+                    "note": (o.get('clientNote') or '')[:400],
+                    "at": o.get('clientResponseAt') or o.get('clientDeclinedAt') or o.get('clientAcceptedAt')
+                })
+        counts["offer_responses"] = len(counts["offer_responses_detail"])
         conn.close()
     except Exception:
         pass
 
-    counts["total"] = sum(counts.values())
+    # 'total' broji integer stavke, ne uključuje offer_responses_detail listu
+    counts["total"] = (counts["kyc"] + counts["products"] + counts["profile_requests"]
+                       + counts["rfqs"] + counts["offer_responses"])
     return jsonify(counts)
