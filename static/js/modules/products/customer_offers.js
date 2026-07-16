@@ -130,6 +130,7 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
 
           <div class="col-span-1 md:col-span-4 flex flex-wrap gap-3 justify-end mt-4 pt-4 border-t border-slate-200">
               <button id="save-offer-btn" class="bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-md text-sm font-black uppercase tracking-widest hover:bg-emerald-700 transition-transform transform hover:-translate-y-0.5">💾 ${Utils.t('offer.saveOfferBtn')}</button>
+              <button id="preview-offer-btn" class="bg-slate-800 text-white px-6 py-3 rounded-xl shadow-md text-sm font-black uppercase tracking-widest hover:bg-slate-900 transition-transform transform hover:-translate-y-0.5" title="${tLang('Isti PDF koji će klijent videti u portalu', 'Same PDF the client will see in the portal')}">👁️ ${tLang('Pregled PDF-a', 'Preview PDF')}</button>
               <button id="print-offer-btn" class="bg-blue-600 text-white px-6 py-3 rounded-xl shadow-md text-sm font-black uppercase tracking-widest hover:bg-blue-700 transition-transform transform hover:-translate-y-0.5">🖨️ ${tLang('Sačuvaj i Preuzmi PDF', 'Save & Download')}</button>
               <button id="email-offer-btn" class="bg-indigo-600 text-white px-6 py-3 rounded-xl shadow-md text-sm font-black uppercase tracking-widest hover:bg-indigo-700 transition-transform transform hover:-translate-y-0.5">📧 ${tLang('Pošalji Mail', 'Send Email')}</button>
           </div>
@@ -572,22 +573,90 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
         if (success) alert(tLang('Ponuda je uspešno sačuvana.', 'Offer saved successfully.'));
     });
     
+    // PREVIEW — otvara identičan PDF koji će klijent videti u portalu, u iframe modalu.
+    // Ne skida fajl na disk, samo pregled. Ide preko istog server-side ReportLab-a.
+    const previewBtn = document.getElementById('preview-offer-btn');
+    if (previewBtn) previewBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        const originalText = previewBtn.innerHTML;
+        previewBtn.innerHTML = `⏳ ${tLang('PRIPREMA...', 'PREPARING...')}`;
+        previewBtn.disabled = true;
+        const saved = await saveOfferToDB();
+        if (!saved) { previewBtn.innerHTML = originalText; previewBtn.disabled = false; return; }
+        try {
+            const currentOffer = state.data.offers.find(o => o.offerNo === displayOfferNum || o.id === (savedOfferData && savedOfferData.id));
+            if (!currentOffer) throw new Error('Saved offer not found');
+            if (typeof showLoader === 'function') showLoader(tLang('Priprema pregleda…', 'Preparing preview…'));
+            const res = await fetch('/api/offers/preview_pdf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(currentOffer)
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            // Otvori modal sa iframe (isto kao portal preview)
+            openModal(tLang('Pregled PDF-a (isto kao u portalu)', 'PDF Preview (same as in portal)'),
+                `<div class="p-2 bg-slate-100">
+                  <iframe src="${url}" class="w-full rounded-lg border border-slate-300 bg-white" style="height: 75vh; min-height: 500px;" title="Offer PDF preview"></iframe>
+                  <div class="mt-2 flex items-center justify-between text-xs text-slate-600 px-1">
+                    <span>${tLang('Ovaj PDF je identičan onom koji klijent vidi u portalu.', 'This PDF is identical to what the client sees in the portal.')}</span>
+                    <a href="${url}" download="Offer_${displayOfferNum.replace(/\//g,'_')}.pdf" class="text-blue-600 hover:underline font-semibold">${tLang('Preuzmi', 'Download')} ↓</a>
+                  </div>
+                </div>`, null);
+            // Očisti blob URL kada se modal zatvori (posle 5min automatski)
+            setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
+        } catch (err) {
+            if (typeof showToast === 'function') showToast('Preview failed: ' + err.message, 'error');
+        } finally {
+            if (typeof hideLoader === 'function') hideLoader();
+            previewBtn.innerHTML = originalText;
+            previewBtn.disabled = false;
+        }
+    });
+
     document.getElementById('print-offer-btn').addEventListener('click', async (e) => {
         e.preventDefault();
         const btn = document.getElementById('print-offer-btn');
         const originalText = btn.innerHTML;
         btn.innerHTML = `⏳ ${tLang('GENERIŠEM PDF...', 'GENERATING PDF...')}`;
         btn.disabled = true;
-        
-        // UVIJEK SAČUVAJ PRIJE ŠTAMPE
+
+        // Uvek prvo snimimo — server-side PDF čita iz baze da bi generisao istu
+        // stvar koju klijent vidi u portalu (ista ReportLab funkcija za oba).
         const saved = await saveOfferToDB();
         if (!saved) { btn.innerHTML = originalText; btn.disabled = false; return; }
-        
-        const filename = `Offer_${displayOfferNum.replace(/\//g,'_')}.pdf`;
-        if(typeof generateNativePDF === 'function') {
-            await generateNativePDF(buildPdfData(), filename, 'download');
-        } else alert("PDF module not loaded.");
-        
+
+        try {
+            // Uzmi TREUTNI zapis ponude iz state-a (nakon što je saveOfferToDB
+            // ažurirao id) i pošalji ga u preview endpoint. Portal koristi
+            // identičan build_offer_pdf() nad istim zapisom pa je izlaz identičan.
+            const currentOffer = state.data.offers.find(o => o.offerNo === displayOfferNum || o.id === (savedOfferData && savedOfferData.id));
+            if (!currentOffer) throw new Error('Saved offer not found in state');
+            const res = await fetch('/api/offers/preview_pdf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(currentOffer)
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Offer_${displayOfferNum.replace(/\//g,'_')}.pdf`;
+            document.body.appendChild(a); a.click(); a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 5000);
+            if (typeof showToast === 'function') showToast(tLang('PDF preuzet.', 'PDF downloaded.'), 'success');
+        } catch (err) {
+            // Fallback na client-side jsPDF (u slučaju da server PDF nije dostupan)
+            if (typeof generateNativePDF === 'function') {
+                const filename = `Offer_${displayOfferNum.replace(/\//g,'_')}.pdf`;
+                await generateNativePDF(buildPdfData(), filename, 'download');
+            } else {
+                if (typeof showToast === 'function') showToast('PDF generation failed: ' + err.message, 'error');
+            }
+        }
+
         btn.innerHTML = originalText;
         btn.disabled = false;
     });

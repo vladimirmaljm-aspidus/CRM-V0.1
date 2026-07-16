@@ -465,6 +465,30 @@ def create_deal_from_offer(offer_id):
         if conn: conn.close()
 
 
+@data_bp.route('/api/offers/preview_pdf', methods=['POST'])
+@login_required
+def preview_offer_pdf():
+    """Vraća PDF bytes za ponudu koja MOŽDA nije snimljena u bazi. CRM koristi
+    ovo za preview u browseru (blob URL) pre 'Save & Generate' — tako admin
+    vidi TAČNO onaj isti PDF koji će klijent kasnije videti u portalu.
+    Time se uklanja stara nekonzistentnost između client-side jsPDF u CRM-u
+    i server-side ReportLab-a u portalu — sada je JEDAN pravi izvor istine."""
+    payload = request.get_json(silent=True) or {}
+    offer = payload if isinstance(payload, dict) else {}
+    if not offer:
+        return jsonify({"error": "OFFER_PAYLOAD_REQUIRED"}), 400
+    try:
+        from pdf_generator import build_offer_pdf
+        pdf_bytes = build_offer_pdf(offer)
+    except Exception as e:
+        logger.error(f"preview_offer_pdf failed: {e}", exc_info=True)
+        return jsonify({"error": "PDF_GENERATION_FAILED"}), 500
+    from flask import Response
+    return Response(pdf_bytes, mimetype='application/pdf',
+                    headers={'Content-Disposition': 'inline; filename="offer_preview.pdf"',
+                             'Cache-Control': 'no-store'})
+
+
 @data_bp.route('/api/offers/<offer_id>/generate_pdf', methods=['POST'])
 @login_required
 def generate_offer_pdf_endpoint(offer_id):
