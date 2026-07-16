@@ -11,6 +11,39 @@ from utils import log_audit, login_required, encrypt_data, decrypt_data, is_safe
 from . import (portal_bp, safe_parse, verify_portal_session, find_partner_by_token, log_portal_activity)
 
 
+def _sanitize_persons(raw_list):
+    """Prima listu direktora/UBO objekata iz portal KYC form-a i vrati
+    strogo sanitizovanu verziju: max 10 osoba, po osobi max 10 file url-ova,
+    svaka url max 250 karaktera. Očekivan input format iz frontend-a:
+      [{name, passport, nationality, files: [urls...]}, ...]
+    Ako nešto nije lista/dict — tiho preskačemo (KYC ostaje validan bez toga)."""
+    if not isinstance(raw_list, list):
+        return []
+    out = []
+    for person in raw_list[:10]:
+        if not isinstance(person, dict):
+            continue
+        clean = {
+            'name': str(person.get('name', ''))[:200].strip(),
+            'passport': str(person.get('passport', ''))[:100].strip(),
+            'nationality': str(person.get('nationality', ''))[:100].strip(),
+        }
+        # Ako nema ni imena ni pasoša, preskoči
+        if not clean['name'] and not clean['passport']:
+            continue
+        files = person.get('files') or []
+        if isinstance(files, list):
+            clean_files = []
+            for f in files[:10]:
+                if isinstance(f, str) and len(f) <= 250 and f.startswith('/portal_uploads/'):
+                    clean_files.append(f)
+            clean['files'] = clean_files
+        else:
+            clean['files'] = []
+        out.append(clean)
+    return out
+
+
 def require_portal_admin():
     """ISPRAVKA: admin rute za B2B portal (pregled/odobravanje KYC dokumenata sa
     bankovnim podacima, direktorima, UBO-ima, i odobravanje proizvoda partnera) su
@@ -864,8 +897,10 @@ def submit_kyc(token):
         "corrBank": str(kyc_data.get('corrBank', '')).strip()[:100],
         "turnover": str(kyc_data.get('turnover', '')).strip()[:50],
         "sourceOfFunds": str(kyc_data.get('sourceOfFunds', '')).strip()[:150],
-        "directors": kyc_data.get('directors', [])[:10],
-        "ubos": kyc_data.get('ubos', [])[:10],
+        # Directors / UBOs sada podržavaju per-osoba files listu (pasoš/ID skenove).
+        # Sanitizacija: max 10 osoba, po osobi max 10 file url-ova (po 250 char).
+        "directors": _sanitize_persons(kyc_data.get('directors', [])),
+        "ubos": _sanitize_persons(kyc_data.get('ubos', [])),
         "aml": kyc_data.get('aml', {}),
         "submitterName": str(kyc_data.get('submitterName', '')).strip()[:100],
         "submitterTitle": str(kyc_data.get('submitterTitle', '')).strip()[:100],
