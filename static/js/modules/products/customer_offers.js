@@ -865,45 +865,119 @@ function renderOffersView() {
         });
     });
 
-    // Konverzija ponude u dil (poziva backend)
-    container.querySelectorAll('[data-convert-offer]').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-            const offerId = e.currentTarget.dataset.convertOffer;
-            const force = e.currentTarget.dataset.force === 'true';
-            const srLang = Utils.getLang() === 'sr';
+    // Konverzija ponude u dil se rešava globalnim event delegation-om (jednom
+    // na document body) — vidi installOfferConvertDelegatedHandler(). Time se
+    // izbegava rizik da re-render izgubi handler ili da izuzetak u petlji za
+    // vezivanje sprečimo klik. Dugmad ostaju standardna <button data-convert-offer>.
+    installOfferConvertDelegatedHandler();
+}
+
+// Instalira jednom-po-sesiji delegirani click handler za dugmad
+// "Kreiraj dil" ([data-convert-offer]). Ovo je robusnije od per-row
+// bindovanja jer:
+//   - preživljava re-render tabele bez potrebe da se ponovo vezuje,
+//   - jedan izuzetak u pojedinačnom klik ciklusu ne obara ostale klikove,
+//   - radi i za dugmad renderovana preko innerHTML nakon inicijalnog binding-a.
+let __offerConvertHandlerInstalled = false;
+function installOfferConvertDelegatedHandler() {
+    if (__offerConvertHandlerInstalled) return;
+    __offerConvertHandlerInstalled = true;
+
+    document.addEventListener('click', async (ev) => {
+        const btn = ev.target && ev.target.closest ? ev.target.closest('[data-convert-offer]') : null;
+        if (!btn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        const offerId = btn.dataset.convertOffer;
+        const force = btn.dataset.force === 'true';
+        const srLang = (typeof Utils !== 'undefined' && Utils.getLang) ? Utils.getLang() === 'sr' : true;
+        const T = (sr, en) => srLang ? sr : en;
+
+        // Zaštita od duplog klika (dugme se onesposobi dok traje mrežni zahtev
+        // i eventualni modal). Vraća se u prvobitno stanje u finally bloku.
+        if (btn.disabled) return;
+        btn.disabled = true;
+        btn.dataset.originalText = btn.dataset.originalText || btn.innerHTML;
+        btn.innerHTML = T('⏳ Kreiram…', '⏳ Creating…');
+
+        const toast = (msg, kind) => {
+            if (typeof showToast === 'function') showToast(msg, kind || 'info');
+            else if (kind === 'error') alert(msg);
+        };
+
+        try {
             const msg = force
-                ? (srLang ? 'PAŽNJA: Klijent nije potvrdio ovu ponudu preko portala.\nDa li ste sigurni da želite da napravite dil bez njegove potvrde?' : 'WARNING: Client has not confirmed via portal.\nAre you sure you want to create the deal without client confirmation?')
-                : (srLang ? 'Kreirati dil iz ove ponude?' : 'Create deal from this offer?');
-            const yes = await (window.askConfirm
-                ? askConfirm(srLang ? 'Konverzija u dil' : 'Convert to deal', msg,
-                             { danger: force, confirmText: srLang ? 'Nastavi' : 'Continue' })
-                : confirm(msg));
-            if (!yes) return;
-            e.currentTarget.disabled = true;
-            try {
-                const res = await fetch(`/api/deals/from_offer/${offerId}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ force })
-                });
-                const data = await res.json();
-                if (res.ok) {
-                    alert((srLang ? 'Dil kreiran uspešno. ID: ' : 'Deal created successfully. ID: ') + data.dealId);
-                    if (typeof loadFromStorage === 'function') await loadFromStorage();
-                    renderOffersView();
-                } else if (data.error === 'CLIENT_HAS_NOT_ACCEPTED') {
-                    alert(srLang ? 'Klijent nije prihvatio ponudu preko portala. Zatražite ga da uđe u portal i klikne "Prihvatam", ili koristite "Bez portala" opciju (traži posebnu dozvolu).' : 'Client has not accepted via portal.');
-                    e.currentTarget.disabled = false;
-                } else if (data.error === 'ALREADY_CONVERTED') {
-                    alert(srLang ? 'Ova ponuda je već konvertovana u dil.' : 'This offer is already converted to a deal.');
-                } else {
-                    alert('Error: ' + (data.error || 'Unknown'));
-                    e.currentTarget.disabled = false;
+                ? T('PAŽNJA: Klijent nije potvrdio ovu ponudu preko portala.\nDa li ste sigurni da želite da napravite dil bez njegove potvrde?',
+                    'WARNING: Client has not confirmed via portal.\nAre you sure you want to create the deal without client confirmation?')
+                : T('Kreirati dil iz ove ponude?', 'Create deal from this offer?');
+
+            let yes;
+            if (typeof window.askConfirm === 'function') {
+                try {
+                    yes = await window.askConfirm(
+                        T('Konverzija u dil', 'Convert to deal'),
+                        msg,
+                        { danger: force, confirmText: T('Nastavi', 'Continue') }
+                    );
+                } catch (mErr) {
+                    // Ako custom modal padne iz bilo kog razloga, ne guši klik —
+                    // predji na native confirm da korisnik ipak može da nastavi.
+                    console.warn('askConfirm failed, falling back to native confirm', mErr);
+                    yes = window.confirm(msg);
                 }
-            } catch (err) {
-                alert('Network error');
-                e.currentTarget.disabled = false;
+            } else {
+                yes = window.confirm(msg);
             }
-        });
-    });
+
+            if (!yes) return;
+
+            const res = await fetch(`/api/deals/from_offer/${encodeURIComponent(offerId)}`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ force })
+            });
+
+            let data = {};
+            try { data = await res.json(); } catch (_) { data = {}; }
+
+            if (res.ok) {
+                toast(T('Dil kreiran uspešno.', 'Deal created successfully.'), 'success');
+                if (typeof loadFromStorage === 'function') {
+                    try { await loadFromStorage(); } catch (_) {}
+                }
+                if (typeof renderOffersView === 'function') {
+                    try { renderOffersView(); } catch (_) {}
+                }
+                // Ako je korisnik u drugom pogledu, forsiraj re-render offera nakon povratka.
+                if (typeof checkAllNotifications === 'function') {
+                    try { checkAllNotifications(); } catch (_) {}
+                }
+            } else if (data.error === 'CLIENT_HAS_NOT_ACCEPTED') {
+                toast(T('Klijent nije prihvatio ponudu preko portala. Zatražite mu da uđe u portal i klikne "Prihvatam", ili koristite "Bez portala" opciju (traži posebnu dozvolu).',
+                        'Client has not accepted via portal. Ask them to accept from the portal, or use the "no portal" option (requires special permission).'), 'error');
+            } else if (data.error === 'ALREADY_CONVERTED') {
+                toast(T('Ova ponuda je već konvertovana u dil.', 'This offer is already converted to a deal.'), 'warning');
+            } else if (data.error === 'OFFER_NOT_FOUND') {
+                toast(T('Ponuda nije pronađena.', 'Offer not found.'), 'error');
+            } else if (data.error === 'UNAUTHORIZED' || data.error === 'FORCE_NOT_ALLOWED') {
+                toast(T('Nemate dozvolu za ovu akciju.', 'You do not have permission for this action.'), 'error');
+            } else if (res.status === 403) {
+                toast(T('Zabranjeno (proverite prijavu ili osvežite stranicu).', 'Forbidden (check login or refresh the page).'), 'error');
+            } else {
+                toast(T('Greška: ', 'Error: ') + (data.error || `HTTP ${res.status}`), 'error');
+            }
+        } catch (err) {
+            console.error('create-deal failed', err);
+            toast(T('Mrežna greška prilikom kreiranja dila. Pokušajte ponovo.',
+                    'Network error while creating deal. Please try again.'), 'error');
+        } finally {
+            btn.disabled = false;
+            if (btn.dataset.originalText) {
+                btn.innerHTML = btn.dataset.originalText;
+                delete btn.dataset.originalText;
+            }
+        }
+    }, false);
 }
