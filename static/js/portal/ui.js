@@ -479,12 +479,31 @@ document.addEventListener('change', (ev) => {
     }
     // KYC entity toggle — Company vs Individual. Prikazuje/sakriva proof-of-address
     // sekciju i menja labelu "Company Details" u "Personal Details" za individualce.
+    // Takođe kompletno sakriva/otključava company-only elemente (Directors, UBOs,
+    // Trade License, Incorporation, Correspondent Bank, Annual Turnover, opAddr)
+    // pa individualcima ne treba da popunjavaju polja koja im ne odgovaraju.
     if (ev.target && ev.target.name === 'kyc-entity-type') {
         const isCompany = ev.target.value === 'company';
         const proofSec = document.getElementById('kyc-sec-proof-address');
         const proofInput = document.getElementById('kyc-proof-address');
         if (proofSec) proofSec.classList.toggle('hidden', isCompany);
         if (proofInput) proofInput.required = !isCompany;
+
+        // Sakrij/otključaj sve elemente sa klasom entity-company-only
+        document.querySelectorAll('.entity-company-only').forEach(el => {
+            el.classList.toggle('hidden', !isCompany);
+            // Ukloni required atribute za sakrivena polja da forma može submitovati.
+            el.querySelectorAll('input, select, textarea').forEach(field => {
+                if (!isCompany) {
+                    if (field.hasAttribute('required')) field.dataset.wasRequired = '1';
+                    field.required = false;
+                } else if (field.dataset.wasRequired === '1') {
+                    field.required = true;
+                }
+            });
+        });
+
+        // Rewordiranje glavne sekcije + labela + hint-ova
         const sec1Label = document.getElementById('lbl-kyc-sec1');
         if (sec1Label) sec1Label.textContent = isCompany ? '1. Company Details' : '1. Personal Details';
         const nameLabel = document.getElementById('lbl-reg-name');
@@ -493,6 +512,18 @@ document.addEventListener('change', (ev) => {
         if (regNoLabel) regNoLabel.innerHTML = isCompany ? 'Registration No.' : 'National ID / Passport No.';
         const industryLabel = document.getElementById('lbl-industry');
         if (industryLabel) industryLabel.innerHTML = isCompany ? 'Industry / Activity' : 'Profession / Occupation';
+        const regAddrLabel = document.getElementById('lbl-reg-addr');
+        if (regAddrLabel) regAddrLabel.innerHTML = isCompany ? 'Registered Address' : 'Home Address';
+        const phoneLabel = document.getElementById('lbl-kyc-phone');
+        if (phoneLabel) phoneLabel.innerHTML = isCompany ? 'Contact Phone' : 'Personal Phone';
+        const taxLabel = document.getElementById('lbl-tax-id');
+        if (taxLabel) taxLabel.innerHTML = isCompany ? 'Tax ID / VAT' : 'Personal Tax ID / TIN';
+        const websiteLabel = document.getElementById('lbl-website');
+        if (websiteLabel) websiteLabel.innerHTML = isCompany ? 'Website' : 'Website / LinkedIn (optional)';
+        const bankIbanLabel = document.getElementById('lbl-bank-iban');
+        if (bankIbanLabel) bankIbanLabel.innerHTML = isCompany ? 'IBAN / Account No.' : 'Personal IBAN / Account No.';
+        const bankAddrLabel = document.getElementById('lbl-bank-addr');
+        if (bankAddrLabel) bankAddrLabel.innerHTML = isCompany ? 'Bank Branch Address' : 'Bank Branch Address (optional)';
     }
 });
 
@@ -512,11 +543,24 @@ function showToast(message, type) {
 }
 
 function getPersonHtml() {
+    // Svaki director/UBO sada ima sopstveni skup polja i uz to per-osoba file upload
+    // (pasoš, dokument identifikacije). Podaci se čitaju u kycForm submit handler-u
+    // i šalju u payload kao struktuirani objekat: { name, passport, nationality, files: [urls...] }
     return `
-    <div class="grid grid-cols-1 md:grid-cols-7 gap-3 bg-slate-50 p-3 rounded-lg border border-slate-200 person-entry">
-        <div class="md:col-span-3"><input type="text" placeholder="${t('dir_name')}" class="input text-sm p-name" required></div>
-        <div class="md:col-span-2"><input type="text" placeholder="${t('dir_pass')}" class="input text-sm font-mono p-pass" required></div>
-        <div class="md:col-span-2 flex gap-2"><input type="text" placeholder="${t('dir_nat')}" class="input text-sm p-nat" required><button type="button" onclick="this.parentElement.parentElement.remove()" class="btn btn-danger small">✕</button></div>
+    <div class="bg-slate-50 p-3 rounded-lg border border-slate-200 person-entry space-y-2">
+        <div class="grid grid-cols-1 md:grid-cols-7 gap-3">
+            <div class="md:col-span-3"><input type="text" placeholder="${t('dir_name') || 'Full name'}" class="input text-sm p-name" required></div>
+            <div class="md:col-span-2"><input type="text" placeholder="${t('dir_pass') || 'Passport / ID no.'}" class="input text-sm font-mono p-pass" required></div>
+            <div class="md:col-span-2 flex gap-2">
+                <input type="text" placeholder="${t('dir_nat') || 'Nationality'}" class="input text-sm p-nat" required>
+                <button type="button" onclick="this.closest('.person-entry').remove()" class="btn btn-danger small" title="Remove this person">✕</button>
+            </div>
+        </div>
+        <div class="flex items-center gap-3 pt-1 border-t border-slate-200">
+            <label class="text-[10px] font-bold uppercase tracking-widest text-slate-500 flex-shrink-0">Passport / ID files</label>
+            <input type="file" class="text-xs w-full p-files" accept=".pdf,.jpg,.jpeg,.png" multiple>
+        </div>
+        <p class="text-[10px] text-slate-500 leading-tight">Upload passport, national ID, or address proof scans for this person. Multiple files allowed.</p>
     </div>`;
 }
 function addDirector() { const dc = document.getElementById('directors-container'); if (dc) dc.insertAdjacentHTML('beforeend', getPersonHtml()); }
@@ -776,26 +820,56 @@ function renderOffers() {
 // Za decline TRAŽIMO razlog (obavezno), jer admin taj podatak inače nema kako
 // da vidi zašto je klijent odbio ponudu.
 async function respondToOffer(offerId, action) {
+    // Guard #1: da li imamo aktivnu sesiju uopšte?
+    if (!authKey || !TOKEN) {
+        showToast('Your session has expired. Please refresh the page and sign in again.', 'error', 6000);
+        return;
+    }
+    // Guard #2: da li je askConfirm / askInput uopšte učitan?
+    if (typeof askConfirm !== 'function' || typeof askInput !== 'function') {
+        console.error('respondToOffer: askConfirm/askInput missing — portal ui.js failed to load properly');
+        // Fallback na native da barem nešto radi
+        if (action === 'accept') {
+            if (!confirm('Accept this offer? Your account manager will contact you to finalize.')) return;
+        } else {
+            const r = prompt('Please provide a reason for declining this offer:');
+            if (!r || r.trim().length < 3) return;
+            var declineNote = r.trim();
+        }
+    }
+
     let note = '';
     if (action === 'accept') {
-        const yes = await askConfirm(
-            t('confirm_accept_offer_title') || 'Accept this offer',
-            t('confirm_accept_offer') || 'By accepting, your account manager will contact you shortly to finalize the deal. Continue?',
-            { confirmText: t('accept') || 'Yes, accept', cancelText: t('cancel') || 'Cancel', confirmClass: 'bg-emerald-600 hover:bg-emerald-700 text-white' }
-        );
-        if (!yes) return;
+        if (typeof askConfirm === 'function') {
+            const yes = await askConfirm(
+                'Accept this offer',
+                'By accepting, your account manager will contact you shortly to finalize the deal. Continue?',
+                { confirmText: 'Yes, accept', cancelText: 'Cancel' }
+            );
+            if (!yes) return;
+        }
     } else {
-        note = await askInput(t('decline_reason_title') || 'Decline this offer', {
-            description: t('decline_reason_desc') || 'Please tell us why. Your feedback goes directly to our team and helps us respond better.',
-            inputType: 'textarea', multiline: true, required: true,
-            placeholder: t('decline_reason_ph') || 'e.g. Price is too high, timing does not fit, alternative supplier chosen…',
-            confirmText: t('decline') || 'Decline offer',
-            cancelText: t('cancel') || 'Cancel',
-            danger: true,
-            validator: v => (v && v.trim().length >= 3) ? null : (t('decline_reason_min') || 'Please provide at least a few words.')
-        });
-        if (note === null) return;   // korisnik otkazao
+        if (typeof askInput === 'function') {
+            const answer = await askInput('Decline this offer', {
+                description: 'Please tell us why. Your feedback goes directly to our team and helps us respond better.',
+                inputType: 'textarea', multiline: true, required: true,
+                placeholder: 'e.g. Price is too high, timing does not fit, alternative supplier chosen…',
+                confirmText: 'Decline offer',
+                cancelText: 'Cancel',
+                danger: true,
+                validator: v => (v && v.trim().length >= 3) ? null : 'Please provide at least a few words.'
+            });
+            if (answer === null || answer === undefined) return;   // korisnik otkazao
+            note = String(answer).trim();
+        } else if (typeof declineNote !== 'undefined') {
+            note = declineNote;
+        } else {
+            return;
+        }
     }
+
+    // Loader pruža vizuelnu potvrdu da se nešto događa
+    if (typeof showLoader === 'function') showLoader(action === 'accept' ? 'Recording your acceptance…' : 'Recording your decline…');
 
     try {
         const res = await fetch(`/api/portal/offers/accept/${TOKEN}/${offerId}`, {
@@ -803,13 +877,27 @@ async function respondToOffer(offerId, action) {
             headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
             body: JSON.stringify({ action, note })
         });
+        if (typeof hideLoader === 'function') hideLoader();
         if (res.ok) {
-            showToast(action === 'accept' ? (t('msg_offer_accepted') || 'Offer accepted. Thank you!') : (t('msg_offer_declined') || 'Offer declined. Our team will follow up.'), 'success');
-            loadPortalData();
-        } else {
-            showToast(t('err_generic'), 'error');
+            showToast(action === 'accept' ? 'Offer accepted. Thank you — our team will contact you shortly.' : 'Offer declined. Our team will follow up.', 'success', 4500);
+            // Sačekaj tren da toast bude vidljiv, pa osveži
+            setTimeout(() => { if (typeof loadPortalData === 'function') loadPortalData(); }, 400);
+            return;
         }
-    } catch (e) { showToast(t('err_network'), 'error'); }
+        // Neuspeh — čitaj konkretnu server poruku pa je jasno pokažemo user-u
+        let errText = 'Something went wrong. Please try again.';
+        try {
+            const j = await res.json();
+            if (j && (j.message || j.error)) errText = j.message || j.error;
+            if (j && j.error === 'UNAUTHORIZED') errText = 'Your session has expired. Please refresh and sign in again.';
+            if (j && j.error === 'DECLINE_REASON_REQUIRED') errText = 'Please provide a short reason for declining.';
+        } catch (_) { /* not JSON */ }
+        showToast(`Failed to ${action} offer: ${errText}`, 'error', 6000);
+    } catch (netErr) {
+        if (typeof hideLoader === 'function') hideLoader();
+        console.error('respondToOffer network error:', netErr);
+        showToast('Network error — please check your connection and try again.', 'error', 6000);
+    }
 }
 
 // Detaljan prikaz ponude (modal)

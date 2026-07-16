@@ -351,12 +351,35 @@ if (kycForm) {
         e.preventDefault();
         const fl = document.getElementById('full-loading'); if (fl) { fl.classList.remove('hidden'); fl.classList.add('flex'); }
         try {
-            const extractPersons = (containerId) => {
+            // Ekstrakcija ljudi (directors/UBOs). Za svakog uploaduje pripadajuće
+            // fajlove (pasoš/ID skenove) preko portal upload endpointa i dodaje
+            // vraćene URL-ove u person.files da bi admin video ko je koga uploadovao.
+            const extractPersons = async (containerId) => {
                 const arr = []; const cont = document.getElementById(containerId);
-                if (cont) cont.querySelectorAll('.person-entry').forEach(row => {
-                    const n = row.querySelector('.p-name')?.value; const p = row.querySelector('.p-pass')?.value; const nt = row.querySelector('.p-nat')?.value;
-                    if (n && p) arr.push({ name: n, passport: p, nationality: nt });
-                });
+                if (!cont) return arr;
+                const rows = cont.querySelectorAll('.person-entry');
+                for (const row of rows) {
+                    const n = row.querySelector('.p-name')?.value;
+                    const p = row.querySelector('.p-pass')?.value;
+                    const nt = row.querySelector('.p-nat')?.value;
+                    if (!n || !p) continue;
+                    const person = { name: n, passport: p, nationality: nt, files: [] };
+                    const fileEl = row.querySelector('.p-files');
+                    if (fileEl && fileEl.files && fileEl.files.length > 0) {
+                        const fd = new FormData();
+                        for (let i = 0; i < fileEl.files.length; i++) fd.append('file', fileEl.files[i]);
+                        try {
+                            const r = await fetch(`/api/portal/upload/${TOKEN}`, {
+                                method: 'POST', headers: { 'X-Portal-Auth': authKey }, body: fd
+                            });
+                            if (r.ok) {
+                                const d = await r.json();
+                                if (d.urls && d.urls.length > 0) person.files = d.urls;
+                            }
+                        } catch (err) { console.error('per-person upload failed', err); }
+                    }
+                    arr.push(person);
+                }
                 return arr;
             };
 
@@ -406,8 +429,8 @@ if (kycForm) {
                 bankName: g('kyc-bank-name'), bankIban: g('kyc-bank-iban'), bankSwift: g('kyc-bank-swift'),
                 bankAddr: g('kyc-bank-addr'), corrBank: g('kyc-corr-bank'),
                 turnover: g('kyc-turnover'), sourceOfFunds: g('kyc-sof'),
-                directors: extractPersons('directors-container'),
-                ubos: extractPersons('ubos-container'),
+                directors: await extractPersons('directors-container'),
+                ubos: await extractPersons('ubos-container'),
                 aml: { isPEP: c('kyc-pep'), isSanctioned: c('kyc-sanctions'), litigation: c('kyc-litigation'), dualUse: c('kyc-dualuse') },
                 submitterName: g('kyc-sub-name'), submitterTitle: g('kyc-sub-title'),
                 consent: c('kyc-consent'),
