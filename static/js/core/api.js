@@ -220,25 +220,33 @@ async function saveToStorage(key) {
 }
 
 async function saveSingleItem(key, item) {
+    if (typeof showLoader === 'function') showLoader((typeof Utils !== 'undefined' && Utils.t('loader.saving')) || 'Saving…');
     try {
-        const res = await fetchWithRetry(`/api/item/${key}`, { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify(item) 
+        const res = await fetchWithRetry(`/api/item/${key}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(item)
         });
         await handleApiError(res);
-        return true; 
-    } catch(e) { 
-        console.error(Utils.t('api.singleSaveError'), e); 
-        throw e; 
+        return true;
+    } catch(e) {
+        console.error(Utils.t('api.singleSaveError'), e);
+        throw e;
+    } finally {
+        if (typeof hideLoader === 'function') hideLoader();
     }
 }
 
 async function deleteItemFromServer(key, id) {
+    if (typeof showLoader === 'function') showLoader((typeof Utils !== 'undefined' && Utils.t('loader.deleting')) || 'Deleting…');
     try {
         const res = await fetchWithRetry(`/api/item/${key}/${id}`, { method: 'DELETE' });
         await handleApiError(res);
-    } catch(e) { console.error(Utils.t('api.deleteError'), e); throw e; }
+    } catch(e) {
+        console.error(Utils.t('api.deleteError'), e); throw e;
+    } finally {
+        if (typeof hideLoader === 'function') hideLoader();
+    }
 }
 
 async function deleteFileFromServer(fileUrl) {

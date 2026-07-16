@@ -158,6 +158,10 @@
                     <p class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider" id="lbl-welcome">Welcome</p>
                     <p class="text-sm font-semibold text-slate-800" id="partner-name">—</p>
                 </div>
+                <button id="portal-refresh-btn" class="btn bg-white border border-slate-200 text-slate-700 hover:bg-slate-50" title="Refresh" aria-label="Refresh data" onclick="refreshPortal()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4" id="portal-refresh-icon"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    <span class="hidden sm:inline text-xs font-semibold ml-1" id="lbl-refresh">Refresh</span>
+                </button>
                 <button class="btn btn-danger" onclick="portalLogout()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
                     <span id="lbl-logout">Logout</span>

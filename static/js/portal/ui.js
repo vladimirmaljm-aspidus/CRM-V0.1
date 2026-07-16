@@ -28,9 +28,45 @@ function switchTab(tabId) {
     document.querySelectorAll('#portal-content > div.flex.gap-1 .tab-btn').forEach(el => el.classList.remove('active'));
     const tc = document.getElementById('tab-' + tabId); if (tc) { tc.classList.remove('hidden'); tc.classList.add('fade-in'); setTimeout(() => tc.classList.remove('fade-in'), 300); }
     const tb = document.getElementById('tab-btn-' + tabId); if (tb) tb.classList.add('active');
+    // Perzistiraj — F5 vraća korisnika na isti tab.
+    try { sessionStorage.setItem(`portal_last_tab_${typeof TOKEN !== 'undefined' ? TOKEN : ''}`, tabId); } catch(e) {}
     // Lazy-load katalog kad klijent prvi put klikne (bez cena, samo vidljivi proizvodi)
     if (tabId === 'catalog' && typeof loadCatalog === 'function') loadCatalog();
 }
+
+// Vrati tab koji je klijent poslednje gledao — koristi se posle loadPortalData().
+window.restorePortalTab = function() {
+    try {
+        const last = sessionStorage.getItem(`portal_last_tab_${typeof TOKEN !== 'undefined' ? TOKEN : ''}`);
+        if (last) {
+            const btn = document.getElementById('tab-btn-' + last);
+            if (btn && !btn.classList.contains('hidden')) switchTab(last);
+        }
+    } catch(e) {}
+};
+
+// Refresh portal podatke — čuva aktivni tab. Poziva se iz refresh dugmeta.
+window.refreshPortal = async function() {
+    if (typeof showLoader === 'function') showLoader('Refreshing…');
+    else { const fl = document.getElementById('full-loading'); if (fl) { fl.classList.remove('hidden'); fl.classList.add('flex'); } }
+    const activeTab = document.querySelector('.tab-btn.active');
+    const activeId = activeTab ? activeTab.id.replace('tab-btn-', '') : null;
+    try {
+        if (typeof loadPortalData === 'function') await loadPortalData();
+        // Rebuild-uj katalog ako je aktivan
+        if (activeId === 'catalog' && typeof loadCatalog === 'function') await loadCatalog();
+        if (activeId) {
+            const btn = document.getElementById('tab-btn-' + activeId);
+            if (btn) switchTab(activeId);
+        }
+        if (typeof showToast === 'function') showToast('Data refreshed.', 'success', 2000);
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Refresh failed.', 'error');
+    } finally {
+        if (typeof hideLoader === 'function') hideLoader();
+        else { const fl = document.getElementById('full-loading'); if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); } }
+    }
+};
 
 // ==========================================================
 //  CATALOG (klijent vidi listu proizvoda bez cena, može da traži ponudu)
