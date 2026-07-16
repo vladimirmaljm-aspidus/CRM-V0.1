@@ -367,7 +367,7 @@ window.resetDismissedNotifications = function() {
 function checkAllNotifications(){
   state.notifications = []; const now = new Date();
   const _dismissed = _loadDismissed();
-  const _push = (n) => { if (!_dismissed.has(_notifId(n))) _push(n); };
+  const _push = (n) => { if (!_dismissed.has(_notifId(n))) state.notifications.push(n); };
   const warningDays = state.settings.paymentWarningDays || 7;
   
   if(state.data.deals) {
