@@ -102,12 +102,39 @@ function buildNavigation() {
   });
 }
 
+// Sačuvaj trenutni view + detail id da bi browser refresh zadržao poziciju.
+// Vezano za user id kako se sesije ne bi mešale ako se pridobe više korisnika.
+function _viewPersistKey() {
+    const uid = (state.user && state.user.id) || 'anon';
+    return `crm_last_view_${uid}`;
+}
+function _persistCurrentView() {
+    try {
+        localStorage.setItem(_viewPersistKey(), JSON.stringify({
+            view: state.currentView, detailViewId: state.detailViewId,
+            at: Date.now()
+        }));
+    } catch (e) {}
+}
+window.restoreLastView = function() {
+    try {
+        const raw = localStorage.getItem(_viewPersistKey());
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        // Ako je snimljeno pre više od 8h — ignoriši (verovatno stari session).
+        if (!saved || (Date.now() - (saved.at || 0)) > 8 * 3600 * 1000) return;
+        if (saved.view) state.currentView = saved.view;
+        if (saved.detailViewId) state.detailViewId = saved.detailViewId;
+    } catch (e) {}
+};
+
 function render() {
   buildNavigation();
-  const main = document.getElementById('main-content'); 
+  const main = document.getElementById('main-content');
   if(!main) return;
   main.innerHTML = '';
-  
+  _persistCurrentView();
+
   if (!state.data.offers) state.data.offers = [];
 
   // Bezbedno renderovanje view-ova (sprečava pucanje ako modul nije učitan)
@@ -672,6 +699,35 @@ function setupGlobalListeners(){
   
   const snb = document.getElementById('show-notifications-btn');
   if(snb) snb.addEventListener('click', showNotificationsModal);
+
+  // REFRESH — čuva state.currentView i re-učitava sve podatke sa servera.
+  // Ne diramo view/detailViewId, samo osvežimo podatke i re-renderujemo.
+  async function refreshData(sourceEl) {
+      const btn = sourceEl || document.getElementById('crm-refresh-btn');
+      if (btn) btn.classList.add('animate-spin');   // rotira ikonu dok se učitava
+      if (typeof showLoader === 'function') showLoader((typeof t === 'function' ? (t('loader.refreshing') || 'Refreshing…') : 'Refreshing…'));
+      try {
+          await loadFromStorage();
+          if (typeof fetchLiveExchangeRates === 'function') await fetchLiveExchangeRates();
+          checkAllNotifications();
+          render();
+          if (typeof showToast === 'function') showToast((typeof t === 'function' ? (t('loader.refreshed') || 'Data refreshed.') : 'Data refreshed.'), 'success', 2500);
+      } catch (e) {
+          if (typeof showToast === 'function') showToast('Refresh failed: ' + (e.message || 'unknown'), 'error');
+      } finally {
+          if (typeof hideLoader === 'function') hideLoader();
+          if (btn) btn.classList.remove('animate-spin');
+      }
+  }
+  const cr = document.getElementById('crm-refresh-btn');
+  if (cr) cr.addEventListener('click', () => refreshData(cr.querySelector('svg') || cr));
+  const mcr = document.getElementById('mobile-refresh-btn');
+  if (mcr) mcr.addEventListener('click', () => refreshData(mcr.querySelector('svg') || mcr));
+  // Keyboard shortcut: Ctrl+R prihvata browser refresh, ali dodajmo alt+R kao brz alias
+  document.addEventListener('keydown', (e) => {
+      if (e.altKey && (e.key === 'r' || e.key === 'R')) { e.preventDefault(); refreshData(); }
+  });
+  window.refreshCrmData = refreshData;   // dostupno drugim modulima
   
   const ifi = document.getElementById('import-file-input');
   if(ifi) ifi.addEventListener('change', (e)=> { if(e.target.files.length > 0) importDatabase(e.target.files[0]); e.target.value = ''; });
@@ -738,15 +794,25 @@ async function initialize(){
       if(sb) sb.classList.add('hidden');
   }
 
-  await loadFromStorage();
-  if (!state.data.offers) state.data.offers = [];
-  await fetchLiveExchangeRates();
-  
-  if (state.user.role === 'admin' && typeof applyRecurringExpenses === 'function') {
-      await applyRecurringExpenses();
+  // Prikaži profesionalan full-screen loader dok se povlače svi podaci —
+  // korisnik jasno vidi da aplikacija radi umesto praznog belog ekrana.
+  if (typeof showLoader === 'function') showLoader(typeof t === 'function' ? (t('loader.loadingData') || 'Loading your workspace…') : 'Loading your workspace…');
+  try {
+      await loadFromStorage();
+      if (!state.data.offers) state.data.offers = [];
+      await fetchLiveExchangeRates();
+      if (state.user.role === 'admin' && typeof applyRecurringExpenses === 'function') {
+          await applyRecurringExpenses();
+      }
+  } finally {
+      if (typeof hideLoader === 'function') hideLoader();
   }
-  
-  localizeStaticHTML(); 
+
+  // Vrati poslednji view koji je korisnik gledao (localStorage) — tako da
+  // browser refresh (F5) ne baca korisnika na 'deals' početnu stranu.
+  if (typeof restoreLastView === 'function') restoreLastView();
+
+  localizeStaticHTML();
   resetFilters(); render(); setupGlobalListeners(); checkAllNotifications();
   setInterval(checkAllNotifications, 1000*60*5);
 }
