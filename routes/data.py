@@ -411,39 +411,139 @@ def create_deal_from_offer(offer_id):
             pass
 
         first_item = (offer.get('items') or [{}])[0] if isinstance(offer.get('items'), list) else {}
+
+        # KRITIČNO: dil MORA biti VERNA kopija svega što je klijent prihvatio.
+        # Svako polje koje ne prenesemo → admin bi ga morao ručno prepisati, sa
+        # rizikom greške koja odstupa od onoga što je klijent potpisao.
+        # Zato prenosimo apsolutno sve komercijalne/logističke/finansijske podatke.
         deal = {
             'id': deal_id,
             'contractId': f"D-{offer.get('offerNo', '')}",
+            'sourceOfferId': offer_id,
+            'sourceOfferNo': offer.get('offerNo', ''),
+            'sourceOfferDate': offer.get('date') or offer.get('createdAt'),
+            'sourceOfferAcceptedAt': offer.get('clientAcceptedAt'),
+            'clientAcceptanceNote': offer.get('clientNote', ''),
+            'status': 'negotiation',
+            'createdAt': now_iso,
+            'ownerId': session.get('user_id', 'SYSTEM'),
+            'sharedWith': [],
+            # === KUPAC ===
             'buyerId': offer.get('customerId'),
             'buyerName': '',
+            'buyerContactEmail': '',
+            'buyerContactPhone': '',
+            'buyerAddress': '',
+            # === PROIZVOD (glavni) — za backward-compat sa CRM prikazom ===
             'productId': offer.get('productId') or first_item.get('productId'),
+            'productName': offer.get('productName') or first_item.get('productName') or '',
+            'hsCode': offer.get('hsCode') or first_item.get('hsCode') or '',
+            'origin': offer.get('origin') or first_item.get('origin') or offer.get('productOrigin') or '',
+            'detailedSpec': offer.get('detailedSpec') or offer.get('productSpec') or first_item.get('detailedSpec') or '',
             'quantity': offer.get('quantity') or first_item.get('quantity'),
-            'unit': offer.get('unit') or first_item.get('unit'),
-            'sellingPrice': offer.get('sellingPrice') or first_item.get('price'),
-            'sellingCurrency': offer.get('currency'),
-            'incoterm': offer.get('incoterm'),
+            'unit': offer.get('unit') or first_item.get('unit') or '',
+            # === CENA I VALUTA (glavna stavka) ===
+            'sellingPrice': offer.get('sellingPrice') or offer.get('price') or first_item.get('price'),
+            'sellingCurrency': offer.get('currency') or 'USD',
+            # === KOMPLETNA LISTA STAVKI (multi-line offer) ===
+            'items': offer.get('items') or [],
+            'services': offer.get('services') or [],
+            # === LOGISTIKA (POL/POD/vessel/container/lead) ===
+            'incoterm': offer.get('incoterm') or first_item.get('incoterm') or '',
             'logistics': {
                 'pol': offer.get('pol', ''),
                 'pod': offer.get('pod', ''),
                 'vessel': offer.get('vessel', ''),
-                'packaging': offer.get('packaging', '')
+                'containerNo': offer.get('containerNo', ''),
+                'packaging': offer.get('packaging') or first_item.get('packaging') or '',
+                'leadTime': offer.get('leadTime') or first_item.get('leadTime') or '',
+                'shipmentDate': '',   # Popuni admin kad se ugovori tačan datum
+                'blNumber': ''         # Popuni tek pri utovaru
             },
-            'paymentTerms': offer.get('paymentTerms'),
-            'status': 'negotiation',
-            'createdAt': now_iso,
-            'sourceOfferId': offer_id,
-            'items': offer.get('items') or [],
-            'ownerId': session.get('user_id', 'SYSTEM'),
-            'sharedWith': []
+            # === TEŽINE / VOLUMEN — bitno za space u kontejneru ===
+            'weights': offer.get('weights') or {},
+            # === FINANSIJE ===
+            'paymentTerms': offer.get('paymentTerms', ''),
+            'discount': offer.get('discount') or 0,
+            'customVatRate': offer.get('customVatRate') or 0,
+            'advance': offer.get('advance') or 0,
+            'taxClause': offer.get('taxClause', ''),
+            # === BANKARSKE INSTRUKCIJE — kritično, admin ne sme da ih ručno prepisuje ===
+            'bankDetails': offer.get('bankDetails', ''),
+            # === NAPOMENE I DODATNO ===
+            'notes': offer.get('notes', ''),
+            'certificates': (first_item.get('certificates') if isinstance(first_item, dict) else '') or '',
+            # === PDF REFERENCE — dokument koji je klijent video/potpisao ===
+            'sourceOfferDocumentId': offer.get('documentId'),
+            'sourceOfferPdfFileUrl': offer.get('pdfFileUrl'),
         }
 
-        # Uzmi ime kupca iz partners tabele
+        # Uzmi kupca iz partners tabele — puni podaci umesto samo ime
         c.execute("SELECT data FROM partners WHERE id=?", (offer.get('customerId'),))
         p_row = c.fetchone()
         if p_row:
             p_data = decrypt_data(p_row[0])
             if isinstance(p_data, dict):
                 deal['buyerName'] = p_data.get('companyName', '')
+                deal['buyerContactEmail'] = (p_data.get('contact', {}) or {}).get('email') or p_data.get('email', '')
+                deal['buyerContactPhone'] = (p_data.get('contact', {}) or {}).get('phone') or p_data.get('phone', '')
+                addr = p_data.get('address', {}) or {}
+                deal['buyerAddress'] = ', '.join(filter(None, [
+                    addr.get('street', ''), addr.get('city', ''), addr.get('country', '')
+                ]))
+                deal['buyerTaxId'] = p_data.get('taxId', '')
+                deal['buyerRegNumber'] = p_data.get('regNumber', '')
+
+        # Ako ponuda ima productId, obogati proizvod-specifikaciju iz kataloga
+        if deal.get('productId'):
+            c.execute("SELECT data FROM products WHERE id=?", (deal['productId'],))
+            pr_row = c.fetchone()
+            if pr_row:
+                pr = decrypt_data(pr_row[0])
+                if isinstance(pr, dict):
+                    if not deal.get('productName'): deal['productName'] = pr.get('name', '')
+                    if not deal.get('hsCode'): deal['hsCode'] = pr.get('hsCode', '')
+                    if not deal.get('detailedSpec'): deal['detailedSpec'] = pr.get('detailedSpec', '')
+                    # Ako je jedan supply offer selektovan preko supplyOfferIndex, prenesi origin i cenu nabavke
+                    supply_offers = pr.get('supplyOffers') or []
+                    idx = first_item.get('supplyOfferIndex') if isinstance(first_item, dict) else None
+                    supply = None
+                    if isinstance(idx, int) and 0 <= idx < len(supply_offers):
+                        supply = supply_offers[idx]
+                    elif first_item.get('supplierId') if isinstance(first_item, dict) else None:
+                        for so in supply_offers:
+                            if so.get('supplierId') == first_item.get('supplierId'):
+                                supply = so; break
+                    if supply:
+                        if not deal.get('origin'): deal['origin'] = supply.get('country', '')
+                        deal['purchasePrice'] = supply.get('price', 0)
+                        deal['purchaseCurrency'] = supply.get('currency', '')
+                        deal['supplierId'] = supply.get('supplierId')
+                        deal['purchaseIncoterm'] = supply.get('incoterm', '')
+                        if not deal['certificates']: deal['certificates'] = supply.get('certificates', '')
+                        # Popuni ime dobavljača
+                        if deal.get('supplierId'):
+                            c.execute("SELECT data FROM partners WHERE id=?", (deal['supplierId'],))
+                            sup_row = c.fetchone()
+                            if sup_row:
+                                sup_data = decrypt_data(sup_row[0])
+                                if isinstance(sup_data, dict):
+                                    deal['supplierName'] = sup_data.get('companyName', '')
+
+        # Ako fali bankDetails na dilu, uzmi ih iz podataka firme (settings.company)
+        if not deal.get('bankDetails'):
+            c.execute("SELECT value FROM settings WHERE key='company'")
+            comp_row = c.fetchone()
+            if comp_row:
+                comp = decrypt_data(comp_row[0])
+                if isinstance(comp, dict):
+                    parts = []
+                    if comp.get('bankName'):    parts.append(f"Bank: {comp['bankName']}")
+                    if comp.get('bankAddress'): parts.append(comp['bankAddress'])
+                    if comp.get('accountNum'):  parts.append(f"IBAN: {comp['accountNum']}")
+                    if comp.get('swift'):       parts.append(f"SWIFT: {comp['swift']}")
+                    if comp.get('corrBank'):    parts.append(f"Correspondent: {comp['corrBank']}")
+                    if parts: deal['bankDetails'] = '\n'.join(parts)
 
         c.execute("INSERT INTO deals (id, data) VALUES (?, ?)", (deal_id, json.dumps(deal)))
 
