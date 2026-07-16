@@ -128,7 +128,17 @@
                 <div id="otp-input-area" class="hidden space-y-4 pt-4 border-t border-slate-100">
                     <div>
                         <label class="label" id="lbl-enter-code">Enter 6-digit Code</label>
-                        <input type="text" id="otp-code" class="input font-mono text-center text-2xl tracking-[0.4em]" maxlength="6" autocomplete="off">
+                        <!-- 6-pojedinačnih polja sa auto-focus + paste podržkom -->
+                        <div id="otp-code-boxes" class="flex justify-between gap-2" role="group" aria-label="One-time code">
+                            <input class="otp-code-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" autocomplete="one-time-code" data-idx="0">
+                            <input class="otp-code-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="1">
+                            <input class="otp-code-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="2">
+                            <input class="otp-code-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="3">
+                            <input class="otp-code-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="4">
+                            <input class="otp-code-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="5">
+                        </div>
+                        <input type="hidden" id="otp-code">
+                        <p class="text-[11px] text-slate-500 mt-2">Paste the whole code — boxes fill automatically.</p>
                     </div>
                     <button id="btn-verify-otp" class="btn btn-primary w-full py-3" onclick="verifyOTP()">Verify &amp; Login</button>
                 </div>
@@ -382,8 +392,32 @@
                 </div>
 
                 <form id="kyc-form" class="space-y-8">
-                    <!-- 1. Company -->
-                    <div class="space-y-4 pb-6 border-b border-slate-100">
+                    <!-- 0. Entity type: Company (legal entity) vs Individual (private person)
+                         Sve legal-entity polja (Directors, UBO, Bank...) su vidljiva samo kod
+                         Company. Individual varijanta pita za dokaz adrese stanovanja (utility bill).
+                    -->
+                    <div class="space-y-3 pb-6 border-b border-slate-100">
+                        <h3 class="text-xs font-semibold text-blue-700 uppercase tracking-widest">0. Type of entity</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <label class="flex items-start gap-3 border border-slate-200 rounded-lg p-4 cursor-pointer hover:bg-slate-50 has-[:checked]:border-blue-500 has-[:checked]:bg-blue-50">
+                                <input type="radio" name="kyc-entity-type" value="company" checked class="mt-1"/>
+                                <span>
+                                    <span class="block text-sm font-semibold text-slate-900">Company / Legal entity</span>
+                                    <span class="block text-xs text-slate-500 mt-1">LLC, corporation, partnership, cooperative. Requires Reg. No, VAT, directors, UBO, banking details.</span>
+                                </span>
+                            </label>
+                            <label class="flex items-start gap-3 border border-slate-200 rounded-lg p-4 cursor-pointer hover:bg-slate-50 has-[:checked]:border-blue-500 has-[:checked]:bg-blue-50">
+                                <input type="radio" name="kyc-entity-type" value="individual" class="mt-1"/>
+                                <span>
+                                    <span class="block text-sm font-semibold text-slate-900">Individual / Private person</span>
+                                    <span class="block text-xs text-slate-500 mt-1">Requires passport / ID and a recent utility bill as proof of home address (electricity, phone, water, internet — issued within the last 3 months).</span>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- 1. Company details — sakriva se kad je entity=individual (labela postaje "Personal details") -->
+                    <div class="space-y-4 pb-6 border-b border-slate-100" id="kyc-sec-company">
                         <h3 class="text-xs font-semibold text-blue-700 uppercase tracking-widest" id="lbl-kyc-sec1">1. Company Details</h3>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
                             <div>
@@ -443,8 +477,23 @@
                         </div>
                     </div>
 
+                    <!-- 1b. Proof of home address — samo za Individual entitet.
+                         Skrivena za Company. Vidljivo tek kad je izabran Individual toggle. -->
+                    <div class="space-y-4 pb-6 border-b border-slate-100 hidden" id="kyc-sec-proof-address">
+                        <h3 class="text-xs font-semibold text-amber-700 uppercase tracking-widest">1b. Proof of Home Address <span class="text-red-500">*</span></h3>
+                        <p class="text-xs text-slate-600 bg-amber-50 border border-amber-200 rounded-lg p-3 leading-relaxed">
+                            Please upload one of the following as evidence of your current residential address. The document must clearly show your full name and address, and must be dated within the last 3 months:
+                            <span class="block mt-1 font-semibold text-amber-900">Electricity bill • Water bill • Internet / phone bill • Bank statement • Government-issued residency document</span>
+                        </p>
+                        <div>
+                            <label class="label required" id="lbl-proof-addr">Upload proof of address</label>
+                            <input type="file" id="kyc-proof-address" accept=".pdf,.png,.jpg,.jpeg" class="input">
+                            <p class="field-help">PDF, PNG or JPG — up to 15 MB. Bill must be issued in your name and show your home address.</p>
+                        </div>
+                    </div>
+
                     <!-- 2. Banking -->
-                    <div class="space-y-4 pb-6 border-b border-slate-100">
+                    <div class="space-y-4 pb-6 border-b border-slate-100" id="kyc-sec-banking">
                         <h3 class="text-xs font-semibold text-blue-700 uppercase tracking-widest" id="lbl-kyc-sec2">2. Banking &amp; Financial Profile</h3>
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div>

@@ -64,9 +64,15 @@ def check_portal_rate_limit(ip):
 
 
 def safe_parse(data_str):
+    """Pokušava JSON parse; ako ne uspe, pretpostavlja da je payload šifrovan
+    Fernet-om pa poziva decrypt_data(). Bare except zamenjen preciznijim
+    hvatanjem — hvatamo samo očekivane greške parsiranja/tipa, ne KeyboardInterrupt
+    i sl."""
+    if data_str is None or data_str == '':
+        return {}
     try:
         return json.loads(data_str)
-    except:
+    except (json.JSONDecodeError, TypeError, ValueError):
         return decrypt_data(data_str)
 
 

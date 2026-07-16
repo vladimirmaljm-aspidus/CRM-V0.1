@@ -1,5 +1,101 @@
 // Aspidus B2B Portal — UI helpers, renderers, tab handling
 
+// ==========================================================
+//  ASK MODAL — profesionalna zamena za native prompt()/confirm() u PORTALU
+// ==========================================================
+// Portal ne učitava core/utils.js pa mora imati sopstvene helperi za modalne
+// prompt-e. API je identičan sa CRM-om (Promise-based) tako da respondToOffer
+// i drugi kod može transparentno da radi na oba mesta.
+window.portalAskModal = function(opts) {
+    return new Promise((resolve) => {
+        opts = opts || {};
+        const {
+            title = 'Question', description = '',
+            confirmText = 'OK', cancelText = 'Cancel',
+            danger = false, initialValue = '', placeholder = '',
+            multiline = false, required = true, validator = null,
+            mode = 'input'   // 'input' | 'confirm'
+        } = opts;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-[500] bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+
+        const btnClass = danger ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white';
+        const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+        const inputHtml = mode === 'confirm' ? '' : (multiline
+            ? `<textarea id="pk-modal-input" rows="4" placeholder="${esc(placeholder)}" class="w-full px-4 py-3 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none">${esc(initialValue)}</textarea>`
+            : `<input type="text" id="pk-modal-input" value="${esc(initialValue)}" placeholder="${esc(placeholder)}" class="w-full px-4 py-3 border border-slate-300 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none"/>`);
+
+        const bodyHtml = mode === 'confirm'
+            ? (description ? `<p class="text-slate-700 text-sm leading-relaxed">${esc(description)}</p>` : '')
+            : `${description ? `<p class="text-slate-600 text-xs mb-3 leading-relaxed">${esc(description)}</p>` : ''}${inputHtml}<div id="pk-modal-error" class="hidden text-red-600 text-xs mt-2 font-semibold"></div>`;
+
+        overlay.innerHTML = `
+          <div class="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-md flex flex-col max-h-[95vh]">
+            <div class="px-5 pt-5 pb-3"><h3 class="text-base font-bold text-slate-900">${esc(title)}</h3></div>
+            <div class="px-5 pb-4 overflow-y-auto flex-1">${bodyHtml}</div>
+            <div class="px-5 py-4 border-t border-slate-100 bg-slate-50 flex flex-col sm:flex-row-reverse gap-2 rounded-b-2xl">
+              <button id="pk-modal-ok" class="${btnClass} font-bold px-5 py-2.5 rounded-xl text-sm shadow-sm min-h-[44px]">${esc(confirmText)}</button>
+              <button id="pk-modal-cancel" class="bg-white border border-slate-300 text-slate-700 font-semibold px-5 py-2.5 rounded-xl text-sm hover:bg-slate-50 min-h-[44px]">${esc(cancelText)}</button>
+            </div>
+          </div>`;
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector('#pk-modal-input');
+        const errorEl = overlay.querySelector('#pk-modal-error');
+        setTimeout(() => (input || overlay.querySelector('#pk-modal-ok'))?.focus(), 40);
+
+        const cleanup = (result) => {
+            document.removeEventListener('keydown', onKey);
+            overlay.remove();
+            resolve(result);
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') cleanup(mode === 'confirm' ? false : null);
+            if (e.key === 'Enter' && !multiline && input && document.activeElement === input) {
+                overlay.querySelector('#pk-modal-ok').click();
+            }
+        };
+        document.addEventListener('keydown', onKey);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(mode === 'confirm' ? false : null); });
+        overlay.querySelector('#pk-modal-cancel').addEventListener('click', () => cleanup(mode === 'confirm' ? false : null));
+        overlay.querySelector('#pk-modal-ok').addEventListener('click', () => {
+            if (mode === 'confirm') return cleanup(true);
+            const val = input ? input.value : '';
+            if (required && !String(val).trim()) {
+                errorEl.textContent = 'This field is required.'; errorEl.classList.remove('hidden');
+                input.focus(); return;
+            }
+            if (validator) {
+                const msg = validator(val);
+                if (msg) { errorEl.textContent = msg; errorEl.classList.remove('hidden'); input.focus(); return; }
+            }
+            cleanup(val);
+        });
+    });
+};
+
+// Kompatibilni aliasi (isti API kao u CRM)
+window.askConfirm = (title, description, opts) => portalAskModal(Object.assign({ title, description, mode: 'confirm' }, opts || {}));
+window.askInput = (title, opts) => portalAskModal(Object.assign({ title }, opts || {}));
+
+// Global loader — jednostavniji od CRM verzije (portal nema tolkiko sink flows).
+let __portal_loader_el = null;
+window.showLoader = function(msg) {
+    if (!__portal_loader_el) {
+        __portal_loader_el = document.createElement('div');
+        __portal_loader_el.className = 'fixed inset-0 z-[600] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center';
+        __portal_loader_el.innerHTML = `<div class="bg-white rounded-2xl shadow-2xl px-8 py-6 flex flex-col items-center gap-3 min-w-[200px]"><svg width="40" height="40" viewBox="0 0 48 48" fill="none"><circle cx="24" cy="24" r="20" stroke="#2563eb" stroke-width="3" opacity="0.2"/><path d="M44 24a20 20 0 0 1-20 20" stroke="#2563eb" stroke-width="3" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 24 24" to="360 24 24" dur="0.9s" repeatCount="indefinite"/></path></svg><div class="text-sm font-semibold text-slate-800" id="portal-loader-msg">Loading…</div></div>`;
+        document.body.appendChild(__portal_loader_el);
+    }
+    const m = __portal_loader_el.querySelector('#portal-loader-msg');
+    if (m) m.textContent = msg || 'Loading…';
+    __portal_loader_el.style.display = 'flex';
+};
+window.hideLoader = function() { if (__portal_loader_el) __portal_loader_el.style.display = 'none'; };
+
+
 const statusColors = {
     'pending': 'badge-warning',
     'approved': 'badge-success',
@@ -380,6 +476,23 @@ document.addEventListener('change', (ev) => {
             if (ev.target.value === 'third_party') panel.classList.remove('hidden');
             else panel.classList.add('hidden');
         }
+    }
+    // KYC entity toggle — Company vs Individual. Prikazuje/sakriva proof-of-address
+    // sekciju i menja labelu "Company Details" u "Personal Details" za individualce.
+    if (ev.target && ev.target.name === 'kyc-entity-type') {
+        const isCompany = ev.target.value === 'company';
+        const proofSec = document.getElementById('kyc-sec-proof-address');
+        const proofInput = document.getElementById('kyc-proof-address');
+        if (proofSec) proofSec.classList.toggle('hidden', isCompany);
+        if (proofInput) proofInput.required = !isCompany;
+        const sec1Label = document.getElementById('lbl-kyc-sec1');
+        if (sec1Label) sec1Label.textContent = isCompany ? '1. Company Details' : '1. Personal Details';
+        const nameLabel = document.getElementById('lbl-reg-name');
+        if (nameLabel) nameLabel.innerHTML = isCompany ? 'Registered Company Name' : 'Full legal name';
+        const regNoLabel = document.getElementById('lbl-reg-no');
+        if (regNoLabel) regNoLabel.innerHTML = isCompany ? 'Registration No.' : 'National ID / Passport No.';
+        const industryLabel = document.getElementById('lbl-industry');
+        if (industryLabel) industryLabel.innerHTML = isCompany ? 'Industry / Activity' : 'Profession / Occupation';
     }
 });
 
@@ -1101,6 +1214,97 @@ document.addEventListener('click', (e) => {
     if (panel.contains(e.target) || (btn && btn.contains(e.target))) return;
     panel.classList.add('hidden');
 });
+
+// ==========================================================
+//  KYC GATE — zaključava naprednu funkcionalnost dok KYC nije odobren
+// ==========================================================
+// Klijent bez odobrenog KYC-a vidi jasan banner i zaključane tabove za
+// Deals/Offers/Catalog. Uvek su dostupni: Dashboard, KYC, Profile.
+// Kada admin odobri KYC, banner nestaje i zaključani tabovi se otvore.
+window.applyKycGate = function() {
+    const partner = portalData?.partner || {};
+    const status = (partner.kycStatus || 'pending').toLowerCase();
+    const isApproved = status === 'approved';
+
+    // Ubrizgaj banner na vrh portal-content-a ako nije već tamo
+    let banner = document.getElementById('kyc-gate-banner');
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'kyc-gate-banner';
+        banner.className = 'mb-4';
+        const host = document.getElementById('portal-content');
+        if (host) host.insertBefore(banner, host.firstChild);
+    }
+
+    if (isApproved) {
+        // KYC OK — sve otključano
+        banner.innerHTML = '';
+        banner.classList.add('hidden');
+        document.querySelectorAll('.kyc-locked').forEach(el => {
+            el.classList.remove('kyc-locked');
+            el.disabled = false;
+            el.style.opacity = '';
+            el.style.pointerEvents = '';
+        });
+        return;
+    }
+
+    banner.classList.remove('hidden');
+    const statusText = {
+        pending: 'PENDING REVIEW', update_requested: 'ACTION REQUIRED', rejected: 'REJECTED', expired: 'EXPIRED'
+    }[status] || 'PENDING REVIEW';
+    const statusClass = {
+        pending: 'bg-amber-50 border-amber-300 text-amber-900',
+        update_requested: 'bg-orange-50 border-orange-300 text-orange-900',
+        rejected: 'bg-red-50 border-red-300 text-red-900',
+        expired: 'bg-red-50 border-red-300 text-red-900'
+    }[status] || 'bg-amber-50 border-amber-300 text-amber-900';
+
+    let msg;
+    if (status === 'pending') msg = 'Your KYC submission is under review. Full portal features (offers, deals, catalog, RFQs) will be available once the account manager approves your compliance profile.';
+    else if (status === 'update_requested') msg = 'Additional KYC information is required. Please open the KYC / Compliance tab, complete the requested fields, and re-submit.';
+    else if (status === 'rejected') msg = 'Your KYC submission was rejected. Please contact your account manager to resolve the compliance issue.';
+    else if (status === 'expired') msg = 'Your KYC compliance has expired. Please re-submit updated documents to restore full portal access.';
+    else msg = 'Please complete the KYC / Compliance form so we can activate full portal features for you.';
+
+    banner.innerHTML = `
+      <div class="border ${statusClass} rounded-xl p-4 flex flex-col md:flex-row items-start gap-4">
+        <div class="text-3xl leading-none flex-shrink-0">🛡️</div>
+        <div class="flex-1">
+          <div class="flex items-center gap-2 mb-1">
+            <h4 class="font-bold text-sm">Compliance verification required</h4>
+            <span class="text-[10px] font-bold uppercase tracking-widest bg-white/60 px-2 py-0.5 rounded">${statusText}</span>
+          </div>
+          <p class="text-sm leading-relaxed">${msg}</p>
+        </div>
+        <button onclick="switchTab('kyc')" class="flex-shrink-0 bg-white border border-current font-bold px-4 py-2 rounded-lg text-xs uppercase tracking-wider hover:opacity-80">Open KYC tab</button>
+      </div>`;
+
+    // Zaključaj zabranjene tabove i njihov sadržaj — svaki klik odvodi na KYC tab.
+    const LOCKED_TABS = ['shipments', 'offers', 'catalog', 'rfq', 'documents', 'goods'];
+    LOCKED_TABS.forEach(tabId => {
+        const btn = document.getElementById('tab-btn-' + tabId);
+        if (btn) {
+            btn.classList.add('kyc-locked');
+            btn.title = 'Locked — complete KYC first';
+            btn.style.opacity = '0.55';
+        }
+    });
+    // Reagujemo na klik: umesto da pokažemo sadržaj, otvori KYC.
+    if (!window.__kyc_gate_click) {
+        window.__kyc_gate_click = true;
+        document.addEventListener('click', (e) => {
+            const currentStatus = (portalData?.partner?.kycStatus || 'pending').toLowerCase();
+            if (currentStatus === 'approved') return;
+            const btn = e.target.closest('.tab-btn.kyc-locked');
+            if (btn) {
+                e.preventDefault(); e.stopPropagation();
+                if (typeof showToast === 'function') showToast('Please complete KYC before accessing this section.', 'warn');
+                switchTab('kyc');
+            }
+        }, true);
+    }
+};
 
 window.applyPermissions = function(permissions) {
     if (!permissions || permissions.length === 0) return;
