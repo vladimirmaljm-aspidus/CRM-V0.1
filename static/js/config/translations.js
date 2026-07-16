@@ -18,6 +18,11 @@ const translations = {
     },
     log_actions: { LOGIN: 'Prijava', LOGOUT: 'Odjava', CREATE: 'Kreiranje', EDIT: 'Izmena', DELETE: 'Brisanje', DOWNLOAD: 'Preuzimanje', SCREENSHOT: 'Snimak Ekrana', SECURITY: 'Bezbednost' },
     modules: { system: 'Sistem', audit: 'Dnevnik', users: 'Zaposleni', files: 'Fajlovi', database: 'Baza Podataka', partners: 'Partneri', products: 'Proizvodi', deals: 'Poslovi', demands: 'Potražnja', accounts: 'Računi', transactions: 'Transakcije', recurringExpenses: 'Ponavljajući Troškovi', connections: 'Povezanosti', offers: 'Ponude' },
+    loader: {
+        default: 'Učitavanje…', loadingData: 'Učitavanje radnog prostora…', refreshing: 'Osvežavanje…',
+        refreshed: 'Podaci osveženi.', saving: 'Snimanje…', deleting: 'Brisanje…',
+        working: 'Radim…', authenticating: 'Provera prijave…'
+    },
     portalPreview: {
         navLabel: 'Portal Pregled', title: 'Portal Pregled i Kontrola Pristupa',
         desc: 'Vidite šta svaki klijent tačno vidi u portalu, i podesite mu vidljivost tabova i proizvoda u katalogu.',
@@ -126,6 +131,11 @@ const translations = {
     },
     log_actions: { LOGIN: 'Login', LOGOUT: 'Logout', CREATE: 'Create', EDIT: 'Modify', DELETE: 'Delete', DOWNLOAD: 'Download', SCREENSHOT: 'Screenshot', SECURITY: 'Security' },
     modules: { system: 'System', audit: 'Audit', users: 'Employees', files: 'Files', database: 'Database', partners: 'Partners', products: 'Products', deals: 'Deals', demands: 'Demands', accounts: 'Accounts', transactions: 'Transactions', recurringExpenses: 'Recurring Expenses', connections: 'Connections', offers: 'Offers' },
+    loader: {
+        default: 'Loading…', loadingData: 'Loading your workspace…', refreshing: 'Refreshing…',
+        refreshed: 'Data refreshed.', saving: 'Saving…', deleting: 'Deleting…',
+        working: 'Working…', authenticating: 'Authenticating…'
+    },
     portalPreview: {
         navLabel: 'Portal Preview', title: 'Portal Preview & Access Control',
         desc: 'See exactly what each client sees, and control their tab-level access and product catalog visibility.',

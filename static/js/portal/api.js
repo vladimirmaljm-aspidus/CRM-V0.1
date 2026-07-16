@@ -474,6 +474,10 @@ async function loadPortalData() {
         renderNotifications();
 
         if (typeof applyPermissions === 'function') applyPermissions(portalData?.partner?.permissions || []);
+        // Posle prve učitavanja podataka — vrati klijenta na tab koji je zadnji gledao
+        // (persistiran u sessionStorage kroz switchTab). Ovo znači da F5 nikada ne
+        // baca korisnika na 'dashboard' ako je bio u sredini Catalog/Offers.
+        if (typeof restorePortalTab === 'function') restorePortalTab();
     } catch (e) {
         console.error(e);
         document.getElementById('loading-state').innerHTML = `<div class="text-center"><p class="text-red-600 font-semibold">${t('err_access_denied')}</p></div>`;
