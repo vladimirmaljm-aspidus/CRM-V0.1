@@ -838,7 +838,18 @@ def submit_kyc(token):
     if not partner_id: abort(403)
 
     # 1. Osnovna sanitizacija kyc podataka
+    entity_type = str(kyc_data.get('entityType', 'company')).strip().lower()
+    if entity_type not in ('company', 'individual'):
+        entity_type = 'company'
+    # Individualci moraju imati priložen proof of address
+    if entity_type == 'individual':
+        files_dict = kyc_data.get('files') or {}
+        if not (isinstance(files_dict, dict) and files_dict.get('proofOfAddress')):
+            return jsonify({"error": "PROOF_OF_ADDRESS_REQUIRED",
+                            "message": "Individuals must upload proof of home address (utility bill or bank statement)."}), 400
+
     clean_data = {
+        "entityType": entity_type,
         "companyName": str(kyc_data.get('companyName', '')).strip()[:150],
         "regNo": str(kyc_data.get('regNo', '')).strip()[:50],
         "taxId": str(kyc_data.get('taxId', '')).strip()[:50],
@@ -1737,7 +1748,7 @@ def admin_portal_pending_counts():
 
         # Client offer response feed — svaki accept/decline za koji admin nije
         # kliknuo 'Mark seen' pojavljuje se kao stavka u obaveštenjima.
-        c.execute("SELECT id, data FROM offers")
+        # Prvo pokupi imena partnera u mapu, pa onda skeniraj offers jednom.
         partner_names = {}
         c.execute("SELECT id, data FROM partners")
         for pr in c.fetchall():

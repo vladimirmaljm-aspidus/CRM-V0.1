@@ -203,8 +203,13 @@ def send_portal_otp(recipient, company_name_for_client, otp, portal_url):
       </p>
       <div style="background:#f4f6f9;border:1px solid #e7eaef;border-radius:10px;padding:24px;text-align:center;margin:20px 0;">
         <div style="font-size:11px;color:#667085;font-weight:600;text-transform:uppercase;letter-spacing:0.15em;margin-bottom:12px;">One-Time Access Code</div>
-        <div style="font-family:'Courier New',monospace;font-size:36px;font-weight:700;letter-spacing:0.4em;color:#101828;">{otp}</div>
-        <div style="font-size:11px;color:#98a2b3;margin-top:12px;">Valid for 5 minutes</div>
+        <!-- OTP je u <code> tagu — long-press na telefonu ili double-click na desktop-u odabira ceo kod za copy.
+             Odvojen sa razmakom radi lakšeg čitanja, ali sirov u samom tekstu je bez razmaka. -->
+        <div style="font-family:'Courier New',Consolas,monospace;font-size:38px;font-weight:700;color:#101828;user-select:all;-webkit-user-select:all;">
+          <code style="background:#ffffff;border:2px dashed #2563eb;border-radius:8px;padding:8px 16px;display:inline-block;letter-spacing:0.35em;">{otp}</code>
+        </div>
+        <div style="font-size:12px;color:#475569;margin-top:14px;">Tap or long-press the code to copy it — then paste it into the login screen.</div>
+        <div style="font-size:11px;color:#98a2b3;margin-top:8px;">Valid for 5 minutes.</div>
       </div>
       <p style="margin:0 0 8px 0;font-size:13px;color:#344054;">If you did not request this code, please ignore this message. Your account remains secure.</p>
       <p style="margin:0;font-size:13px;color:#344054;">For any questions, please contact your account manager.</p>

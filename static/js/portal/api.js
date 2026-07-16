@@ -265,6 +265,48 @@ async function requestOTP() {
     } catch (e) { if (msg) msg.textContent = t('err_network'); }
 }
 
+// Sinkronizuj 6-pojedinačnih polja u hidden #otp-code (portal.html direct login)
+(function _wireOtpBoxes() {
+    const boxes = () => Array.from(document.querySelectorAll('.otp-code-box'));
+    document.addEventListener('input', (e) => {
+        if (!e.target.classList.contains('otp-code-box')) return;
+        const bs = boxes(); if (bs.length !== 6) return;
+        const idx = parseInt(e.target.dataset.idx, 10);
+        const v = e.target.value.replace(/\D/g, '');
+        if (v.length > 1) {
+            for (let i = 0; i < 6; i++) bs[i].value = v[i] || '';
+            document.getElementById('otp-code').value = bs.map(b => b.value).join('');
+            bs[Math.min(v.length, 5)].focus();
+            if (v.length === 6) setTimeout(verifyOTP, 100);
+            return;
+        }
+        e.target.value = v.slice(0, 1);
+        document.getElementById('otp-code').value = bs.map(b => b.value).join('');
+        if (v && idx < 5) bs[idx + 1].focus();
+        if (idx === 5 && v && bs.every(b => b.value)) setTimeout(verifyOTP, 100);
+    });
+    document.addEventListener('keydown', (e) => {
+        if (!e.target.classList.contains('otp-code-box')) return;
+        const bs = boxes(); const idx = parseInt(e.target.dataset.idx, 10);
+        if (e.key === 'Backspace' && !e.target.value && idx > 0) {
+            bs[idx - 1].focus(); bs[idx - 1].value = '';
+            document.getElementById('otp-code').value = bs.map(b => b.value).join('');
+        }
+        if (e.key === 'ArrowLeft' && idx > 0) bs[idx - 1].focus();
+        if (e.key === 'ArrowRight' && idx < 5) bs[idx + 1].focus();
+    });
+    document.addEventListener('paste', (e) => {
+        if (!e.target.classList.contains('otp-code-box')) return;
+        e.preventDefault();
+        const bs = boxes();
+        const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
+        for (let i = 0; i < 6; i++) bs[i].value = pasted[i] || '';
+        document.getElementById('otp-code').value = bs.map(b => b.value).join('');
+        bs[Math.min(pasted.length, 5)].focus();
+        if (pasted.length === 6) setTimeout(verifyOTP, 100);
+    });
+})();
+
 async function verifyOTP() {
     const code = document.getElementById('otp-code')?.value;
     if (!code || code.length !== 6) return showToast(t('enter_code'), 'error');
@@ -318,11 +360,23 @@ if (kycForm) {
                 return arr;
             };
 
+            // Entity type: 'company' (default) ili 'individual'.
+            // Individual mora imati priloženi utility bill (proof of address).
+            const entityType = document.querySelector('input[name="kyc-entity-type"]:checked')?.value || 'company';
+            if (entityType === 'individual') {
+                const proof = document.getElementById('kyc-proof-address');
+                if (!proof || proof.files.length === 0) {
+                    if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
+                    return showToast('Please upload proof of home address (utility bill / bank statement).', 'error');
+                }
+            }
+
             const uploadedFiles = {};
             const fileInputs = [
                 { id: 'file-passport', key: 'passport' },
                 { id: 'file-license', key: 'license' },
-                { id: 'file-inc', key: 'incorporation' }
+                { id: 'file-inc', key: 'incorporation' },
+                { id: 'kyc-proof-address', key: 'proofOfAddress' }
             ];
             for (const input of fileInputs) {
                 const el = document.getElementById(input.id);
@@ -343,6 +397,7 @@ if (kycForm) {
             const c = id => !!document.getElementById(id)?.checked;
             const payload = {
                 partner_id: portalData?.partner?.id,
+                entityType: entityType,
                 companyName: g('kyc-comp-name'), regNo: g('kyc-reg-no'), taxId: g('kyc-tax-id'),
                 website: g('kyc-website'), industry: g('kyc-industry'),
                 contactPhone: g('kyc-contact-phone'),
@@ -474,6 +529,8 @@ async function loadPortalData() {
         renderNotifications();
 
         if (typeof applyPermissions === 'function') applyPermissions(portalData?.partner?.permissions || []);
+        // KYC gating — ako KYC nije odobren, zaključavaju se offers/deals/catalog tabovi.
+        if (typeof applyKycGate === 'function') applyKycGate();
         // Posle prve učitavanja podataka — vrati klijenta na tab koji je zadnji gledao
         // (persistiran u sessionStorage kroz switchTab). Ovo znači da F5 nikada ne
         // baca korisnika na 'dashboard' ako je bio u sredini Catalog/Offers.

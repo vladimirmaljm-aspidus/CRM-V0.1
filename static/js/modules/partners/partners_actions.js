@@ -3,7 +3,11 @@ function showPartnerAccessModal(partnerId) {
     const partner = state.data.partners.find(p => p.id === partnerId);
     if(!partner) return;
     
-    fetch('/api/users').then(res => res.json()).then(users => {
+    fetch('/api/users').then(res => {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+    }).then(users => {
+        if (!Array.isArray(users)) users = [];
         const workers = users.filter(u => u.role !== 'admin');
         const listHtml = workers.map(w => {
             const isShared = (partner.sharedWith || []).includes(w.id);
