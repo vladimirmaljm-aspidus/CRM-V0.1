@@ -477,6 +477,151 @@ class T08Users(BaseCase):
         self.assertEqual(r.get_json().get('error'), 'WEAK_PASSWORD')
 
 
+class T13PdfPaymentBank(BaseCase):
+    """PDF generator: paymentBankIdx bira konkretnu banku iz company.bankAccounts."""
+
+    def test_01_specific_bank_selected(self):
+        """Testira _bank_details_string helper direktno — PDF stream je kompresovan
+        pa ne možemo raw bytes pretraživati."""
+        from pdf_generator import _bank_details_string, build_offer_pdf
+        company = {
+            'name': 'Aspidus', 'address': 'Street 1',
+            'bankAccounts': [
+                {'bankName': 'Bank Zero', 'accountNumber': 'IBAN0', 'swiftCode': 'ZZZ', 'currency': 'USD'},
+                {'bankName': 'Bank One EUR', 'accountNumber': 'DE12EUR', 'swiftCode': 'EUROBIC', 'currency': 'EUR'},
+                {'bankName': 'Bank Two AED', 'accountNumber': 'AE99AED', 'swiftCode': 'AEDBIC', 'currency': 'AED'}
+            ]
+        }
+        # Default (bez idx) → prva banka
+        s0 = _bank_details_string(company)
+        self.assertIn('Bank Zero', s0)
+        self.assertIn('IBAN0', s0)
+        self.assertNotIn('DE12EUR', s0)
+
+        # idx=1 → EUR banka
+        s1 = _bank_details_string(company, 1)
+        self.assertIn('DE12EUR', s1)
+        self.assertIn('EUR', s1)
+        self.assertNotIn('IBAN0', s1)
+
+        # idx=2 → AED banka
+        s2 = _bank_details_string(company, 2)
+        self.assertIn('AE99AED', s2)
+        self.assertIn('AEDBIC', s2)
+
+        # Ekstremni idx (out-of-range) → fallback na prvi
+        s99 = _bank_details_string(company, 99)
+        self.assertIn('IBAN0', s99)
+
+        # Legacy company bez bankAccounts (samo flat polja)
+        legacy = {'bankName': 'LegacyBank', 'accountNum': 'LGCY999', 'swift': 'LGCYBIC'}
+        sl = _bank_details_string(legacy)
+        self.assertIn('LegacyBank', sl)
+        self.assertIn('LGCY999', sl)
+
+        # Sanity: PDF generacija ne pada
+        offer = {'offerNo': 'B-001', 'currency': 'USD',
+                 'items': [{'productId': None, 'quantity': 1, 'price': 100, 'unit': 'kg'}],
+                 'paymentBankIdx': 1}
+        pdf = build_offer_pdf(offer, company=company, settings={})
+        self.assertTrue(pdf.startswith(b'%PDF'))
+
+
+class T11DocumentManager(BaseCase):
+    """Admin document manager — list, delete, ZIP export."""
+
+    def setUp(self):
+        self._login_admin()
+
+    def test_01_list_requires_admin(self):
+        # Bez admin login-a
+        self.client.post('/api/auth/logout', headers={'X-CSRF-Token': self._get_csrf()})
+        r = self.client.get('/api/admin/documents/list')
+        # Nakon logout je unauthorized
+        self.assertIn(r.status_code, (401, 403))
+
+    def test_02_list_returns_shape(self):
+        r = self.client.get('/api/admin/documents/list')
+        self.assertEqual(r.status_code, 200, msg=r.data[:300])
+        j = r.get_json()
+        self.assertIn('files', j)
+        self.assertIn('stats', j)
+        self.assertIsInstance(j['files'], list)
+        for key in ['total_count', 'total_bytes', 'total_mb', 'by_partner']:
+            self.assertIn(key, j['stats'])
+
+    def test_03_delete_empty_payload_graceful(self):
+        r = self._post_with_csrf('/api/admin/documents/delete', {'files': []})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()['deleted_count'], 0)
+
+    def test_04_delete_path_traversal_blocked(self):
+        """Napadač pokušava da izbriše fajl van upload foldera preko '..' u nazivu."""
+        r = self._post_with_csrf('/api/admin/documents/delete',
+                                 {'files': [{'folder': 'uploads', 'name': '../../etc/passwd'}]})
+        self.assertEqual(r.status_code, 200)
+        # secure_filename striplje '..' pa ostane 'etc_passwd' — koje ne postoji, pa deleted=0
+        self.assertEqual(r.get_json()['deleted_count'], 0)
+
+    def test_05_delete_actual_file(self):
+        """Kreiraj privremeni fajl u uploads/, obriši ga preko API."""
+        from config import UPLOAD_FOLDER
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        test_name = 'test_delete_me.pdf'
+        p = os.path.join(UPLOAD_FOLDER, test_name)
+        with open(p, 'wb') as f:
+            f.write(b'%PDF-1.4\n%test\n')
+        r = self._post_with_csrf('/api/admin/documents/delete',
+                                 {'files': [{'folder': 'uploads', 'name': test_name}]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()['deleted_count'], 1)
+        self.assertFalse(os.path.exists(p))
+
+    def test_06_bulk_zip_returns_zip(self):
+        """ZIP export bez filtera vraća validan ZIP fajl."""
+        from config import UPLOAD_FOLDER
+        os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        with open(os.path.join(UPLOAD_FOLDER, 'zip_test.pdf'), 'wb') as f:
+            f.write(b'%PDF-1.4\n%zip test\n')
+        r = self.client.get('/api/admin/documents/bulk_zip')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.mimetype, 'application/zip')
+        # ZIP local header magic
+        self.assertTrue(r.data.startswith(b'PK'), "Nije validan ZIP signature")
+
+
+class T12BankSync(BaseCase):
+    """Sync između settings.company.bankAccounts i cashflow accounts + offer."""
+
+    def setUp(self):
+        self._login_admin()
+
+    def test_01_company_bank_accounts_stored_and_retrieved(self):
+        """Snimi company sa 2 bankAccounts, potvrdi da /api/data/company vrati istu strukturu."""
+        payload = {
+            'name': 'TestCo', 'address': 'Street 1', 'taxId': '111',
+            'bankAccounts': [
+                {'bankName': 'Bank A', 'accountNumber': 'IBAN1', 'swiftCode': 'BANKAAAAA', 'currency': 'EUR'},
+                {'bankName': 'Bank B', 'accountNumber': 'IBAN2', 'swiftCode': 'BANKBBBBB', 'currency': 'USD'}
+            ]
+        }
+        # save
+        r = self._post_with_csrf('/api/item/company', payload)
+        # Company nije u "tables" liste — save ide kroz settings/company grana
+        # Ako 400 zbog missing id → fallback na /api/data/company:
+        if r.status_code >= 400:
+            r = self._post_with_csrf('/api/data/company', {'value': payload})
+            self.assertEqual(r.status_code, 200, msg=r.data[:300])
+        # read
+        r2 = self.client.get('/api/data/company')
+        self.assertEqual(r2.status_code, 200)
+        v = r2.get_json()['value']
+        self.assertIsInstance(v, dict)
+        self.assertEqual(len(v.get('bankAccounts', [])), 2)
+        self.assertEqual(v['bankAccounts'][0]['bankName'], 'Bank A')
+        self.assertEqual(v['bankAccounts'][1]['currency'], 'USD')
+
+
 def main():
     unittest.main(verbosity=2, exit=False)
 
