@@ -147,6 +147,110 @@ window.askInput = (title, opts) => askModal(Object.assign({ title }, opts || {})
 window.askConfirm = (title, description, opts) => askModal(Object.assign({ title, description, mode: 'confirm' }, opts || {}));
 window.askChoice = (title, options, opts) => askModal(Object.assign({ title, options, required: true }, opts || {}));
 
+// ==========================================================
+//  PROFESIONALNI LOADER — full-screen overlay + inline spinner
+// ==========================================================
+// Cilj: korisnik uvek zna da aplikacija radi u pozadini.
+// Dva režima:
+//   1) showLoader('poruka')   → full-screen overlay sa animiranim krugom
+//      i porukom. Koristi se za: login, initial data load, bulk save,
+//      refresh, delete. Više paralelnih poziva se broji (counter);
+//      hideLoader se poziva onoliko puta koliko je showLoader — overlay
+//      se skida tek kad brojač padne na 0.
+//   2) inlineSpinner(el, on) → dodaje/uklanja mali spinner na konkretno
+//      dugme (npr. Save/Delete u modalima) sa disable + wait cursor.
+//
+// Loader je pristupačan (role="status", aria-live="polite") i respektuje
+// prefers-reduced-motion (ne rotira animaciju za korisnike osetljive na
+// pokret).
+
+let __loader_counter = 0;
+let __loader_el = null;
+
+function _createLoaderElement() {
+    const el = document.createElement('div');
+    el.id = 'global-loader-overlay';
+    el.className = 'fixed inset-0 z-[500] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center transition-opacity duration-200';
+    el.style.opacity = '0';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    el.innerHTML = `
+      <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl px-8 py-6 flex flex-col items-center gap-4 min-w-[200px] max-w-sm mx-4">
+        <!-- SVG spinner sa dual-ring, respektuje reduced-motion preko CSS -->
+        <div class="loader-spinner" aria-hidden="true">
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+            <circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="3" opacity="0.2" class="text-blue-500"/>
+            <path d="M44 24a20 20 0 0 1-20 20" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="text-blue-600">
+              <animateTransform attributeName="transform" type="rotate" from="0 24 24" to="360 24 24" dur="0.9s" repeatCount="indefinite"/>
+            </path>
+          </svg>
+        </div>
+        <div class="text-sm font-semibold text-slate-800 dark:text-slate-100 text-center leading-snug" id="global-loader-message">Loading…</div>
+      </div>`;
+    document.body.appendChild(el);
+    return el;
+}
+
+window.showLoader = function(message) {
+    __loader_counter++;
+    if (!__loader_el) __loader_el = _createLoaderElement();
+    const msgEl = document.getElementById('global-loader-message');
+    if (msgEl) msgEl.textContent = message || (typeof t === 'function' ? (t('loader.default') || 'Loading…') : 'Loading…');
+    __loader_el.style.display = 'flex';
+    // trigger opacity animation
+    requestAnimationFrame(() => { if (__loader_el) __loader_el.style.opacity = '1'; });
+    return __loader_counter;
+};
+
+window.hideLoader = function() {
+    __loader_counter = Math.max(0, __loader_counter - 1);
+    if (__loader_counter === 0 && __loader_el) {
+        __loader_el.style.opacity = '0';
+        setTimeout(() => {
+            if (__loader_counter === 0 && __loader_el) __loader_el.style.display = 'none';
+        }, 220);
+    }
+};
+
+// Force reset (koristi se kada se pokvari counter — npr. exception u handler-u)
+window.resetLoader = function() {
+    __loader_counter = 0;
+    if (__loader_el) { __loader_el.style.opacity = '0'; __loader_el.style.display = 'none'; }
+};
+
+// Inline spinner na dugme — čuva originalni sadržaj i vraća ga posle
+window.inlineSpinner = function(el, on) {
+    if (!el) return;
+    if (on) {
+        if (el.dataset.originalHtml === undefined) el.dataset.originalHtml = el.innerHTML;
+        el.disabled = true;
+        el.style.cursor = 'wait';
+        el.innerHTML = `<svg class="inline w-4 h-4 mr-1.5 -ml-0.5 align-middle" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/>
+              <path d="M21 12a9 9 0 0 1-9 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                <animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/>
+              </path>
+            </svg><span class="align-middle">${(typeof t === 'function' ? (t('loader.working') || 'Working…') : 'Working…')}</span>`;
+    } else {
+        if (el.dataset.originalHtml !== undefined) {
+            el.innerHTML = el.dataset.originalHtml;
+            delete el.dataset.originalHtml;
+        }
+        el.disabled = false;
+        el.style.cursor = '';
+    }
+};
+
+// Convenience: prati Promise i drži loader-om, sa auto-hide bez obzira na ishod
+window.withLoader = async function(message, promiseFn) {
+    showLoader(message);
+    try {
+        return await (typeof promiseFn === 'function' ? promiseFn() : promiseFn);
+    } finally {
+        hideLoader();
+    }
+};
+
 function applyTheme() {
   const body = document.body; const toggle = document.getElementById('theme-toggle');
   if (state.theme === 'light') { body.classList.add('light-theme'); body.classList.remove('dark-theme'); if(toggle) toggle.checked = false; }
