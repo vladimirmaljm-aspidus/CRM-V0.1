@@ -465,6 +465,67 @@ def create_deal_from_offer(offer_id):
         if conn: conn.close()
 
 
+@data_bp.route('/api/offers/verify_hash', methods=['POST'])
+@login_required
+def verify_offer_hash():
+    """Provera autentičnosti PDF-a preko VERIFICATION HASH-a koji je ugrađen u
+    footer svake ponude. Admin unosi hash iz sumnjivog dokumenta; server
+    poredi sa hash-om koji bi trenutno generisao za tu ponudu (deterministički).
+
+    Vraća:
+      { valid: true, offer_no, customer, generated_at } — ako se poklapa
+      { valid: false, reason: 'HASH_MISMATCH' | 'OFFER_NOT_FOUND' } — inače
+
+    Bilo koja izmena na dokumentu (imena, cifre, datumi) menja renderovani PDF.
+    Ali verification hash u footeru je deterministički vezan za offer_id +
+    offer_no — pa ako je neko menjao dokument u editoru A HASH OSTAVIO, ovaj
+    endpoint neće prijaviti mismatch. Zato se autentifikacija vrši sledećim:
+      1) Admin unosi hash + broj ponude (offerNo) iz PDF-a.
+      2) Server pronađe ponudu po offerNo u bazi.
+      3) Regeneriše hash iz DB podataka.
+      4) Vraća da li se poklapa I ceo trenutan sadržaj ponude — pa admin
+         može vizuelno da uporedi ceo dokument sa sumnjivim.
+    """
+    payload = request.get_json(silent=True) or {}
+    offer_no = str(payload.get('offer_no') or payload.get('offerNo') or '').strip()
+    provided_hash = str(payload.get('hash') or payload.get('verification_hash') or '').strip().upper()
+    if not offer_no or not provided_hash:
+        return jsonify({"valid": False, "reason": "OFFER_NO_AND_HASH_REQUIRED"}), 400
+
+    from pdf_generator import _make_verification_hash
+
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, data FROM offers")
+        found = None
+        for r in c.fetchall():
+            od = decrypt_data(r[1])
+            if isinstance(od, dict) and od.get('offerNo') == offer_no:
+                found = (r[0], od); break
+        if not found:
+            return jsonify({"valid": False, "reason": "OFFER_NOT_FOUND"})
+        offer_id, offer_data = found
+        expected = _make_verification_hash(offer_id, offer_no)
+        valid = provided_hash == expected
+        log_audit('SECURITY', 'offers',
+                  f"Document hash verification: offer {offer_no} → {'VALID' if valid else 'MISMATCH'}",
+                  is_suspicious=(not valid))
+        return jsonify({
+            "valid": valid,
+            "expected_hash": expected if valid else None,
+            "provided_hash": provided_hash,
+            "offer_no": offer_no,
+            "customer_id": offer_data.get('customerId'),
+            "generated_at": offer_data.get('pdfGeneratedAt') or offer_data.get('date'),
+            "current_total": offer_data.get('sellingPrice'),
+            "current_currency": offer_data.get('currency'),
+            "reason": None if valid else "HASH_MISMATCH"
+        })
+    finally:
+        conn.close()
+
+
 @data_bp.route('/api/offers/preview_pdf', methods=['POST'])
 @login_required
 def preview_offer_pdf():

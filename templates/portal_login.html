@@ -67,7 +67,20 @@
                 <div class="space-y-4">
                     <div>
                         <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Verification Code</label>
-                        <input type="text" id="login-otp" class="input-field font-mono text-center text-2xl tracking-[0.3em]" maxlength="6" placeholder="------" inputmode="numeric" autocomplete="one-time-code">
+                        <!-- 6 pojedinačnih polja — profesionalan OTP unos.
+                             Podržava paste čitavog koda u bilo koje polje. Skriveni input
+                             #login-otp drži sastavljenu vrednost radi minimalnih izmena
+                             u verifyOTPLogin(). -->
+                        <div id="otp-boxes" class="flex justify-between gap-2" role="group" aria-label="One-time code">
+                            <input class="otp-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" autocomplete="one-time-code" data-idx="0">
+                            <input class="otp-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="1">
+                            <input class="otp-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="2">
+                            <input class="otp-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="3">
+                            <input class="otp-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="4">
+                            <input class="otp-box w-11 h-14 text-center text-2xl font-bold font-mono border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" maxlength="1" inputmode="numeric" data-idx="5">
+                        </div>
+                        <input type="hidden" id="login-otp">
+                        <p class="text-[11px] text-slate-500 mt-2">You can paste the whole 6-digit code — it will fill all boxes automatically.</p>
                     </div>
                     <button onclick="verifyOTPLogin()" id="btn-verify-otp" class="brand-btn w-full py-3 rounded-xl font-semibold text-white text-sm transition-all">
                         Verify &amp; Sign In
@@ -118,7 +131,10 @@
                     document.getElementById('sent-to-email').textContent = email;
                     document.getElementById('step-email').classList.add('hidden');
                     document.getElementById('step-otp').classList.remove('hidden');
-                    document.getElementById('login-otp').focus();
+                    // Očisti stara polja pa fokus na prvo
+                    document.querySelectorAll('.otp-box').forEach(b => b.value = '');
+                    document.getElementById('login-otp').value = '';
+                    const firstBox = document.querySelector('.otp-box'); if (firstBox) firstBox.focus();
                 } else {
                     showError('email-error', data.error || 'Something went wrong. Please try again.');
                 }
@@ -209,8 +225,56 @@
         function showError(id, msg) { const el = document.getElementById(id); if (el) { el.textContent = msg; el.classList.remove('hidden'); } }
         function hideError(id) { const el = document.getElementById(id); if (el) el.classList.add('hidden'); }
 
+        // OTP 6-polja: auto-focus + paste ceo kod. Skriveni #login-otp
+        // se ažurira na svaku promenu, tako da verifyOTPLogin() čita
+        // gotov 6-cifreni string.
+        const otpBoxes = Array.from(document.querySelectorAll('.otp-box'));
+        function syncHiddenOtp() {
+            document.getElementById('login-otp').value = otpBoxes.map(b => b.value).join('');
+        }
+        otpBoxes.forEach((box, idx) => {
+            box.addEventListener('input', (e) => {
+                // Ako je nalepljen ceo kod u jedno polje, rasporedi po ostalim
+                const v = e.target.value.replace(/\D/g, '');
+                if (v.length > 1) {
+                    for (let i = 0; i < 6; i++) {
+                        otpBoxes[i].value = v[i] || '';
+                    }
+                    syncHiddenOtp();
+                    const next = Math.min(v.length, 5);
+                    otpBoxes[next].focus();
+                    if (v.length === 6) setTimeout(verifyOTPLogin, 100);
+                    return;
+                }
+                e.target.value = v.slice(0, 1);
+                syncHiddenOtp();
+                if (v && idx < 5) otpBoxes[idx + 1].focus();
+                // Auto-submit kad se popuni poslednje polje
+                if (idx === 5 && v && otpBoxes.every(b => b.value)) {
+                    setTimeout(verifyOTPLogin, 100);
+                }
+            });
+            box.addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && !box.value && idx > 0) {
+                    otpBoxes[idx - 1].focus();
+                    otpBoxes[idx - 1].value = '';
+                    syncHiddenOtp();
+                }
+                if (e.key === 'ArrowLeft' && idx > 0) otpBoxes[idx - 1].focus();
+                if (e.key === 'ArrowRight' && idx < 5) otpBoxes[idx + 1].focus();
+                if (e.key === 'Enter') verifyOTPLogin();
+            });
+            box.addEventListener('paste', (e) => {
+                e.preventDefault();
+                const pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
+                for (let i = 0; i < 6; i++) otpBoxes[i].value = pasted[i] || '';
+                syncHiddenOtp();
+                otpBoxes[Math.min(pasted.length, 5)].focus();
+                if (pasted.length === 6) setTimeout(verifyOTPLogin, 100);
+            });
+        });
+
         document.getElementById('login-email').addEventListener('keydown', e => { if (e.key === 'Enter') requestOTPByEmail(); });
-        document.getElementById('login-otp').addEventListener('keydown', e => { if (e.key === 'Enter') verifyOTPLogin(); });
     </script>
 </body>
 </html>
