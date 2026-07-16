@@ -31,11 +31,45 @@ from utils import decrypt_data
 logger = logging.getLogger(__name__)
 
 
-def _bank_details_string(company):
-    """Skuplja bankarske instrukcije iz podataka firme u jedan blok teksta,
-    identično kao što jsPDF radi kada admin generiše PDF u browseru."""
+def _bank_details_string(company, bank_idx=None):
+    """Skuplja bankarske instrukcije iz podataka firme u jedan blok teksta.
+
+    Novo (v2): ako je prosleđen bank_idx i company.bankAccounts[bank_idx] postoji,
+    koristi TAJ specifičan bank račun (koji je admin izabrao pri kreiranju
+    ponude preko dropdown-a "Buyer pays to"). Time se garantuje da klijent
+    dobija tačne instrukcije za onaj cashflow račun koji admin očekuje da
+    primi uplatu.
+
+    Backward-compat: ako bankAccounts niz nije definisan ili bank_idx je None,
+    koristi stara flat polja (bankName/accountNum/swift) da postojeće instance
+    nastave da rade bez migracije podataka.
+    """
     if not isinstance(company, dict):
         return ''
+
+    # Prioritet 1: specifičan bank_idx iz bankAccounts niza (nova logika).
+    # Ako je idx van opsega ili nevalidan, fallback na prvi (idx=0) umesto praznog stringa.
+    bank_accounts = company.get('bankAccounts') or []
+    if isinstance(bank_accounts, list) and bank_accounts:
+        try:
+            idx = int(bank_idx) if bank_idx is not None else 0
+        except (TypeError, ValueError):
+            idx = 0
+        if idx < 0 or idx >= len(bank_accounts):
+            idx = 0   # graceful fallback na primarnu banku
+        b = bank_accounts[idx]
+        if isinstance(b, dict):
+            parts = []
+            if b.get('bankName'):          parts.append(f"Bank: {b['bankName']}")
+            if b.get('bankAddress'):       parts.append(str(b['bankAddress']))
+            if b.get('accountNumber'):     parts.append(f"IBAN / Account: {b['accountNumber']}")
+            if b.get('swiftCode'):         parts.append(f"SWIFT / BIC: {b['swiftCode']}")
+            if b.get('correspondentBank'): parts.append(f"Correspondent bank: {b['correspondentBank']}")
+            if b.get('currency'):          parts.append(f"Currency: {b['currency']}")
+            if parts:
+                return '\n'.join(parts)
+
+    # Prioritet 2: legacy flat polja
     parts = []
     if company.get('bankName'):    parts.append(f"Bank: {company.get('bankName')}")
     if company.get('bankAddress'): parts.append(company.get('bankAddress'))
@@ -414,9 +448,13 @@ def build_offer_pdf(offer, company=None, settings=None):
         story.append(Spacer(1, 5*mm))
 
     # BANKARSKE INSTRUKCIJE — kupac mora tačno da vidi gde da uplati.
-    # Prioritet: eksplicitni offer.bankDetails (custom-a admin unese) → skup iz
-    # company podataka. Ovo je najkritičniji deo dokumenta za realan business.
-    bank_details = offer.get('bankDetails') or _bank_details_string(company)
+    # Prioritet:
+    #  1. offer.bankDetails (custom admin string — override svega)
+    #  2. Ako offer ima paymentBankIdx, koristi taj specifičan račun iz
+    #     company.bankAccounts[idx] (izbor admin-a preko dropdown-a).
+    #  3. Fallback na primarnu banku firme (bankAccounts[0] ili legacy flat polja).
+    # Time je garantovano da ono što admin izabere u UI-u tačno stigne do klijenta.
+    bank_details = offer.get('bankDetails') or _bank_details_string(company, offer.get('paymentBankIdx'))
     if bank_details:
         story.append(_para("<b>Bank Instructions</b>", styles['h2']))
         bank_tbl = Table([[_para(_esc(bank_details), styles['body'])]], colWidths=[180*mm])
