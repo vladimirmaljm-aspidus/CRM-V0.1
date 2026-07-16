@@ -623,14 +623,31 @@ function renderOffers() {
     }).join('');
 }
 
-// Poziv API-ja za accept/decline
+// Accept/decline — koristimo profesionalan modal umesto native confirm/prompt.
+// Za decline TRAŽIMO razlog (obavezno), jer admin taj podatak inače nema kako
+// da vidi zašto je klijent odbio ponudu.
 async function respondToOffer(offerId, action) {
-    const confirmMsg = action === 'accept'
-        ? (t('confirm_accept_offer') || 'Confirm acceptance of this offer? Your account manager will contact you to finalize the deal.')
-        : (t('confirm_decline_offer') || 'Are you sure you want to decline this offer?');
-    if (!confirm(confirmMsg)) return;
+    let note = '';
+    if (action === 'accept') {
+        const yes = await askConfirm(
+            t('confirm_accept_offer_title') || 'Accept this offer',
+            t('confirm_accept_offer') || 'By accepting, your account manager will contact you shortly to finalize the deal. Continue?',
+            { confirmText: t('accept') || 'Yes, accept', cancelText: t('cancel') || 'Cancel', confirmClass: 'bg-emerald-600 hover:bg-emerald-700 text-white' }
+        );
+        if (!yes) return;
+    } else {
+        note = await askInput(t('decline_reason_title') || 'Decline this offer', {
+            description: t('decline_reason_desc') || 'Please tell us why. Your feedback goes directly to our team and helps us respond better.',
+            inputType: 'textarea', multiline: true, required: true,
+            placeholder: t('decline_reason_ph') || 'e.g. Price is too high, timing does not fit, alternative supplier chosen…',
+            confirmText: t('decline') || 'Decline offer',
+            cancelText: t('cancel') || 'Cancel',
+            danger: true,
+            validator: v => (v && v.trim().length >= 3) ? null : (t('decline_reason_min') || 'Please provide at least a few words.')
+        });
+        if (note === null) return;   // korisnik otkazao
+    }
 
-    const note = action === 'decline' ? (prompt(t('decline_reason') || 'Optional reason (visible to admin):', '') || '') : '';
     try {
         const res = await fetch(`/api/portal/offers/accept/${TOKEN}/${offerId}`, {
             method: 'POST',
@@ -638,7 +655,7 @@ async function respondToOffer(offerId, action) {
             body: JSON.stringify({ action, note })
         });
         if (res.ok) {
-            showToast(action === 'accept' ? (t('msg_offer_accepted') || 'Offer accepted. Thank you!') : (t('msg_offer_declined') || 'Offer declined.'), 'success');
+            showToast(action === 'accept' ? (t('msg_offer_accepted') || 'Offer accepted. Thank you!') : (t('msg_offer_declined') || 'Offer declined. Our team will follow up.'), 'success');
             loadPortalData();
         } else {
             showToast(t('err_generic'), 'error');

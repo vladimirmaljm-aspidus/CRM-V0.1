@@ -52,6 +52,23 @@
         @media (max-width: 640px) {
             #modal-content { max-height: 95vh; border-radius: 1rem 1rem 0 0; margin-top: auto; }
             #modal-backdrop { align-items: flex-end !important; padding: 0 !important; }
+            /* Sprečava iOS Safari da zumira input pri fokusu (zoom se javlja ispod 16px) */
+            input, select, textarea { font-size: 16px !important; }
+            /* Bolji tap targets za primarne akcije */
+            .btn, button[class*="bg-blue"], button[class*="bg-emerald"], button[class*="bg-red"] { min-height: 44px; }
+            /* Cards imaju veći padding na mobilnom — luftiraniji izgled */
+            .form-input { padding: 12px; }
+            /* Sticky bottom action bar u formama za primarne CTA */
+            .sticky-form-actions { position: sticky; bottom: 0; background: var(--panel); padding: 12px; margin: 0 -1rem -1rem; border-top: 1px solid var(--border); box-shadow: 0 -8px 20px rgba(0,0,0,0.08); z-index: 5; }
+            /* Tabele koje moraju da se pomeraju horizontalno dobiju subtilan shadow */
+            .overflow-x-auto { position: relative; }
+            /* Manje h1 na mobilnom da se izbegne wrap katastrofa */
+            h1, h2 { line-height: 1.2; }
+        }
+        /* Uvek — bolji focus indikatori za accessibility */
+        button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+            outline: 2px solid rgba(37, 99, 235, 0.6);
+            outline-offset: 2px;
         }
     </style>
 </head>

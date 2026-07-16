@@ -675,6 +675,10 @@ function renderOffersView() {
                 if (converted) statusBadge = `<span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200 font-semibold ml-2">→ DEAL</span>`;
                 else if (clientAccepted) statusBadge = `<span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold ml-2">✓ ACCEPTED</span>`;
                 else if (offer.clientStatus === 'declined') statusBadge = `<span class="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200 font-semibold ml-2">✕ DECLINED</span>`;
+                // Ako admin još nije pregledao klijentov odgovor, dodaj upozorenje pill.
+                if ((offer.clientStatus === 'accepted' || offer.clientStatus === 'declined') && offer.adminReviewedByClient === false) {
+                    statusBadge += `<span class="text-[9px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 font-bold uppercase tracking-wider ml-1 animate-pulse">NEW</span>`;
+                }
 
                 let convertBtn = '';
                 if (!converted && (state.user?.role === 'admin' || (state.user?.permissions && state.user.permissions.offers_to_deal))) {
@@ -683,6 +687,30 @@ function renderOffersView() {
                     } else if (canForce) {
                         convertBtn = `<button class="bg-amber-500 hover:bg-amber-600 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-convert-offer="${offer.id}" data-force="true">➜ ${Utils.t('offer.createDealForce') || 'Kreiraj dil (bez portala)'}</button>`;
                     }
+                }
+
+                // Razlog odbijanja/potpisa klijenta ispod glavnog reda (ako postoji clientNote).
+                let clientNoteRow = '';
+                if (offer.clientNote && (offer.clientStatus === 'declined' || offer.clientStatus === 'accepted')) {
+                    const isDecl = offer.clientStatus === 'declined';
+                    const cls = isDecl ? 'bg-red-50 border-red-200 text-red-900' : 'bg-emerald-50 border-emerald-200 text-emerald-900';
+                    const label = isDecl ? (Utils.t('offers.declineReason') || 'Client decline reason') : (Utils.t('offers.acceptNote') || 'Client accept note');
+                    const markSeenBtn = (offer.adminReviewedByClient === false)
+                        ? `<button class="ml-2 text-[10px] font-bold uppercase text-blue-700 hover:underline" onclick="event.stopPropagation(); (async () => { await fetch('/api/portal/admin/offers/mark_seen/${offer.id}', {method:'POST'}); if (typeof showToast==='function') showToast('Marked as seen.', 'success'); if (typeof renderOffersView==='function') renderOffersView(); })()">Mark seen</button>`
+                        : '';
+                    clientNoteRow = `
+                    <tr class="border-t-0">
+                      <td colspan="6" class="px-5 pb-3 pt-0">
+                        <div class="${cls} border rounded-lg px-3 py-2 text-sm flex items-start gap-2">
+                          <span class="text-lg">${isDecl ? '❌' : '✅'}</span>
+                          <div class="flex-1">
+                            <strong class="text-xs font-bold uppercase tracking-wider block mb-0.5">${label}</strong>
+                            <span class="italic">"${Utils.escapeHtml(offer.clientNote)}"</span>
+                            ${offer.clientDeclinedAt || offer.clientAcceptedAt ? `<span class="block text-[10px] mt-1 opacity-75">${new Date(offer.clientDeclinedAt || offer.clientAcceptedAt).toLocaleString(currentLang)}${markSeenBtn}</span>` : markSeenBtn}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>`;
                 }
 
                 return `
@@ -694,14 +722,37 @@ function renderOffersView() {
                   <td class="p-5 font-black text-emerald-600 text-lg">${Utils.formatCurrency(totalVal, offer.currency)}</td>
                   <td class="p-5 text-right whitespace-nowrap">
                       ${convertBtn}
-                      <button class="bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" onclick="document.dispatchEvent(new CustomEvent('createCustomerOffer', {detail: {savedOfferId: '${offer.id}'}}))">Otvori / Uredi</button>
-                      <button class="bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors" onclick="if(confirm('${Utils.t('misc.confirmDelete') || 'Obrisati?'}')){ deleteItemFromServer('offers', '${offer.id}').then(() => { state.data.offers = state.data.offers.filter(o=>o.id!=='${offer.id}'); renderOffersView(); }) }">🗑️</button>
+                      <button class="bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" onclick="document.dispatchEvent(new CustomEvent('createCustomerOffer', {detail: {savedOfferId: '${offer.id}'}}))">${Utils.t('actions.openEdit') || 'Otvori / Uredi'}</button>
+                      <button class="bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors offer-delete-btn" data-offer-id="${offer.id}">🗑️</button>
                   </td>
-                </tr>`;
+                </tr>${clientNoteRow}`;
             }).join('') || `<tr><td colspan="6" class="p-10 text-center text-slate-400 font-bold border-dashed border-2 border-slate-200 text-sm">${Utils.t('misc.noOffersStored') || 'Nema sačuvanih ponuda.'}</td></tr>`}
         </tbody>
     </table>`;
     main.appendChild(container);
+
+    // Delete offer — profesionalan potvrdni modal umesto browser confirm-a
+    container.querySelectorAll('.offer-delete-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const offerId = e.currentTarget.dataset.offerId;
+            const srLang = Utils.getLang() === 'sr';
+            const yes = await (window.askConfirm
+                ? askConfirm(srLang ? 'Obrisati ponudu?' : 'Delete offer?',
+                             srLang ? 'Ova akcija se ne može poništiti.' : 'This action cannot be undone.',
+                             { danger: true, confirmText: srLang ? 'Obriši' : 'Delete' })
+                : confirm(srLang ? 'Obrisati?' : 'Delete?'));
+            if (!yes) return;
+            try {
+                await deleteItemFromServer('offers', offerId);
+                state.data.offers = state.data.offers.filter(o => o.id !== offerId);
+                renderOffersView();
+                if (typeof showToast === 'function') showToast(srLang ? 'Ponuda obrisana.' : 'Offer deleted.', 'success');
+            } catch (err) {
+                if (typeof showToast === 'function') showToast(err.message || 'Delete failed.', 'error');
+            }
+        });
+    });
 
     // Konverzija ponude u dil (poziva backend)
     container.querySelectorAll('[data-convert-offer]').forEach(btn => {
@@ -712,7 +763,11 @@ function renderOffersView() {
             const msg = force
                 ? (srLang ? 'PAŽNJA: Klijent nije potvrdio ovu ponudu preko portala.\nDa li ste sigurni da želite da napravite dil bez njegove potvrde?' : 'WARNING: Client has not confirmed via portal.\nAre you sure you want to create the deal without client confirmation?')
                 : (srLang ? 'Kreirati dil iz ove ponude?' : 'Create deal from this offer?');
-            if (!confirm(msg)) return;
+            const yes = await (window.askConfirm
+                ? askConfirm(srLang ? 'Konverzija u dil' : 'Convert to deal', msg,
+                             { danger: force, confirmText: srLang ? 'Nastavi' : 'Continue' })
+                : confirm(msg));
+            if (!yes) return;
             e.currentTarget.disabled = true;
             try {
                 const res = await fetch(`/api/deals/from_offer/${offerId}`, {

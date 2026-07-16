@@ -43,12 +43,109 @@ function showToast(message, type = 'info', duration = 4500) {
     return remove;
 }
 window.showToast = showToast;
-// Kratki aliasi radi zamene alert() jednim potezom (ne diramo istorijski alert
-// pozive automatski, ali novi kod treba da koristi ovo)
 window.toastSuccess = (m,d) => showToast(m, 'success', d);
 window.toastError   = (m,d) => showToast(m, 'error', d);
 window.toastInfo    = (m,d) => showToast(m, 'info', d);
 window.toastWarn    = (m,d) => showToast(m, 'warn', d);
+
+// ==========================================================
+//  ASK MODAL — profesionalna zamena za prompt() / confirm() / alert()
+// ==========================================================
+// Svi CRM tokovi koji ranije koristili native prompt() sada zovu askInput/
+// askConfirm/askChoice — dobijaju stilizovan modal sa fokus zamkom, ESC
+// otkazivanjem, i mobile-friendly bottom-sheet ponašanjem (dolazi iz media
+// query-ja u index.html). Vraća Promise.
+window.askModal = function(opts) {
+    return new Promise((resolve) => {
+        opts = opts || {};
+        const {
+            title = 'Question',
+            description = '',
+            html = '',                      // ako je prosleđen, koristi se umesto default input-a
+            confirmText = 'OK',
+            cancelText = 'Cancel',
+            confirmClass = 'bg-blue-600 hover:bg-blue-700 text-white',
+            danger = false,
+            initialValue = '',
+            placeholder = '',
+            inputType = 'text',             // text, number, textarea, select
+            options = null,                 // array of {value, label} za select ili choice
+            multiline = false,
+            required = true,
+            validator = null,               // (value) => null | 'error message'
+        } = opts;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-[400] bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+
+        const btnClass = danger ? 'bg-red-600 hover:bg-red-700 text-white' : confirmClass;
+        const inputHtml = html || (
+            options ?
+              `<select id="ask-modal-input" class="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-xl text-sm bg-white dark:bg-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none">
+                ${options.map(o => `<option value="${String(o.value || o).replace(/"/g,'&quot;')}">${String(o.label || o).replace(/</g,'&lt;')}</option>`).join('')}
+              </select>` :
+            multiline || inputType === 'textarea' ?
+              `<textarea id="ask-modal-input" rows="4" placeholder="${placeholder.replace(/"/g,'&quot;')}" class="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-xl text-sm bg-white dark:bg-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none">${initialValue.replace(/</g,'&lt;')}</textarea>` :
+              `<input type="${inputType}" id="ask-modal-input" value="${String(initialValue).replace(/"/g,'&quot;')}" placeholder="${placeholder.replace(/"/g,'&quot;')}" class="w-full px-4 py-3 border border-slate-300 dark:border-slate-600 rounded-xl text-sm bg-white dark:bg-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"/>`
+        );
+
+        const isConfirmOnly = opts.mode === 'confirm';  // konfirm bez input polja
+        const bodyHtml = isConfirmOnly ? (description ? `<p class="text-slate-700 dark:text-slate-200 text-sm leading-relaxed">${description}</p>` : '')
+                       : `${description ? `<p class="text-slate-600 dark:text-slate-300 text-xs mb-3 leading-relaxed">${description}</p>` : ''}${inputHtml}<div id="ask-modal-error" class="hidden text-red-600 text-xs mt-2 font-semibold"></div>`;
+
+        overlay.innerHTML = `
+          <div class="bg-white dark:bg-slate-800 rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-md p-0 flex flex-col max-h-[95vh]">
+            <div class="px-5 pt-5 pb-3">
+              <h3 class="text-base font-bold text-slate-900 dark:text-white">${title}</h3>
+            </div>
+            <div class="px-5 pb-4 overflow-y-auto flex-1">${bodyHtml}</div>
+            <div class="px-5 py-4 border-t border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 flex flex-col sm:flex-row-reverse gap-2 rounded-b-2xl">
+              <button id="ask-modal-ok" class="${btnClass} font-bold px-5 py-2.5 rounded-xl text-sm shadow-sm min-h-[44px]">${confirmText}</button>
+              <button id="ask-modal-cancel" class="bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 font-semibold px-5 py-2.5 rounded-xl text-sm hover:bg-slate-50 min-h-[44px]">${cancelText}</button>
+            </div>
+          </div>`;
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector('#ask-modal-input');
+        const errorEl = overlay.querySelector('#ask-modal-error');
+        setTimeout(() => (input || overlay.querySelector('#ask-modal-ok'))?.focus(), 40);
+
+        const cleanup = (result) => {
+            document.removeEventListener('keydown', onKey);
+            overlay.remove();
+            resolve(result);
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') cleanup(null);
+            if (e.key === 'Enter' && !multiline && input && document.activeElement === input) {
+                overlay.querySelector('#ask-modal-ok').click();
+            }
+        };
+        document.addEventListener('keydown', onKey);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(null); });
+        overlay.querySelector('#ask-modal-cancel').addEventListener('click', () => cleanup(null));
+        overlay.querySelector('#ask-modal-ok').addEventListener('click', () => {
+            if (isConfirmOnly) return cleanup(true);
+            const val = input ? input.value : '';
+            if (required && !String(val).trim()) {
+                errorEl.textContent = 'This field is required.'; errorEl.classList.remove('hidden');
+                input.focus();
+                return;
+            }
+            if (validator) {
+                const msg = validator(val);
+                if (msg) { errorEl.textContent = msg; errorEl.classList.remove('hidden'); input.focus(); return; }
+            }
+            cleanup(val);
+        });
+    });
+};
+
+// Kratki wrapperi
+window.askInput = (title, opts) => askModal(Object.assign({ title }, opts || {}));
+window.askConfirm = (title, description, opts) => askModal(Object.assign({ title, description, mode: 'confirm' }, opts || {}));
+window.askChoice = (title, options, opts) => askModal(Object.assign({ title, options, required: true }, opts || {}));
 
 function applyTheme() {
   const body = document.body; const toggle = document.getElementById('theme-toggle');
