@@ -377,6 +377,16 @@ function checkAllNotifications(){
           if (counts.products > 0)          _push({ type: 'portal_products', message: tLang(`Nova roba sa portala na odobrenje: ${counts.products}`, `New products from partners awaiting approval: ${counts.products}`), goto: 'portal_products' });
           if (counts.profile_requests > 0)  _push({ type: 'portal_profile', message: tLang(`Zahtevi za izmenu profila: ${counts.profile_requests}`, `Profile change requests: ${counts.profile_requests}`), goto: 'portal_profile' });
           if (counts.rfqs > 0)              _push({ type: 'portal_rfq', message: tLang(`Novi RFQ zahtevi sa portala: ${counts.rfqs}`, `New RFQs from portal: ${counts.rfqs}`), goto: 'demands' });
+          // Client accept/decline odgovori — svaki nepregledan odgovor je posebna
+          // notifikacija sa razlogom (za decline) i akcijom 'Otvori ponudu'.
+          (counts.offer_responses_detail || []).forEach(r => {
+              const icon = r.status === 'accepted' ? '✅' : '❌';
+              const label = r.status === 'accepted'
+                  ? tLang(`${icon} ${r.client_name} je PRIHVATIO ponudu ${r.offer_no}`, `${icon} ${r.client_name} ACCEPTED offer ${r.offer_no}`)
+                  : tLang(`${icon} ${r.client_name} je ODBIO ponudu ${r.offer_no}${r.note ? ' — Razlog: ' + r.note : ''}`, `${icon} ${r.client_name} DECLINED offer ${r.offer_no}${r.note ? ' — Reason: ' + r.note : ''}`);
+              _push({ type: r.status === 'accepted' ? 'offer_accepted' : 'offer_declined',
+                      message: label, goto: 'offers', offerId: r.offer_id });
+          });
           updateNotificationCounter();
       }).catch(() => {});
   }
@@ -398,7 +408,7 @@ function showNotificationsModal(){
       let attrs = '';
       if (n.dealId) attrs = `data-deal-id="${escapeHtml(n.dealId)}"`;
       else if (n.goto) attrs = `data-goto="${escapeHtml(n.goto)}"`;
-      const icon = { 'portal_kyc': '🛡️', 'portal_products': '📦', 'portal_profile': '👤', 'portal_rfq': '📝', 'payment': '💳', 'oldPartner': '⏳', 'oldDemand': '🔎', 'productAvailable': '🎯', 'recurring': '🔁' }[n.type] || '•';
+      const icon = { 'portal_kyc': '🛡️', 'portal_products': '📦', 'portal_profile': '👤', 'portal_rfq': '📝', 'payment': '💳', 'oldPartner': '⏳', 'oldDemand': '🔎', 'productAvailable': '🎯', 'recurring': '🔁', 'offer_accepted': '✅', 'offer_declined': '❌' }[n.type] || '•';
       return `<div class="${cls}" ${attrs}>
         <button class="flex items-center flex-1 min-w-0 text-left cursor-pointer notif-open-btn">
           <span class="mr-2">${icon}</span><span class="text-sm text-main break-words">${escapeHtml(n.message)}</span>
@@ -439,6 +449,18 @@ function showNotificationsModal(){
               showPortalPendingModal('kyc');
           } else if (goto === 'portal_products' && typeof showPortalPendingModal === 'function') {
               showPortalPendingModal('products');
+          } else if (goto === 'offers') {
+              state.currentView = 'offers'; render();
+              // Ako je bio offer_response tip, obeleži server-side da je admin pregledao,
+              // a zatim ako postoji funkcija za otvaranje offer detalja pokrenemo je.
+              const offerId = e.currentTarget.dataset.offerId;
+              if (offerId) {
+                  fetch(`/api/portal/admin/offers/mark_seen/${offerId}`, { method: 'POST' })
+                      .catch(() => {});
+                  setTimeout(() => {
+                      if (typeof showOfferDetail === 'function') showOfferDetail(offerId);
+                  }, 100);
+              }
           }
       });
   });
