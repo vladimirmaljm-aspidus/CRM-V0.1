@@ -23,6 +23,10 @@ const translations = {
         refreshed: 'Podaci osveženi.', saving: 'Snimanje…', deleting: 'Brisanje…',
         working: 'Radim…', authenticating: 'Provera prijave…'
     },
+    documents: {
+        navLabel: 'Dokumenti', title: 'Upravljanje Dokumentima',
+        desc: 'Pregled, brisanje i preuzimanje svih fajlova uploadovanih kroz CRM i portal, sortirano po klijentu.'
+    },
     offers: {
         declineReason: 'Razlog odbijanja od strane klijenta',
         acceptNote: 'Napomena klijenta uz prihvatanje',
@@ -141,6 +145,10 @@ const translations = {
         default: 'Loading…', loadingData: 'Loading your workspace…', refreshing: 'Refreshing…',
         refreshed: 'Data refreshed.', saving: 'Saving…', deleting: 'Deleting…',
         working: 'Working…', authenticating: 'Authenticating…'
+    },
+    documents: {
+        navLabel: 'Documents', title: 'Document Manager',
+        desc: 'View, delete, or download every file uploaded through CRM & portal, organized by client.'
     },
     offers: {
         declineReason: 'Client decline reason',
