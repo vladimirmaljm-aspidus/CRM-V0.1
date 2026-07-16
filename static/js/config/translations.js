@@ -23,6 +23,12 @@ const translations = {
         refreshed: 'Podaci osveženi.', saving: 'Snimanje…', deleting: 'Brisanje…',
         working: 'Radim…', authenticating: 'Provera prijave…'
     },
+    offers: {
+        declineReason: 'Razlog odbijanja od strane klijenta',
+        acceptNote: 'Napomena klijenta uz prihvatanje',
+        markSeen: 'Obeleži kao pregledano',
+        newResponse: 'NOVO'
+    },
     portalPreview: {
         navLabel: 'Portal Pregled', title: 'Portal Pregled i Kontrola Pristupa',
         desc: 'Vidite šta svaki klijent tačno vidi u portalu, i podesite mu vidljivost tabova i proizvoda u katalogu.',
@@ -83,7 +89,7 @@ const translations = {
     product_search: { title: 'Napredna Pretraga Robe', search: 'Pretraži', productName: 'Naziv proizvoda', category: 'Kategorija', countryOrigin: 'Zemlja porekla', supplier: 'Dobavljač', certificates: 'Sertifikati', incoterm: 'Incoterm', priceRange: 'Raspon cena', from: 'od', to: 'do', noResults: 'Nema rezultata.', typeName: 'Kucaj ime...' },
     network: { title: 'Mreža Kontakata', new_connection: 'Nova Spona u Mreži', source_company: 'Izvorna Firma / Lice', relation_type: 'Vrsta Povezanosti', target_company: 'Ciljna Firma / Lice', notes: 'Dodatne beleške', error_self: 'Ne možete povezati firmu samu sa sobom.', info_text: 'Pratite ko je preporučio određene partnere. Kliknite na ime partnera da vidite njegove detalje.', no_data: 'Nema unetih poveznica.' },
     add: { partner: 'Dodaj partnera / osobu', deal: 'Kreiraj posao', product: 'Dodaj proizvod', demand: 'Dodaj potražnju', connection: 'Dodaj Poveznicu' },
-    actions: { edit:'Uredi', delete:'Obriši', save:'Sačuvaj', cancel:'Otkaži', details: 'Detalji', backToList: 'Nazad na listu', invoice: 'Faktura/Profaktura', select_buyer: 'Izaberi kupca', select_product: 'Izaberi proizvod', select_supplier: 'Izaberi dobavljača', select_associate: 'Izaberi saradnika', add_cost: 'Dodaj trošak', add_new_offer: 'Dodaj novu ponudu', list_view: 'Tabelarni Prikaz', kanban_view: 'Kanban Prikaz', open: 'Otvori', confirm: 'Potvrdi', addService: 'Dodaj uslugu', history: 'Istorija', saveChanges: 'Sačuvaj izmene', copy: 'Kopiraj', exportCsv: '📊 Export CSV', select: 'Izaberi', view: 'Pregledaj' },
+    actions: { edit:'Uredi', delete:'Obriši', save:'Sačuvaj', cancel:'Otkaži', details: 'Detalji', backToList: 'Nazad na listu', invoice: 'Faktura/Profaktura', select_buyer: 'Izaberi kupca', select_product: 'Izaberi proizvod', select_supplier: 'Izaberi dobavljača', select_associate: 'Izaberi saradnika', add_cost: 'Dodaj trošak', add_new_offer: 'Dodaj novu ponudu', list_view: 'Tabelarni Prikaz', kanban_view: 'Kanban Prikaz', open: 'Otvori', openEdit: 'Otvori / Uredi', confirm: 'Potvrdi', addService: 'Dodaj uslugu', history: 'Istorija', saveChanges: 'Sačuvaj izmene', copy: 'Kopiraj', exportCsv: '📊 Export CSV', select: 'Izaberi', view: 'Pregledaj' },
     fields: {
         companyName:'Naziv firme', fullName: 'Ime i Prezime', taxId:'PIB / ID', regNumber:'Matični broj', street:'Ulica i broj', city:'Grad', zip:'Poštanski broj', country:'Država', contactPerson:'Kontakt osoba', contactEmail:'Email', phone:'Telefon', bankName:'Naziv banke', accountNumber:'Broj računa', swift:'SWIFT', notes:'Beleške', tags: 'Oznake / Tagovi', types:'Tipovi partnera', quantity:'Količina', unit:'Jedinica mere', hsCode: 'HS Kod', description: 'Kratak opis proizvoda', detailedSpec: 'Detaljna specifikacija', certificates: 'Sertifikati', incoterm: 'Incoterm', demandFor: 'Potražnja za', existingProduct: 'Postojeći proizvod iz baze', newProduct: 'Potpuno novi proizvod', newProductName: 'Naziv novog proizvoda', actions: 'Akcije', currency: 'Valuta', date: 'Datum',
         stockQuantity: 'Nabavljeno / Na stanju', soldQuantity: 'Rezervisano / Prodato', availableQuantity: 'Slobodno za prodaju', dealId: 'ID ugovora / Referenca', buyer: 'Kupac', supplier: 'Dobavljač (Izvor)', product: 'Proizvod', purchasePrice: 'Kupovna cena (po jed.)', sellingPrice: 'Prodajna cena (po jed.)', price: 'Cena', purchasePricePlaceholder: 'Cena kupovine', sellingPricePlaceholder: 'Cena prodaje', targetProfitPlaceholder: 'Ciljani profit %', purchaseCurrency: 'Valuta plaćanja', sellingCurrency: 'Valuta naplate',
@@ -135,6 +141,12 @@ const translations = {
         default: 'Loading…', loadingData: 'Loading your workspace…', refreshing: 'Refreshing…',
         refreshed: 'Data refreshed.', saving: 'Saving…', deleting: 'Deleting…',
         working: 'Working…', authenticating: 'Authenticating…'
+    },
+    offers: {
+        declineReason: 'Client decline reason',
+        acceptNote: 'Client accept note',
+        markSeen: 'Mark as seen',
+        newResponse: 'NEW'
     },
     portalPreview: {
         navLabel: 'Portal Preview', title: 'Portal Preview & Access Control',
@@ -196,7 +208,7 @@ const translations = {
     product_search: { title: 'Advanced Product Search', search: 'Search', productName: 'Product Name', category: 'Category', countryOrigin: 'Country of Origin', supplier: 'Supplier', certificates: 'Certificates', incoterm: 'Incoterm', priceRange: 'Price Range', from: 'from', to: 'to', noResults: 'No results found.', typeName: 'Type name...' },
     network: { title: 'Network Connections', new_connection: 'New Connection', source_company: 'Source Company / Person', relation_type: 'Relation Type', target_company: 'Target Company / Person', notes: 'Additional Notes', error_self: 'You cannot connect a company to itself.', info_text: 'Track who recommended or connected certain partners. Click on a partner name to view details.', no_data: 'No connections entered.' },
     add: { partner: 'Add Partner / Person', deal: 'Create Deal', product: 'Add Product', demand: 'Add Demand', connection: 'Add Connection' },
-    actions: { edit:'Edit', delete:'Delete', save:'Save', cancel:'Cancel', details: 'Details', backToList: 'Back to List', invoice: 'Invoice/Proforma', select_buyer: 'Select buyer', select_product: 'Select product', select_supplier: 'Select supplier', select_associate: 'Select associate', add_cost: 'Add Cost', add_new_offer: 'Add New Offer', list_view: 'List View', kanban_view: 'Kanban View', open: 'Open', confirm: 'Confirm', addService: 'Add Service', history: 'History', saveChanges: 'Save Changes', copy: 'Copy', exportCsv: '📊 Export CSV', select: 'Select', view: 'View' },
+    actions: { edit:'Edit', delete:'Delete', save:'Save', cancel:'Cancel', details: 'Details', backToList: 'Back to List', invoice: 'Invoice/Proforma', select_buyer: 'Select buyer', select_product: 'Select product', select_supplier: 'Select supplier', select_associate: 'Select associate', add_cost: 'Add Cost', add_new_offer: 'Add New Offer', list_view: 'List View', kanban_view: 'Kanban View', open: 'Open', openEdit: 'Open / Edit', confirm: 'Confirm', addService: 'Add Service', history: 'History', saveChanges: 'Save Changes', copy: 'Copy', exportCsv: '📊 Export CSV', select: 'Select', view: 'View' },
     fields: {
         companyName:'Company Name', fullName: 'Full Name', taxId:'Tax ID (VAT)', regNumber:'Registration No', street:'Street and No', city:'City', zip:'ZIP Code', country:'Country', contactPerson:'Contact Person', contactEmail:'Email', phone:'Phone', bankName:'Bank Name', accountNumber:'Account Number', swift:'SWIFT', notes:'Notes', tags: 'Tags', types:'Partner Types', quantity:'Quantity', unit:'Unit of Measure', hsCode: 'HS Code', description: 'Short Description', detailedSpec: 'Detailed Specification', certificates: 'Certificates', incoterm: 'Incoterm', demandFor: 'Demand For', existingProduct: 'Existing Product from DB', newProduct: 'Brand New Product', newProductName: 'New Product Name', actions: 'Actions', currency: 'Currency', date: 'Date',
         stockQuantity: 'Stock / Sourced', soldQuantity: 'Reserved / Sold', availableQuantity: 'Available', dealId: 'Contract ID / Ref', buyer: 'Buyer', supplier: 'Supplier (Source)', product: 'Product', purchasePrice: 'Purchase Price (per unit)', sellingPrice: 'Selling Price (per unit)', price: 'Price', purchasePricePlaceholder: 'Purchase Price', sellingPricePlaceholder: 'Selling Price', targetProfitPlaceholder: 'Target Profit %', purchaseCurrency: 'Payment Currency', sellingCurrency: 'Receiving Currency',
@@ -228,9 +240,33 @@ const translations = {
 };
 
 function t(path) {
-  const parts = path.split('.'); let cur = translations[state.lang];
-  for(const p of parts){ if(!cur) return path; cur = cur[p]; }
-  return cur ?? path;
+  const parts = path.split('.');
+  // 1) primary language
+  let cur = translations[state.lang];
+  for(const p of parts){ if(!cur) { cur = null; break; } cur = cur[p]; }
+  if (cur != null) return cur;
+  // 2) fallback: druga podrzana grana (EN default) — cesto SR postoji, EN nema ili obrnuto
+  const fallbackLang = state.lang === 'sr' ? 'en' : 'sr';
+  let alt = translations[fallbackLang];
+  for(const p of parts){ if(!alt) { alt = null; break; } alt = alt[p]; }
+  if (alt != null) return alt;
+  // 3) Ako ni jedno nema, umesto sirovog "text.text" ključa prikažemo user-friendly
+  //    verziju POSLEDNJEG segmenta ključa: 'foo.customerBank' → 'Customer Bank'.
+  //    Ovim korisnik dobija smislen label čak i kad prevod nedostaje.
+  const last = parts[parts.length - 1] || path;
+  const humanized = String(last)
+      .replace(/[_-]+/g, ' ')                    // snake_case / kebab-case → space
+      .replace(/([a-z])([A-Z])/g, '$1 $2')      // camelCase → camel Case
+      .replace(/\s+/g, ' ')
+      .trim();
+  if (!humanized) return path;
+  // Log jednom po ključu — pomaže pri razvoju da vidimo koje nedostaju.
+  if (typeof window !== 'undefined' && !window.__missing_t) window.__missing_t = new Set();
+  if (window.__missing_t && !window.__missing_t.has(path)) {
+      window.__missing_t.add(path);
+      if (typeof console !== 'undefined' && console.debug) console.debug('[t] missing key:', path, '→', humanized);
+  }
+  return humanized.charAt(0).toUpperCase() + humanized.slice(1);
 }
 
 function getTranslatedCategory(catKey) {
