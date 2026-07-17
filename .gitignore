@@ -43,3 +43,7 @@ Thumbs.db
 _e2e_data/
 tests/_e2e_data/
 /tmp/e2e_server.log
+
+# Encrypted runtime DB backups (contain user data — MUST NOT ship)
+backups/
+*.fernet
