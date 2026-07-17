@@ -38,3 +38,8 @@ node_modules/
 Thumbs.db
 .idea/
 .vscode/
+
+# E2E test artifacts
+_e2e_data/
+tests/_e2e_data/
+/tmp/e2e_server.log

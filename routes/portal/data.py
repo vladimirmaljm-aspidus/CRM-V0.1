@@ -62,19 +62,30 @@ def get_portal_data(token):
         # SYSTEM PERMISSIONS: Dozvoljavamo pristup i novom tabu za dokumente
         permissions = partner.get("portalPermissions", ["shipments", "offers", "kyc", "goods", "profile", "rfq", "documents"])
         
+        # Odbrambeni normalizatori: 'address' i 'contact' su nekad string, nekad dict.
+        # Bez ovoga, staro pretpostavljanje partner['address'].get(...) baca
+        # AttributeError kada je vrednost string, što je uzrok 500 na /api/portal/data.
+        _addr = partner.get("address")
+        _contact = partner.get("contact")
+        _kyc = partner.get("kyc")
+        _addr_dict = _addr if isinstance(_addr, dict) else {}
+        _addr_str = _addr if isinstance(_addr, str) else _addr_dict.get("street", "")
+        _contact_dict = _contact if isinstance(_contact, dict) else {}
+        _kyc_dict = _kyc if isinstance(_kyc, dict) else {}
+
         safe_partner = {
-            "id": partner_id, 
-            "companyName": partner.get("companyName"),
-            "contactPerson": partner.get("contact", {}).get("person", ""),
-            "kycStatus": partner.get("kyc", {}).get("status", "pending"),
-            "kycReviewNote": partner.get("kyc", {}).get("reviewNote", ""),
-            "kycReviewedAt": partner.get("kyc", {}).get("reviewedAt", ""),
-            "email": partner.get("contact", {}).get("email") or partner.get("email", ""),
-            "phone": partner.get("contact", {}).get("phone") or partner.get("phone", ""),
+            "id": partner_id,
+            "companyName": partner.get("companyName") or partner.get("name") or "",
+            "contactPerson": _contact_dict.get("person", "") or partner.get("contactPerson", ""),
+            "kycStatus": _kyc_dict.get("status", "pending"),
+            "kycReviewNote": _kyc_dict.get("reviewNote", ""),
+            "kycReviewedAt": _kyc_dict.get("reviewedAt", ""),
+            "email": _contact_dict.get("email") or partner.get("email", "") or "",
+            "phone": _contact_dict.get("phone") or partner.get("phone", "") or "",
             "address": {
-                "street": partner.get("address", {}).get("street", ""),
-                "city": partner.get("address", {}).get("city", ""),
-                "country": partner.get("address", {}).get("country", ""),
+                "street": _addr_str,
+                "city": _addr_dict.get("city", "") or partner.get("city", "") or "",
+                "country": _addr_dict.get("country", "") or partner.get("country", "") or "",
             },
             "permissions": permissions
         }

@@ -53,3 +53,13 @@ const state = {
 };
 
 const DATA_KEYS = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'settings', 'company'];
+// Eksponuj top-level state/data ključeve kao window.* da bi test tooling (Playwright)
+// mogao da im pristupi kroz page.evaluate. U regular browser skriptama, `const` na
+// top-level nije globalna promenljiva pa `window.state` nije auto-postavljen.
+if (typeof window !== 'undefined') {
+    window.state = state;
+    window.DATA_KEYS = DATA_KEYS;
+    window.FILE_LIMIT_MB = FILE_LIMIT_MB;
+    window.ALL_CITIES_FLAT = ALL_CITIES_FLAT;
+    window.CITIES_BY_COUNTRY = CITIES_BY_COUNTRY;
+}

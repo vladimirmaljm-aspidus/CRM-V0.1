@@ -478,19 +478,31 @@ def create_deal_from_offer(offer_id):
             'sourceOfferPdfFileUrl': offer.get('pdfFileUrl'),
         }
 
-        # Uzmi kupca iz partners tabele — puni podaci umesto samo ime
+        # Uzmi kupca iz partners tabele — puni podaci umesto samo ime.
+        # NAPOMENA: legacy record-i imaju `address` kao STRING (jedan textarea),
+        # dok noviji zapisi koriste dict {street, city, country}. Kod mora
+        # da podržava obe forme — inače ovde bio 500 pri konverziji.
         c.execute("SELECT data FROM partners WHERE id=?", (offer.get('customerId'),))
         p_row = c.fetchone()
         if p_row:
             p_data = decrypt_data(p_row[0])
             if isinstance(p_data, dict):
-                deal['buyerName'] = p_data.get('companyName', '')
-                deal['buyerContactEmail'] = (p_data.get('contact', {}) or {}).get('email') or p_data.get('email', '')
-                deal['buyerContactPhone'] = (p_data.get('contact', {}) or {}).get('phone') or p_data.get('phone', '')
-                addr = p_data.get('address', {}) or {}
-                deal['buyerAddress'] = ', '.join(filter(None, [
-                    addr.get('street', ''), addr.get('city', ''), addr.get('country', '')
-                ]))
+                deal['buyerName'] = p_data.get('companyName') or p_data.get('name', '')
+                contact = p_data.get('contact')
+                contact = contact if isinstance(contact, dict) else {}
+                deal['buyerContactEmail'] = contact.get('email') or p_data.get('email', '')
+                deal['buyerContactPhone'] = contact.get('phone') or p_data.get('phone', '')
+                addr = p_data.get('address')
+                if isinstance(addr, dict):
+                    deal['buyerAddress'] = ', '.join(filter(None, [
+                        addr.get('street', ''), addr.get('city', ''), addr.get('country', '')
+                    ]))
+                elif isinstance(addr, str):
+                    deal['buyerAddress'] = ', '.join(filter(None, [
+                        addr, p_data.get('city', ''), p_data.get('country', '')
+                    ]))
+                else:
+                    deal['buyerAddress'] = ''
                 deal['buyerTaxId'] = p_data.get('taxId', '')
                 deal['buyerRegNumber'] = p_data.get('regNumber', '')
 
