@@ -1073,6 +1073,28 @@ class T15DocumentRegister(BaseCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn('items', r.get_json())
 
+    def test_07_all_doc_types_supported(self):
+        """Svih 6 tipova dokumenata: offer, invoice, proforma, contract,
+        delivery_note, credit_note — svaki dobija svoj prefix i sekvencu."""
+        prefixes = {'offer': 'OFF', 'invoice': 'INV', 'proforma': 'PRO',
+                    'contract': 'CNT', 'delivery_note': 'DN', 'credit_note': 'CN'}
+        for dt, prefix in prefixes.items():
+            r = self._post_with_csrf('/api/documents/issue',
+                                     {'docType': dt, 'entityId': f'test-{dt}', 'year': 2029})
+            self.assertEqual(r.status_code, 200, msg=f'{dt} failed: {r.data[:200]}')
+            n = r.get_json()['docNumber']
+            self.assertTrue(n.startswith(prefix + '-'),
+                            msg=f'{dt} expected prefix {prefix}, got {n}')
+
+    def test_08_unknown_doc_type_rejected(self):
+        r = self._post_with_csrf('/api/documents/issue',
+                                 {'docType': 'INVALID_TYPE', 'entityId': 'x'})
+        self.assertEqual(r.status_code, 400)
+
+    def test_09_history_of_nonexistent_returns_404(self):
+        r = self.client.get('/api/documents/history/NONE-000/2099')
+        self.assertEqual(r.status_code, 404)
+
 
 class T16EmailQueue(BaseCase):
     """Email queue — retry, park, admin view."""
