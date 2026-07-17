@@ -212,13 +212,22 @@ def apply_brutal_security_headers(response):
     
     # Sadržajna polisa (CSP) je pooštrena
     # Ograničeni su izvori slika na tačno definisane sigurne lokacije, umesto divljeg "http://*"
+    #
+    # connect-src mora dozvoliti:
+    #  - http://ip-api.com — geo lookup za detekciju anomalije prijave po zemlji
+    #  - https://open.er-api.com — dnevni kursevi za deal profit kalkulacije
+    #  - https://nominatim.openstreetmap.org — geokodiranje adresa u logistics planner-u
+    #  - https://router.project-osrm.org — kopneno rutiranje u logistics planner-u
+    #  - https://{a,b,c,d}.basemaps.cartocdn.com — Leaflet tile-ovi
+    #  - https://unpkg.com i https://cdnjs.cloudflare.com — CSS/JS za Leaflet i Font Awesome
     csp = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; "
-        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
-        "img-src 'self' data: blob: https://googleusercontent.com; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://unpkg.com; "
+        "font-src 'self' data: https://cdnjs.cloudflare.com; "
+        "img-src 'self' data: blob: https://googleusercontent.com https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; "
         "frame-src 'self' blob:; "
-        "connect-src 'self' http://ip-api.com;"
+        "connect-src 'self' http://ip-api.com https://open.er-api.com https://nominatim.openstreetmap.org https://router.project-osrm.org;"
     )
     response.headers['Content-Security-Policy'] = csp
     
