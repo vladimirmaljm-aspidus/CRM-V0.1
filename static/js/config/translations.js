@@ -27,6 +27,18 @@ const translations = {
         navLabel: 'Dokumenti', title: 'Upravljanje Dokumentima',
         desc: 'Pregled, brisanje i preuzimanje svih fajlova uploadovanih kroz CRM i portal, sortirano po klijentu.'
     },
+    logistics: {
+        plan: 'Ruta',
+        plannerTitle: 'Multimodalni logistički planer — mapa svih ruta i procena vremena',
+        title: 'Logistički planer',
+        subtitle: 'Kopno · More · Vazduh — automatska ruta',
+        origin: 'Polazište',
+        destination: 'Odredište',
+        cargo: 'Teret (t)',
+        priority: 'Prioritet',
+        fastest: 'Najbrži', cheapest: 'Najjeftiniji', greenest: 'Najzeleniji',
+        compute: 'Izračunaj rute',
+    },
     offers: {
         declineReason: 'Razlog odbijanja od strane klijenta',
         acceptNote: 'Napomena klijenta uz prihvatanje',
@@ -149,6 +161,18 @@ const translations = {
     documents: {
         navLabel: 'Documents', title: 'Document Manager',
         desc: 'View, delete, or download every file uploaded through CRM & portal, organized by client.'
+    },
+    logistics: {
+        plan: 'Route',
+        plannerTitle: 'Multimodal logistics planner — route map and ETA estimate',
+        title: 'Logistics Planner',
+        subtitle: 'Road · Sea · Air — automatic multimodal routing',
+        origin: 'Origin',
+        destination: 'Destination',
+        cargo: 'Cargo (t)',
+        priority: 'Priority',
+        fastest: 'Fastest', cheapest: 'Cheapest', greenest: 'Lowest CO₂',
+        compute: 'Compute routes',
     },
     offers: {
         declineReason: 'Client decline reason',

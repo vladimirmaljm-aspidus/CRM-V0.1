@@ -622,6 +622,91 @@ class T12BankSync(BaseCase):
         self.assertEqual(v['bankAccounts'][1]['currency'], 'USD')
 
 
+class T14LogisticsPlanner(BaseCase):
+    """Multimodalni planer — /api/logistics/{ports,airports,plan,disruptions}."""
+
+    def setUp(self):
+        self._login_admin()
+
+    def test_01_ports_list_returns_data(self):
+        r = self.client.get('/api/logistics/ports?limit=5')
+        self.assertEqual(r.status_code, 200)
+        js = r.get_json()
+        self.assertGreater(js['total'], 100)
+        self.assertLessEqual(len(js['items']), 5)
+        for p in js['items']:
+            self.assertIn('lat', p); self.assertIn('lon', p); self.assertIn('unlocode', p)
+
+    def test_02_airports_list_search_by_iata(self):
+        r = self.client.get('/api/logistics/airports?q=JFK&limit=5')
+        self.assertEqual(r.status_code, 200)
+        js = r.get_json()
+        # JFK mora biti pronađen
+        self.assertTrue(any(a.get('iata') == 'JFK' for a in js['items']))
+
+    def test_03_disruptions_returns_seed(self):
+        r = self.client.get('/api/logistics/disruptions')
+        self.assertEqual(r.status_code, 200)
+        js = r.get_json()
+        ids = {d['id'] for d in js['disruptions']}
+        self.assertIn('red-sea-2024', ids)
+
+    def test_04_plan_road_only_short_distance(self):
+        # Beograd → Budimpešta (~330km road)
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 44.7866, 'lon': 20.4489, 'label': 'Belgrade'},
+            'destination': {'lat': 47.4979, 'lon': 19.0402, 'label': 'Budapest'},
+            'cargo_tons': 10.0
+        })
+        self.assertEqual(r.status_code, 200, msg=r.data[:400])
+        js = r.get_json()
+        modes = {p['mode'] for p in js['plans']}
+        self.assertIn('road', modes)
+        road = next(p for p in js['plans'] if p['mode'] == 'road')
+        self.assertLess(road['total_days'], 3)
+        self.assertGreater(road['total_distance_km'], 200)
+
+    def test_05_plan_intercontinental_uses_sea(self):
+        # Rotterdam port → New York port
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 51.9225, 'lon': 4.4792, 'label': 'Rotterdam'},
+            'destination': {'lat': 40.7128, 'lon': -74.0060, 'label': 'New York'},
+            'cargo_tons': 100.0
+        })
+        self.assertEqual(r.status_code, 200)
+        js = r.get_json()
+        modes = {p['mode'] for p in js['plans']}
+        self.assertIn('sea', modes)
+        self.assertIn('air', modes)
+        sea = next(p for p in js['plans'] if p['mode'] == 'sea')
+        # Prekooceanski minimum ~5000km
+        self.assertGreater(sea['total_distance_km'], 5000)
+        # Sea mora imati 3 etape (kopno-more-kopno)
+        self.assertEqual(len(sea['legs']), 3)
+
+    def test_06_plan_red_sea_disruption_reroutes(self):
+        # Rotterdam → Shanghai — Suez rerouting oko Rta Dobre Nade
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 51.9225, 'lon': 4.4792, 'label': 'Rotterdam'},
+            'destination': {'lat': 31.2304, 'lon': 121.4737, 'label': 'Shanghai'},
+            'cargo_tons': 100.0
+        })
+        self.assertEqual(r.status_code, 200)
+        js = r.get_json()
+        sea = next(p for p in js['plans'] if p['mode'] == 'sea')
+        wps = sea['legs'][1].get('via_waypoints', [])
+        # Kada je Crveno more aktivno kao high-severity, treba da izbegne Suez
+        self.assertIn('cape_good_hope', wps)
+        self.assertNotIn('suez', wps)
+
+    def test_07_plan_missing_coords_returns_400(self):
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'address': 'Somewhere'},  # bez lat/lon
+            'destination': {'lat': 40.7, 'lon': -74.0, 'label': 'NYC'}
+        })
+        self.assertEqual(r.status_code, 400)
+
+
 def main():
     unittest.main(verbosity=2, exit=False)
 
