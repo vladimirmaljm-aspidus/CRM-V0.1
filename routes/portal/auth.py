@@ -288,3 +288,32 @@ def portal_login_verify():
         return jsonify({"status": "success", "auth_key": auth_key, "token": token})
 
     return jsonify({"error": "Invalid or expired verification code."}), 401
+
+
+# ==========================================================
+#  TEST-ONLY HOOK — omogućava automatizovanim E2E testovima da
+#  pročitaju trenutni OTP bez SMTP-a. Aktivan SAMO kada je env
+#  TEST_MODE=1 postavljen; u produkciji vraća 404 (kao da endpointa nema).
+# ==========================================================
+import os as _os_test
+@portal_bp.route('/api/portal/testonly/last_otp/<token>', methods=['GET'])
+def testonly_last_otp(token):
+    if _os_test.getenv('TEST_MODE', '0') != '1':
+        return jsonify({"error": "not_found"}), 404
+    from . import portal_otps
+    rec = portal_otps.get(token)
+    if not rec:
+        return jsonify({"otp": None}), 200
+    return jsonify({"otp": rec.get('otp')}), 200
+
+
+@portal_bp.route('/api/portal/testonly/last_email_session_otp', methods=['GET'])
+def testonly_last_email_session_otp():
+    """Vraća OTP za poslednju pending email-sesiju (email flow ne koristi token)."""
+    if _os_test.getenv('TEST_MODE', '0') != '1':
+        return jsonify({"error": "not_found"}), 404
+    email = (request.args.get('email') or '').strip().lower()
+    for sid, rec in list(pending_email_sessions.items()):
+        if rec.get('email', '').lower() == email:
+            return jsonify({"session_id": sid, "otp": rec.get('otp')})
+    return jsonify({"otp": None}), 200
