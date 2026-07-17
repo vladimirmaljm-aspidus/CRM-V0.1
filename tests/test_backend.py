@@ -983,6 +983,132 @@ class T14LogisticsPlanner(BaseCase):
         self.assertEqual(r.status_code, 400)
 
 
+class T15DocumentRegister(BaseCase):
+    """Registar dokumenata — atomsko izdavanje, prevencija duplikata, revizije."""
+
+    def setUp(self):
+        self._login_admin()
+
+    def test_01_next_number_preview(self):
+        r = self.client.get('/api/documents/next_number?docType=offer&year=2026')
+        self.assertEqual(r.status_code, 200)
+        d = r.get_json()
+        self.assertEqual(d['docType'], 'offer')
+        self.assertEqual(d['year'], 2026)
+        self.assertTrue(d['preview'].startswith('OFF-'))
+        self.assertIn('/2026', d['preview'])
+
+    def test_02_issue_sequential_no_duplicates(self):
+        """Rezerviši 3 broja zaredom → moraju biti sekvencijalna, nikad duplikat."""
+        seen = set()
+        for i in range(3):
+            r = self._post_with_csrf('/api/documents/issue',
+                                     {'docType': 'offer', 'year': 2027})
+            self.assertEqual(r.status_code, 200, msg=r.data[:200])
+            n = r.get_json()['docNumber']
+            self.assertNotIn(n, seen, msg=f'DUPLICATE number issued: {n}')
+            seen.add(n)
+        # Svi brojevi za 2027 → očekujemo 001, 002, 003
+        self.assertEqual(len(seen), 3)
+
+    def test_03_issue_idempotent_by_entity(self):
+        """Ista entityId → vraća se ISTI broj (idempotent)."""
+        r1 = self._post_with_csrf('/api/documents/issue',
+                                  {'docType': 'invoice', 'entityId': 'e2e-inv-1', 'year': 2027})
+        r2 = self._post_with_csrf('/api/documents/issue',
+                                  {'docType': 'invoice', 'entityId': 'e2e-inv-1', 'year': 2027})
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r1.get_json()['docNumber'], r2.get_json()['docNumber'])
+
+    def test_04_revise_appends_R_suffix(self):
+        """Revizija dodaje -R1, -R2 suffix i snima snapshot."""
+        r = self._post_with_csrf('/api/documents/issue',
+                                 {'docType': 'offer', 'entityId': 'rev-test', 'year': 2027})
+        base = r.get_json()['docNumber']
+
+        # bez reason-a → 400
+        r_no = self._post_with_csrf('/api/documents/revise',
+                                    {'docNumber': base, 'snapshot': {'price': 100}})
+        self.assertEqual(r_no.status_code, 400)
+
+        # sa reason-om → R1
+        r1 = self._post_with_csrf('/api/documents/revise', {
+            'docNumber': base, 'snapshot': {'price': 100, 'note': 'v1'},
+            'changeReason': 'Customer requested different currency'
+        })
+        self.assertEqual(r1.status_code, 200)
+        d1 = r1.get_json()
+        self.assertTrue(d1['docNumber'].endswith('-R1'))
+
+        # druga revizija → R2
+        r2 = self._post_with_csrf('/api/documents/revise', {
+            'docNumber': base, 'snapshot': {'price': 120, 'note': 'v2'},
+            'changeReason': 'Price update'
+        })
+        self.assertTrue(r2.get_json()['docNumber'].endswith('-R2'))
+
+    def test_05_history_returns_all_revisions(self):
+        r = self._post_with_csrf('/api/documents/issue',
+                                 {'docType': 'offer', 'entityId': 'hist-test', 'year': 2027})
+        base = r.get_json()['docNumber']
+        self._post_with_csrf('/api/documents/revise', {
+            'docNumber': base, 'snapshot': {'x': 1}, 'changeReason': 'test'})
+        self._post_with_csrf('/api/documents/revise', {
+            'docNumber': base, 'snapshot': {'x': 2}, 'changeReason': 'test2'})
+        hist = self.client.get(f'/api/documents/history/{base}')
+        self.assertEqual(hist.status_code, 200)
+        h = hist.get_json()
+        # register: original + 2 revizije = 3
+        self.assertEqual(len(h['register']), 3)
+        # revisions tabela: 2 revizije (original nema revision zapis)
+        self.assertEqual(len(h['revisions']), 2)
+        # Original je superseded, poslednja je active
+        statuses = [r['status'] for r in h['register']]
+        self.assertIn('superseded', statuses)
+        self.assertEqual(statuses[-1], 'active')
+
+    def test_06_register_list_endpoint(self):
+        r = self.client.get('/api/documents/register?docType=offer&year=2027')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('items', r.get_json())
+
+
+class T16EmailQueue(BaseCase):
+    """Email queue — retry, park, admin view."""
+
+    def setUp(self):
+        self._login_admin()
+
+    def test_01_queue_endpoint(self):
+        r = self.client.get('/api/comms/email_queue')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('items', r.get_json())
+
+    def test_02_retry_now_endpoint(self):
+        r = self._post_with_csrf('/api/comms/email_queue/retry_now', {})
+        self.assertEqual(r.status_code, 200)
+        for key in ('processed', 'ok', 'failed', 'skipped'):
+            self.assertIn(key, r.get_json())
+
+    def test_03_park_in_queue_persists(self):
+        """Test da _park_in_queue upisuje zapise sa attempts=3 i pending status."""
+        import sqlite3
+        from utils_email import _park_in_queue
+        from config import DB_FILE
+        _park_in_queue('test@example.com', 'test subj', 'body', '<b>html</b>',
+                        None, 'transient failure')
+        conn = sqlite3.connect(DB_FILE)
+        rows = conn.execute(
+            "SELECT recipient, attempts, status FROM email_queue WHERE recipient=?",
+            ('test@example.com',)
+        ).fetchall()
+        conn.close()
+        self.assertTrue(rows)
+        self.assertEqual(rows[0][1], 3)   # attempts
+        self.assertEqual(rows[0][2], 'pending')
+
+
 def main():
     unittest.main(verbosity=2, exit=False)
 

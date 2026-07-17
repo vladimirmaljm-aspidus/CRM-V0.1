@@ -22,6 +22,7 @@ from routes.vault import vault_bp
 from routes.system import system_bp
 from routes.documents import documents_bp
 from routes.logistics import logistics_bp
+from routes.documents_register import documents_register_bp
 
 # Konfiguracija sistemskog logovanja (sprečava ispisivanje osetljivih grešaka korisnicima)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -79,6 +80,7 @@ app.register_blueprint(vault_bp)
 app.register_blueprint(system_bp)
 app.register_blueprint(documents_bp)
 app.register_blueprint(logistics_bp)
+app.register_blueprint(documents_register_bp)
 
 @app.before_request
 def enforce_csrf():

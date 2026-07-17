@@ -713,6 +713,45 @@ def save_offer_pdf_to_vault(offer):
     binding_seed = json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode('utf-8')
     binding_hash = _sha256_bytes(binding_seed)
 
+    # Rezerviši ili preuzmi postojeći broj iz document_register-a. Ovo garantuje
+    # da nijedan dokument ne zaobiđe sekvencijalnu numeraciju, čak i ako je
+    # offer.offerNo bio postavljen ranije iz drugog izvora.
+    doc_register_number = None
+    doc_register_revision = 0
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn_r:
+            cur = conn_r.cursor()
+            cur.execute('SELECT docNumber, revision FROM document_register '
+                        'WHERE docType=? AND entityId=? AND revision=0',
+                        ('offer', offer.get('id')))
+            row = cur.fetchone()
+            if row:
+                doc_register_number = row[0]
+                doc_register_revision = row[1]
+            else:
+                # Rezerviši novi broj atomično
+                from datetime import datetime as _dt
+                year = _dt.now(timezone.utc).year
+                seq = (cur.execute('SELECT COALESCE(MAX(seq), 0) FROM document_register '
+                                    'WHERE docType=? AND year=?',
+                                    ('offer', year)).fetchone()[0] or 0) + 1
+                doc_register_number = f"OFF-{seq:03d}/{year}"
+                try:
+                    cur.execute('INSERT INTO document_register (docType, year, seq, '
+                                'docNumber, entityId, revision, status, issuedAt, issuedBy) '
+                                'VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
+                                ('offer', year, seq, doc_register_number,
+                                 offer.get('id'), 'active', now, 'system'))
+                    conn_r.commit()
+                except sqlite3.IntegrityError:
+                    # Ako je race → seq je zauzet, izvuci koji je zaista dodeljen
+                    row2 = cur.execute('SELECT docNumber FROM document_register '
+                                       'WHERE docType=? AND entityId=?',
+                                       ('offer', offer.get('id'))).fetchone()
+                    if row2: doc_register_number = row2[0]
+    except Exception as e:
+        logger.warning(f'document_register reserve failed: {e}')
+
     doc = {
         'id': doc_id,
         'partnerId': offer.get('customerId'),
@@ -722,9 +761,12 @@ def save_offer_pdf_to_vault(offer):
         'sourceOfferId': offer.get('id'),
         'sourceType': 'OFFER',
         'createdAt': now,
+        # Registar polja — koji je oficijelni broj i revizija
+        'registerNumber': doc_register_number,
+        'registerRevision': doc_register_revision,
         # Integrity fields
-        'pdfContentHash': content_hash,       # SHA-256 nad bajtovima PDF-a
-        'bindingHash': binding_hash,          # SHA-256 nad kanonizovanim poljima
+        'pdfContentHash': content_hash,
+        'bindingHash': binding_hash,
         'shortVerification': _make_verification_hash(offer.get('id'), offer.get('offerNo')),
         'hashAlgorithm': 'SHA-256',
     }
