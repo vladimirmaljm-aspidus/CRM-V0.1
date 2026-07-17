@@ -833,6 +833,7 @@ function renderOffersView() {
                   <td class="p-5 font-black text-emerald-600 text-lg">${Utils.formatCurrency(totalVal, offer.currency)}</td>
                   <td class="p-5 text-right whitespace-nowrap">
                       ${convertBtn}
+                      <button class="bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-logistics-offer="${offer.id}" title="${Utils.t('logistics.plannerTitle') || 'Multimodalni logistički planer'}">🌍 ${Utils.t('logistics.plan') || 'Ruta'}</button>
                       <button class="bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" onclick="document.dispatchEvent(new CustomEvent('createCustomerOffer', {detail: {savedOfferId: '${offer.id}'}}))">${Utils.t('actions.openEdit') || 'Otvori / Uredi'}</button>
                       <button class="bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors offer-delete-btn" data-offer-id="${offer.id}">🗑️</button>
                   </td>
@@ -870,6 +871,64 @@ function renderOffersView() {
     // izbegava rizik da re-render izgubi handler ili da izuzetak u petlji za
     // vezivanje sprečimo klik. Dugmad ostaju standardna <button data-convert-offer>.
     installOfferConvertDelegatedHandler();
+    installOfferLogisticsDelegatedHandler();
+}
+
+// Delegirani handler za dugme "🌍 Ruta" u tabeli ponuda (CRM). Kada se klikne,
+// otvara Logistics Planner modal auto-popunjen iz podataka ponude:
+//   - polazište = adresa dobavljača (ako postoji productId → productData.supplier)
+//     ili adresa naše firme (state.company.address) kao fallback
+//   - odredište = adresa kupca (offer.customerId → partners → address)
+//   - teret = quantity + unit iz ponude
+let __offerLogisticsHandlerInstalled = false;
+function installOfferLogisticsDelegatedHandler() {
+    if (__offerLogisticsHandlerInstalled) return;
+    __offerLogisticsHandlerInstalled = true;
+
+    document.addEventListener('click', async (ev) => {
+        const btn = ev.target && ev.target.closest ? ev.target.closest('[data-logistics-offer]') : null;
+        if (!btn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        const offerId = btn.dataset.logisticsOffer;
+        const offer = (state.data.offers || []).find(o => o.id === offerId);
+        if (!offer) {
+            if (typeof showToast === 'function') showToast('Offer not found', 'error');
+            return;
+        }
+
+        // Kupac (odredište)
+        const buyer = (state.data.customers || []).find(c => c.id === offer.customerId);
+        // Dobavljač (polazište) — nađemo iz proizvoda, ako je pod-item ponude
+        const productId = offer.productId || (offer.items && offer.items[0] && offer.items[0].productId);
+        const product = productId ? (state.data.products || []).find(p => p.id === productId) : null;
+        const supplierId = product && (product.supplierId || product.supplier_id);
+        const supplier = supplierId ? (state.data.suppliers || []).find(s => s.id === supplierId) : null;
+
+        const originLabel = supplier
+            ? [supplier.name, supplier.address, supplier.city, supplier.country].filter(Boolean).join(', ')
+            : (state.company && [state.company.address, state.company.city, state.company.country].filter(Boolean).join(', ')) || '';
+        const destLabel = buyer
+            ? [buyer.name, buyer.address, buyer.city, buyer.country].filter(Boolean).join(', ')
+            : '';
+
+        // Teret (t) — pokušavamo pretvoriti sve u tone
+        const qty = parseFloat(offer.quantity || (offer.items && offer.items[0] && offer.items[0].quantity) || 0) || 20;
+        const unit = String(offer.unit || (offer.items && offer.items[0] && offer.items[0].unit) || 'MT').toLowerCase();
+        const cargoTons = unit === 'kg' ? qty / 1000 : (unit === 't' || unit === 'mt' || unit === 'tona' ? qty : qty);
+
+        if (typeof window.openLogisticsPlanner !== 'function') {
+            alert('Logistics planner module not loaded (please refresh)');
+            return;
+        }
+        window.openLogisticsPlanner({
+            origin: originLabel ? { address: originLabel } : null,
+            destination: destLabel ? { address: destLabel } : null,
+            cargoTons,
+            apiBase: '/api/logistics',
+        });
+    }, false);
 }
 
 // Instalira jednom-po-sesiji delegirani click handler za dugmad
