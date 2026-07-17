@@ -694,3 +694,112 @@ label {
     max-width: 100%;
     overflow-wrap: break-word;
 }
+
+/* ==========================================================
+   UNIVERZALNA ANTI-OVERLAP PRAVILA ZA FORME
+   Radi bez obzira na inline Tailwind klase — targetira sve
+   modalne forme, jer je preklapanje najčešće tamo.
+   ========================================================== */
+
+/* Modal body + form: preventuj horizontal overflow na uskim viewport-ima */
+#modal-body,
+#modal-backdrop form,
+.tab-content form,
+.ptab-pane {
+    max-width: 100%;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+}
+
+/* Sva label + input polja u grid-u treba da su ALIGN-START, ne stretch,
+   jer stretch pravi da label sa 2 reda "gura" input dole u sledeći red. */
+#modal-body .grid,
+.tab-content .grid,
+.ptab-pane .grid {
+    align-items: start;
+}
+
+/* Svi input-i u formama moraju da poštuju box-sizing */
+#modal-body input,
+#modal-body select,
+#modal-body textarea,
+.tab-content input,
+.tab-content select,
+.tab-content textarea,
+.ptab-pane input,
+.ptab-pane select,
+.ptab-pane textarea {
+    box-sizing: border-box;
+    max-width: 100%;
+}
+
+/* Labeli — ne dozvoli da label nadvisi input širinu */
+#modal-body label,
+.tab-content label,
+.ptab-pane label {
+    max-width: 100%;
+    overflow-wrap: break-word;
+}
+
+/* Number input sa placeholder-om — placeholder je muted; korisniku ne treba
+   flicker kada kuca. Chrome nekada "reset-uje" cursor ako input.value
+   promeni type. Ovo pomaže da placeholder ostane u fokusu. */
+input[type="number"] {
+    -moz-appearance: textfield;
+    line-height: 1.4;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+    height: auto;
+    margin: 0;
+}
+
+/* Currency select kraj number input-a — flex row koji ne prelazi na 2 reda */
+.currency-input-pair {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+    min-width: 0;
+}
+.currency-input-pair > input[type="number"] {
+    flex: 1 1 0%;
+    min-width: 0;   /* dozvoli shrink */
+}
+.currency-input-pair > select {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 80px;
+}
+
+/* Mobilno: SVA grid polja postaju stacked, ne 2/3/4 kolone. Tailwind ovo
+   ne pokriva u modalima jer je koristio md: prefix koji za uske ekrane
+   prestaje da bude Grid. */
+@media (max-width: 640px) {
+    #modal-body .grid.grid-cols-2,
+    #modal-body .grid.grid-cols-3,
+    #modal-body .grid.grid-cols-4,
+    #modal-body .grid.md\:grid-cols-2,
+    #modal-body .grid.md\:grid-cols-3,
+    #modal-body .grid.md\:grid-cols-4 {
+        grid-template-columns: 1fr !important;
+    }
+    #modal-body .card {
+        padding: 12px !important;
+    }
+    #modal-body .tab-content,
+    #modal-body form {
+        padding: 0 4px;
+    }
+    .prod-tab-btn, .ptab-btn, .tab-btn {
+        padding: 10px 12px !important;
+        font-size: 12px !important;
+    }
+}
+
+/* Fixed footer u modalima — dugmiće ostaju vidljivi pri scrollovanju */
+.modal-footer,
+#modal-backdrop .flex.justify-end {
+    position: sticky;
+    bottom: 0;
+    background: inherit;
+}
