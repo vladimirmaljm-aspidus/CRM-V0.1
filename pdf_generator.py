@@ -158,21 +158,100 @@ def _para(text, style):
 
 
 def _build_styles():
+    """Profesionalni tipografski sistem — svi paragrafi izlaze iz jedne palete.
+
+    Skalno: h1 26pt > h2 15pt > h3 11pt > body 9.5pt > small 8pt.
+    Boje: text-900 #101828 (naslov), text-700 #344054 (body),
+          text-500 #667085 (helper), border #e7eaef, brand se prosleđuje kasnije.
+    Font stack: Helvetica (ugrađen), koji je bezbedno serviran svuda bez
+    dodatnih zavisnosti; naslovi su Helvetica-Bold.
+    """
     styles = getSampleStyleSheet()
     return {
-        'h1': ParagraphStyle('H1', parent=styles['Heading1'], fontSize=22, textColor=colors.HexColor('#101828'),
-                             leading=26, spaceAfter=4, leftIndent=0),
-        'h2': ParagraphStyle('H2', parent=styles['Heading2'], fontSize=13, textColor=colors.HexColor('#101828'),
-                             leading=16, spaceAfter=6, spaceBefore=10),
-        'body': ParagraphStyle('Body', parent=styles['Normal'], fontSize=9.5, textColor=colors.HexColor('#344054'),
-                               leading=13),
-        'small': ParagraphStyle('Small', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor('#667085'),
+        'h1': ParagraphStyle('H1', parent=styles['Heading1'], fontName='Helvetica-Bold',
+                             fontSize=26, textColor=colors.HexColor('#101828'),
+                             leading=30, spaceAfter=2, leftIndent=0),
+        'h2': ParagraphStyle('H2', parent=styles['Heading2'], fontName='Helvetica-Bold',
+                             fontSize=15, textColor=colors.HexColor('#101828'),
+                             leading=18, spaceAfter=6, spaceBefore=12),
+        'h3': ParagraphStyle('H3', parent=styles['Heading3'], fontName='Helvetica-Bold',
+                             fontSize=11, textColor=colors.HexColor('#101828'),
+                             leading=14, spaceAfter=3, spaceBefore=6),
+        'body': ParagraphStyle('Body', parent=styles['Normal'], fontName='Helvetica',
+                               fontSize=9.5, textColor=colors.HexColor('#344054'), leading=13),
+        'bodyStrong': ParagraphStyle('BodyStrong', parent=styles['Normal'], fontName='Helvetica-Bold',
+                                     fontSize=9.5, textColor=colors.HexColor('#101828'), leading=13),
+        'small': ParagraphStyle('Small', parent=styles['Normal'], fontName='Helvetica',
+                                fontSize=8, textColor=colors.HexColor('#667085'), leading=10),
+        'micro': ParagraphStyle('Micro', parent=styles['Normal'], fontName='Helvetica',
+                                fontSize=6.5, textColor=colors.HexColor('#98a2b3'), leading=8.5),
+        'label': ParagraphStyle('Label', parent=styles['Normal'], fontName='Helvetica-Bold',
+                                fontSize=7, textColor=colors.HexColor('#667085'),
                                 leading=10),
-        'label': ParagraphStyle('Label', parent=styles['Normal'], fontSize=7.5, textColor=colors.HexColor('#667085'),
-                                leading=10, textTransform='uppercase'),
-        'right': ParagraphStyle('Right', parent=styles['Normal'], fontSize=9.5, textColor=colors.HexColor('#101828'),
+        'right': ParagraphStyle('Right', parent=styles['Normal'], fontName='Helvetica',
+                                fontSize=9.5, textColor=colors.HexColor('#101828'),
                                 alignment=TA_RIGHT, leading=13),
-        'center': ParagraphStyle('Center', parent=styles['Normal'], fontSize=9.5, alignment=TA_CENTER, leading=13),
+        'rightSmall': ParagraphStyle('RightSmall', parent=styles['Normal'], fontName='Helvetica',
+                                     fontSize=8, textColor=colors.HexColor('#667085'),
+                                     alignment=TA_RIGHT, leading=11),
+        'center': ParagraphStyle('Center', parent=styles['Normal'], fontName='Helvetica',
+                                 fontSize=9.5, alignment=TA_CENTER, leading=13),
+    }
+
+
+def _normalize_address(entity):
+    """Vraća (street_line, city_country_line) iz partnera/kompanije bez obzira
+    na to da li je address string ili dict. Ovim se izbegava AttributeError
+    kroz ceo PDF pipeline."""
+    if not isinstance(entity, dict):
+        return '', ''
+    addr = entity.get('address')
+    if isinstance(addr, dict):
+        street = str(addr.get('street', '') or '')
+        city = str(addr.get('city', '') or entity.get('city', '') or '')
+        country = str(addr.get('country', '') or entity.get('country', '') or '')
+    else:
+        street = str(addr or '')
+        city = str(entity.get('city', '') or '')
+        country = str(entity.get('country', '') or '')
+    tail = ' '.join(filter(None, [city, country])).strip()
+    return street, tail
+
+
+def _normalize_contact(entity):
+    """Vraća (email, phone, person) bez obzira na oblik contact polja."""
+    if not isinstance(entity, dict):
+        return '', '', ''
+    c = entity.get('contact')
+    c = c if isinstance(c, dict) else {}
+    email = str(c.get('email', '') or entity.get('email', '') or '')
+    phone = str(c.get('phone', '') or entity.get('phone', '') or '')
+    person = str(c.get('person', '') or entity.get('contactPerson', '') or '')
+    return email, phone, person
+
+
+def _pdf_metadata(kind, doc_no, company, party_name=''):
+    """Konzistentan set PDF metapodataka koji se native embed-uje u dokument.
+    Sve moderne Windows/macOS/Linux PDF čitači pokazuju ove vrednosti u
+    Properties dijalogu (File → Properties)."""
+    company_name = str(company.get('name', 'Aspidus') if isinstance(company, dict) else 'Aspidus')
+    kind_label = {'offer': 'Commercial Offer', 'invoice': 'Invoice',
+                  'proforma': 'Proforma Invoice'}.get(kind.lower(), kind.title())
+    title = f"{kind_label} {doc_no}".strip()
+    subject = f"{kind_label} issued by {company_name}"
+    if party_name:
+        subject += f" for {party_name}"
+    keywords = ', '.join(filter(None, [
+        kind_label, company_name, party_name,
+        str(doc_no or ''), 'Aspidus CRM', 'trade document'
+    ]))
+    return {
+        'title': title,
+        'author': company_name,
+        'subject': subject,
+        'keywords': keywords,
+        'creator': f'{company_name} — Aspidus CRM',
+        'producer': 'Aspidus CRM PDF Engine (ReportLab)',
     }
 
 
@@ -199,9 +278,22 @@ def build_offer_pdf(offer, company=None, settings=None):
     styles['h1'].textColor = primary
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=15*mm, rightMargin=15*mm,
-                            topMargin=15*mm, bottomMargin=18*mm,
-                            title=f"Offer {offer.get('offerNo', '')}")
+    # Native PDF metapodaci — pokazuju se u File → Properties svakog PDF čitača.
+    # NAPOMENA: SimpleDocTemplate ne prihvata `creator` ni `producer` direktno,
+    # ali author/title/subject/keywords hvata; ostatak dodajemo posle build-a
+    # kroz canvas metadata callback ako je potrebno.
+    _meta = _pdf_metadata('offer', offer.get('offerNo', ''), company,
+                          party_name=(buyer.get('companyName') or buyer.get('name') or ''))
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=15*mm, rightMargin=15*mm,
+        topMargin=15*mm, bottomMargin=18*mm,
+        title=_meta['title'],
+        author=_meta['author'],
+        subject=_meta['subject'],
+        keywords=_meta['keywords'],
+        creator=_meta['creator'],
+    )
 
     story = []
 
@@ -221,18 +313,31 @@ def build_offer_pdf(offer, company=None, settings=None):
     story.append(header_tbl)
     story.append(Spacer(1, 8*mm))
 
-    # PARTIES: FROM / TO
+    # PARTIES: FROM / TO — koristi normalizatore da su string i dict oblici
+    # partner.address / partner.contact bezbedno pokriveni.
+    buyer_street, buyer_geo = _normalize_address(buyer)
+    buyer_email, buyer_phone, buyer_person = _normalize_contact(buyer)
     to_lines = [
-        f"<b>{_esc(buyer.get('companyName', '') or 'Buyer')}</b>",
-        _esc(buyer.get('contact', {}).get('person', '')),
-        _esc(buyer.get('address', {}).get('street') or ''),
-        _esc(f"{(buyer.get('address', {}).get('city') or '')} {(buyer.get('address', {}).get('country') or '')}".strip()),
+        f"<b>{_esc(buyer.get('companyName') or buyer.get('name') or 'Buyer')}</b>",
+        _esc(buyer_person),
+        _esc(buyer_street),
+        _esc(buyer_geo),
         f"Tax ID: {_esc(buyer.get('taxId', ''))}" if buyer.get('taxId') else '',
-        f"Email: {_esc(buyer.get('contact', {}).get('email') or buyer.get('email', ''))}" if (buyer.get('contact', {}).get('email') or buyer.get('email')) else ''
+        f"Email: {_esc(buyer_email)}" if buyer_email else '',
+        f"Phone: {_esc(buyer_phone)}" if buyer_phone else '',
+    ]
+    company_street, company_geo = _normalize_address(company)
+    from_lines = [
+        f"<b>{_esc(company.get('name', ''))}</b>",
+        _esc(company_street),
+        _esc(company_geo),
+        f"Tax ID: {_esc(company.get('taxId', ''))}" if company.get('taxId') else '',
+        f"Reg. No.: {_esc(company.get('regNumber', ''))}" if company.get('regNumber') else '',
+        f"VAT: {_esc(company.get('vatNumber', ''))}" if company.get('vatNumber') else '',
     ]
     parties = Table([
-        [_para("<b>FROM:</b>", styles['label']), _para("<b>TO:</b>", styles['label'])],
-        [_para(f"<b>{_esc(company.get('name', ''))}</b><br/>{_esc((company.get('address') or '').replace(chr(10), ', '))}<br/>Tax ID: {_esc(company.get('taxId', ''))}", styles['body']),
+        [_para("FROM (SELLER)", styles['label']), _para("TO (BUYER)", styles['label'])],
+        [_para("<br/>".join([l for l in from_lines if l]), styles['body']),
          _para("<br/>".join([l for l in to_lines if l]), styles['body'])]
     ], colWidths=[90*mm, 90*mm])
     parties.setStyle(TableStyle([
@@ -484,37 +589,63 @@ def build_offer_pdf(offer, company=None, settings=None):
     ))
 
     ver_hash = _make_verification_hash(offer.get('id'), offer.get('offerNo'))
+    company_addr_str = ((company_street + (', ' + company_geo if company_geo else ''))
+                        if (company_street or company_geo) else str(company.get('address') or ''))
+
+    def _apply_native_metadata(canvas):
+        """Ubacuje `Producer` i osigurava ostale metapodatke direktno u PDF
+        catalog. SimpleDocTemplate ne prihvata `producer` kao kwarg, pa se
+        ova vrednost mora setovati preko canvas API-ja pre saveState-a."""
+        try:
+            canvas.setTitle(_meta['title'])
+            canvas.setAuthor(_meta['author'])
+            canvas.setSubject(_meta['subject'])
+            canvas.setKeywords(_meta['keywords'])
+            canvas.setCreator(_meta['creator'])
+            # Producer polje se u reportlab-u postavlja preko _doc.info.producer
+            if hasattr(canvas, '_doc') and hasattr(canvas._doc, 'info'):
+                canvas._doc.info.producer = _meta['producer']
+        except Exception:
+            logger.debug('PDF metadata: setter failed', exc_info=True)
 
     def _footer(canvas, docObj):
+        _apply_native_metadata(canvas)
         canvas.saveState()
-        # Top rule above footer, matching the admin PDF layout
+
+        # Top hairline iznad footer-a
         canvas.setStrokeColor(primary)
         canvas.setLineWidth(0.5)
         canvas.line(15*mm, 20*mm, A4[0] - 15*mm, 20*mm)
 
-        # Verification hash + legal line — same content the client-side jsPDF
-        # writes so both admin-downloaded and portal-downloaded PDFs share
-        # the same "footer signature".
+        # Verification hash — tehnički identifikator, sitno gore levo
         canvas.setFont('Helvetica-Bold', 6)
         canvas.setFillColor(primary)
-        canvas.drawString(15*mm, 16*mm, f"VERIFICATION HASH: {ver_hash}")
+        canvas.drawString(15*mm, 16.5*mm, f"VERIFICATION HASH: {ver_hash}")
 
+        # Confidentiality line
         canvas.setFont('Helvetica-Oblique', 6)
-        canvas.setFillColor(colors.HexColor('#666666'))
-        canvas.drawString(15*mm, 12*mm,
-                          f"This document is electronically generated and verified by {company.get('name', 'Aspidus')} CRM.")
+        canvas.setFillColor(colors.HexColor('#667085'))
+        canvas.drawString(15*mm, 12.5*mm,
+                          "This document is electronically generated. Verify authenticity by hash above.")
 
-        canvas.setFont('Helvetica-Bold', 6)
-        canvas.setFillColor(colors.HexColor('#111111'))
-        addr = (company.get('address') or '').replace('\n', ', ')
-        canvas.drawString(15*mm, 8*mm, addr)
+        # Company address (bold, centrirano dole)
+        canvas.setFont('Helvetica-Bold', 7)
+        canvas.setFillColor(colors.HexColor('#101828'))
+        canvas.drawCentredString(A4[0]/2, 8*mm,
+                                 f"{company.get('name', 'Aspidus')}  ·  {company_addr_str}")
 
-        # "Page X of Y" via the standard reportlab trick — since we cannot
-        # know Y in a single-pass callback, we defer with an on-canvas doc
-        # count that reportlab fills in during finalization.
+        # Page N — desno dole
         canvas.setFont('Helvetica', 7)
         canvas.setFillColor(colors.HexColor('#98a2b3'))
-        canvas.drawRightString(A4[0] - 15*mm, 8*mm, f"Page {canvas.getPageNumber()}")
+        canvas.drawRightString(A4[0] - 15*mm, 8*mm,
+                               f"Page {canvas.getPageNumber()}")
+
+        # Document date — levo dole (za štampu bez ekrana)
+        canvas.setFont('Helvetica', 7)
+        canvas.setFillColor(colors.HexColor('#98a2b3'))
+        canvas.drawString(15*mm, 8*mm,
+                          f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+
         canvas.restoreState()
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
