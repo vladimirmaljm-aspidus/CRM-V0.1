@@ -78,76 +78,147 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
       </datalist>
     `;
     
-    const html = `${datalists}<div id="offer-container" class="p-6">
-      <div id="offer-controls" class="p-6 bg-white border border-slate-300 rounded-2xl mb-6 grid grid-cols-1 md:grid-cols-4 gap-6 items-end text-slate-800 shadow-sm relative">
-          
-          <div class="col-span-1 md:col-span-4 grid grid-cols-2 md:grid-cols-4 gap-6">
-              <div class="col-span-2"><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${Utils.t('offer.customer')} <span class="text-red-500">*</span></label><select id="offer-customer-select" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-sm"><option value="">${Utils.t('actions.select_buyer')}</option>${state.data.partners.filter(isBuyer).map(p => `<option value="${p.id}" ${p.id===savedOfferData.customerId?'selected':''}>${Utils.escapeHtml(p.companyName)}</option>`).join('')}</select></div>
-              <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${Utils.t('fields.currency')}</label><select id="offer-currency" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-sm">${(typeof CURRENCIES !== 'undefined' ? CURRENCIES : ['USD', 'EUR', 'AED']).map(c => `<option value="${c}" ${c===initialCurrency?'selected':''}>${c}</option>`).join('')}</select></div>
-              <div><label class="block text-[10px] font-black text-red-500 uppercase tracking-widest mb-2">${Utils.t('offer.valid_until')}</label><input type="date" id="offer-valid-until" class="w-full bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-red-500 shadow-sm" value="${savedOfferData.validUntil || ''}" /></div>
+    const html = `${datalists}<div id="offer-container" class="p-4 md:p-6">
+      <div id="offer-controls" class="crm-form-panel">
+          <div class="crm-form-section">
+              <h4 class="crm-form-section-title">👤 ${tLang('Osnovni podaci ponude','Offer header')}</h4>
+              <p class="crm-form-section-desc">${tLang('Kome se ponuda šalje, u kojoj valuti i do kad važi.','Who the offer is addressed to, in what currency, and how long it is valid.')}</p>
+              <div class="crm-form-grid crm-form-grid-4">
+                  <div class="crm-field crm-field-span-2">
+                      <label class="crm-label crm-label-required">${Utils.t('offer.customer')}</label>
+                      <select id="offer-customer-select" class="crm-input">
+                          <option value="">${Utils.t('actions.select_buyer')}</option>
+                          ${state.data.partners.filter(isBuyer).map(p => `<option value="${p.id}" ${p.id===savedOfferData.customerId?'selected':''}>${Utils.escapeHtml(p.companyName)}</option>`).join('')}
+                      </select>
+                      <p class="crm-help">${tLang('Partner iz Partners modula (tip Buyer).','Partner from Partners module (Buyer type).')}</p>
+                  </div>
+                  <div class="crm-field">
+                      <label class="crm-label">${Utils.t('fields.currency')}</label>
+                      <select id="offer-currency" class="crm-input">
+                          ${(typeof CURRENCIES !== 'undefined' ? CURRENCIES : ['USD','EUR','AED']).map(c => `<option value="${c}" ${c===initialCurrency?'selected':''}>${c}</option>`).join('')}
+                      </select>
+                  </div>
+                  <div class="crm-field">
+                      <label class="crm-label crm-label-warning">${Utils.t('offer.valid_until')}</label>
+                      <input type="date" id="offer-valid-until" class="crm-input crm-input-warning" value="${savedOfferData.validUntil || ''}"/>
+                      <p class="crm-help">${tLang('Datum posle koga ponuda ne važi.','Date after which the offer expires.')}</p>
+                  </div>
+              </div>
           </div>
 
-          <div id="offer-items-wrapper" class="col-span-1 md:col-span-4 bg-slate-50 p-5 rounded-xl border border-slate-200 shadow-inner">
-              <div class="flex justify-between items-center mb-4 border-b border-slate-200 pb-3">
-                  <h4 class="font-black text-slate-800 text-xs uppercase tracking-widest flex items-center gap-2">🛒 ${tLang('Stavke Ponude', 'Offer Items')}</h4>
-                  <button id="add-item-btn" class="bg-white border border-slate-300 hover:bg-slate-100 text-blue-700 font-black px-4 py-1.5 rounded-lg text-[10px] uppercase shadow-sm transition-colors">+ ${tLang('Dodaj Proizvod', 'Add Product')}</button>
+          <div class="crm-form-section">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                  <div>
+                      <h4 class="crm-form-section-title">🛒 ${tLang('Stavke ponude','Offer items')}</h4>
+                      <p class="crm-form-section-desc" style="margin-bottom:0;">${tLang('Dodaj jednu ili više roba iz kataloga.','Add one or more products from the catalog.')}</p>
+                  </div>
+                  <button id="add-item-btn" class="crm-btn crm-btn-ghost" style="min-height:36px;padding:8px 14px;">➕ ${tLang('Dodaj proizvod','Add product')}</button>
               </div>
-              <div id="offer-items-list" class="space-y-3"></div>
-              <div id="logistics-calc" class="mt-3 text-sm font-bold"></div>
+              <div id="offer-items-list" class="crm-form-grid" style="grid-template-columns:1fr;margin-top:12px;"></div>
+              <div id="logistics-calc" class="crm-help" style="margin-top:8px;font-weight:700;"></div>
               <div id="substitutes-warning-container"></div>
           </div>
-          
-          <div class="col-span-1 md:col-span-4 grid grid-cols-2 md:grid-cols-4 gap-6 mt-2 border-t border-slate-200 pt-6">
-              <div>
-                  <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Incoterm (Paritet)</label>
-                  <select id="off-incoterm" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm font-bold outline-none focus:border-blue-500">
-                      <option value="">-- ${Utils.t('actions.select') || 'Select'} --</option>
-                      ${incotermsList.map(i => `<option value="${i}" ${i === savedOfferData.incoterm ? 'selected' : ''}>${i}</option>`).join('')}
-                  </select>
-              </div>
-              <div class="md:col-span-2">
-                  <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${tLang('Poreska Klauzula', 'Tax Clause')}</label>
-                  <input id="off-tax-clause" list="tax-clause-list" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.taxClause || '')}" placeholder="${tLang('Npr. Oslobođeno PDV-a...', 'e.g. VAT Exempt...')}" />
-              </div>
-              <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.packaging')}</label><input id="off-packaging" list="packaging-list" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.packaging || '')}" placeholder="${Utils.t('placeholders.pack')}" /></div>
-              
-              <div class="transport-field"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.pol')}</label><input id="off-pol" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.pol || '')}" placeholder="${Utils.t('placeholders.pol')}" /></div>
-              <div class="transport-field"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.pod')}</label><input id="off-pod" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.pod || '')}" placeholder="${Utils.t('placeholders.pod')}" /></div>
-              <div class="transport-field"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${tLang('Brod/Kamion', 'Vessel/Truck')}</label><input id="off-vessel" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.vessel || '')}" placeholder="${tLang('Ime broda', 'Vessel name')}" /></div>
-              <div class="transport-field"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${tLang('Br. Kontejnera', 'Container No.')}</label><input id="off-container" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.containerNo || '')}" placeholder="e.g. HLBU1234567" /></div>
-              
-              <div><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.leadTime')}</label><input id="off-lead" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.leadTime || '')}" placeholder="${Utils.t('placeholders.lead')}" /></div>
-              <div class="md:col-span-3"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.paymentTerms')}</label><input id="off-pay-terms" list="payment-terms-list" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm font-bold outline-none focus:border-blue-500" value="${Utils.escapeHtml(savedOfferData.paymentTerms || '')}" placeholder="${Utils.t('placeholders.pay')}" /></div>
-              <!-- PAYMENT BANK — bira jedan od company.bankAccounts. Klijent
-                   dobija tačne bank instrukcije u PDF-u, admin ne mora ništa
-                   ručno da prepisuje. -->
-              <div class="md:col-span-4">
-                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">🏦 ${tLang('Banka za uplatu (Kupac plaća na)', 'Buyer pays to (payment bank)')}</label>
-                <select id="off-payment-bank" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:border-blue-500">
-                    ${(() => {
-                        const banks = (state.company && Array.isArray(state.company.bankAccounts)) ? state.company.bankAccounts : [];
-                        if (banks.length === 0) return `<option value="">${tLang('— Nema banaka (dodajte u Podešavanja → Bank Accounts) —', '— No banks configured (add in Settings → Bank Accounts) —')}</option>`;
-                        const savedIdx = (savedOfferData.paymentBankIdx == null ? 0 : savedOfferData.paymentBankIdx);
-                        return banks.map((b, i) => `<option value="${i}" ${i === savedIdx ? 'selected' : ''}>${Utils.escapeHtml(b.bankName || 'Bank')} — ${Utils.escapeHtml(b.accountNumber || '')} (${Utils.escapeHtml(b.currency || '')})</option>`).join('');
-                    })()}
-                </select>
-                <p class="text-[10px] text-slate-500 mt-1">${tLang('Bank instrukcije se automatski popune u PDF-u.', 'Bank instructions will auto-fill on the PDF.')}</p>
-              </div>
-              <div class="md:col-span-4"><label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">${Utils.t('offer.specificNotes')}</label><textarea id="off-notes" class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-4 py-3 text-sm outline-none focus:border-blue-500" rows="2">${Utils.escapeHtml(savedOfferData.notes || state.settings.defaultOfferNotes || Utils.t('offer.default_note'))}</textarea></div>
-          </div>
-          
-          <div class="col-span-1 md:col-span-4 mt-2 bg-slate-50 p-5 rounded-xl border border-slate-200">
-              <div class="flex justify-between items-center mb-4 border-b border-slate-200 pb-3"><strong class="text-slate-800 uppercase tracking-widest text-xs font-black flex items-center gap-2">➕ ${Utils.t('offer.additional_services')}</strong><button id="add-offer-service-btn" class="bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold px-4 py-1.5 rounded-lg text-[10px] uppercase shadow-sm transition-colors">+ ${Utils.t('actions.addService')}</button></div>
-              <div id="offer-services-list" class="space-y-3">
-                  ${(savedOfferData.services || []).map(s => `<div class="flex gap-3 off-svc-item"><input class="w-full bg-white border border-slate-300 text-slate-800 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500 svc-name" value="${Utils.escapeHtml(s.name)}"><input type="number" step="0.01" class="w-32 bg-white border border-slate-300 text-slate-800 rounded-lg px-3 py-2 text-sm font-bold outline-none focus:border-blue-500 svc-price" value="${s.price}"><button class="bg-red-50 text-red-600 border border-red-200 hover:bg-red-600 hover:text-white px-3 rounded-lg font-black transition-colors" onclick="this.parentElement.remove(); document.getElementById('offer-currency').dispatchEvent(new Event('change'));">✕</button></div>`).join('')}
+
+          <div class="crm-form-section">
+              <h4 class="crm-form-section-title">📄 ${tLang('Komercijalni uslovi','Commercial terms')}</h4>
+              <p class="crm-form-section-desc">${tLang('Incoterm, poreska klauzula i pakovanje.','Incoterm, tax clause and packaging.')}</p>
+              <div class="crm-form-grid crm-form-grid-4">
+                  <div class="crm-field">
+                      <label class="crm-label">${tLang('Incoterm (paritet)','Incoterm')}</label>
+                      <select id="off-incoterm" class="crm-input">
+                          <option value="">${tLang('— Izaberi —','— Select —')}</option>
+                          ${incotermsList.map(i => `<option value="${i}" ${i === savedOfferData.incoterm ? 'selected' : ''}>${i}</option>`).join('')}
+                      </select>
+                  </div>
+                  <div class="crm-field crm-field-span-2">
+                      <label class="crm-label">${tLang('Poreska klauzula', 'Tax clause')}</label>
+                      <input id="off-tax-clause" list="tax-clause-list" class="crm-input" value="${Utils.escapeHtml(savedOfferData.taxClause || '')}" placeholder="${tLang('Npr. Oslobođeno PDV-a...', 'e.g. VAT Exempt...')}"/>
+                      <p class="crm-help">${tLang('Ako je izuzeto od PDV-a — piše se u PDF-u.','If VAT-exempt — printed on the PDF.')}</p>
+                  </div>
+                  <div class="crm-field">
+                      <label class="crm-label">${Utils.t('offer.packaging')}</label>
+                      <input id="off-packaging" list="packaging-list" class="crm-input" value="${Utils.escapeHtml(savedOfferData.packaging || '')}" placeholder="${Utils.t('placeholders.pack')}"/>
+                  </div>
               </div>
           </div>
 
-          <div class="col-span-1 md:col-span-4 flex flex-wrap gap-3 justify-end mt-4 pt-4 border-t border-slate-200">
-              <button id="save-offer-btn" class="bg-emerald-600 text-white px-6 py-3 rounded-xl shadow-md text-sm font-black uppercase tracking-widest hover:bg-emerald-700 transition-transform transform hover:-translate-y-0.5">💾 ${Utils.t('offer.saveOfferBtn')}</button>
-              <button id="preview-offer-btn" class="bg-slate-800 text-white px-6 py-3 rounded-xl shadow-md text-sm font-black uppercase tracking-widest hover:bg-slate-900 transition-transform transform hover:-translate-y-0.5" title="${tLang('Isti PDF koji će klijent videti u portalu', 'Same PDF the client will see in the portal')}">👁️ ${tLang('Pregled PDF-a', 'Preview PDF')}</button>
-              <button id="print-offer-btn" class="bg-blue-600 text-white px-6 py-3 rounded-xl shadow-md text-sm font-black uppercase tracking-widest hover:bg-blue-700 transition-transform transform hover:-translate-y-0.5">🖨️ ${tLang('Sačuvaj i Preuzmi PDF', 'Save & Download')}</button>
-              <button id="email-offer-btn" class="bg-indigo-600 text-white px-6 py-3 rounded-xl shadow-md text-sm font-black uppercase tracking-widest hover:bg-indigo-700 transition-transform transform hover:-translate-y-0.5">📧 ${tLang('Pošalji Mail', 'Send Email')}</button>
+          <div class="crm-form-section transport-section">
+              <h4 class="crm-form-section-title">🚢 ${tLang('Logistika','Logistics')}</h4>
+              <p class="crm-form-section-desc">${tLang('Port utovara/istovara, prevozno sredstvo, kontejner. Prikazuje se u PDF-u.','Port of loading/discharge, vessel/truck, container. Printed on the PDF.')}</p>
+              <div class="crm-form-grid crm-form-grid-4">
+                  <div class="crm-field transport-field">
+                      <label class="crm-label">${Utils.t('offer.pol')}</label>
+                      <input id="off-pol" class="crm-input" value="${Utils.escapeHtml(savedOfferData.pol || '')}" placeholder="${Utils.t('placeholders.pol')}"/>
+                      <p class="crm-help">${tLang('Port of Loading — luka polaska.','Port of Loading.')}</p>
+                  </div>
+                  <div class="crm-field transport-field">
+                      <label class="crm-label">${Utils.t('offer.pod')}</label>
+                      <input id="off-pod" class="crm-input" value="${Utils.escapeHtml(savedOfferData.pod || '')}" placeholder="${Utils.t('placeholders.pod')}"/>
+                      <p class="crm-help">${tLang('Port of Discharge — luka istovara.','Port of Discharge.')}</p>
+                  </div>
+                  <div class="crm-field transport-field">
+                      <label class="crm-label">${tLang('Brod / Kamion', 'Vessel / Truck')}</label>
+                      <input id="off-vessel" class="crm-input" value="${Utils.escapeHtml(savedOfferData.vessel || '')}" placeholder="${tLang('Ime broda / reg. kamiona', 'Vessel name / truck plate')}"/>
+                  </div>
+                  <div class="crm-field transport-field">
+                      <label class="crm-label">${tLang('Br. kontejnera', 'Container No.')}</label>
+                      <input id="off-container" class="crm-input crm-input-mono" value="${Utils.escapeHtml(savedOfferData.containerNo || '')}" placeholder="e.g. HLBU1234567"/>
+                  </div>
+                  <div class="crm-field">
+                      <label class="crm-label">${Utils.t('offer.leadTime')}</label>
+                      <input id="off-lead" class="crm-input" value="${Utils.escapeHtml(savedOfferData.leadTime || '')}" placeholder="${Utils.t('placeholders.lead')}"/>
+                  </div>
+                  <div class="crm-field crm-field-span-2" style="grid-column:span 3;">
+                      <label class="crm-label">${Utils.t('offer.paymentTerms')}</label>
+                      <input id="off-pay-terms" list="payment-terms-list" class="crm-input" value="${Utils.escapeHtml(savedOfferData.paymentTerms || '')}" placeholder="${Utils.t('placeholders.pay')}"/>
+                      <p class="crm-help">${tLang('Npr. 30% avans, 70% pre otpreme.','e.g. 30% advance, 70% before shipment.')}</p>
+                  </div>
+              </div>
+          </div>
+
+          <div class="crm-form-section crm-form-section-highlighted">
+              <h4 class="crm-form-section-title">🏦 ${tLang('Banka za uplatu', 'Payment bank')}</h4>
+              <p class="crm-form-section-desc">${tLang('Klijent u PDF-u dobija tačne bank instrukcije za ovu ponudu.','Client gets the exact bank instructions for this offer on the PDF.')}</p>
+              <div class="crm-field">
+                  <label class="crm-label">${tLang('Kupac plaća na', 'Buyer pays to')}</label>
+                  <select id="off-payment-bank" class="crm-input">
+                      ${(() => {
+                          const banks = (state.company && Array.isArray(state.company.bankAccounts)) ? state.company.bankAccounts : [];
+                          if (banks.length === 0) return `<option value="">${tLang('— Nema banaka (dodaj u Podešavanja → Bank Accounts) —', '— No banks configured (add in Settings → Bank Accounts) —')}</option>`;
+                          const savedIdx = (savedOfferData.paymentBankIdx == null ? 0 : savedOfferData.paymentBankIdx);
+                          return banks.map((b, i) => `<option value="${i}" ${i === savedIdx ? 'selected' : ''}>${Utils.escapeHtml(b.bankName || 'Bank')} — ${Utils.escapeHtml(b.accountNumber || '')} (${Utils.escapeHtml(b.currency || '')})</option>`).join('');
+                      })()}
+                  </select>
+                  <p class="crm-help">${tLang('Bank instrukcije se automatski popune u PDF-u.', 'Bank instructions will auto-fill on the PDF.')}</p>
+              </div>
+          </div>
+
+          <div class="crm-form-section">
+              <h4 class="crm-form-section-title">📝 ${tLang('Napomene', 'Notes')}</h4>
+              <div class="crm-field">
+                  <label class="crm-label">${Utils.t('offer.specificNotes')}</label>
+                  <textarea id="off-notes" class="crm-input" rows="3" placeholder="${tLang('Bilo koja dodatna napomena za kupca.','Any additional notes for the buyer.')}">${Utils.escapeHtml(savedOfferData.notes || state.settings.defaultOfferNotes || Utils.t('offer.default_note'))}</textarea>
+              </div>
+          </div>
+
+          <div class="crm-form-section">
+              <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                  <div>
+                      <h4 class="crm-form-section-title">➕ ${Utils.t('offer.additional_services')}</h4>
+                      <p class="crm-form-section-desc" style="margin-bottom:0;">${tLang('Dodatne usluge (transport, osiguranje, carinjenje…) — svaka sa cenom.','Extra services (freight, insurance, customs…) — each with a price.')}</p>
+                  </div>
+                  <button id="add-offer-service-btn" class="crm-btn crm-btn-ghost" style="min-height:36px;padding:8px 14px;">+ ${Utils.t('actions.addService')}</button>
+              </div>
+              <div id="offer-services-list" style="margin-top:12px;display:flex;flex-direction:column;gap:10px;">
+                  ${(savedOfferData.services || []).map(s => `<div class="crm-input-pair off-svc-item"><input class="crm-input svc-name" value="${Utils.escapeHtml(s.name)}" placeholder="${Utils.t('offer.service_name') || 'Service name'}"/><input type="number" step="0.01" min="0" class="crm-input crm-input-suffix svc-price" value="${s.price}" placeholder="0.00" style="width:110px;"/><button type="button" class="crm-btn crm-btn-danger" style="padding:0 12px;min-height:40px;" onclick="this.parentElement.remove(); document.getElementById('offer-currency').dispatchEvent(new Event('change'));">✕</button></div>`).join('')}
+              </div>
+          </div>
+
+          <div class="crm-form-actions">
+              <button id="save-offer-btn" class="crm-btn crm-btn-success">💾 ${Utils.t('offer.saveOfferBtn')}</button>
+              <button id="preview-offer-btn" class="crm-btn crm-btn-ghost" title="${tLang('Isti PDF koji će klijent videti u portalu', 'Same PDF the client will see in the portal')}">👁️ ${tLang('Pregled PDF-a', 'Preview PDF')}</button>
+              <button id="print-offer-btn" class="crm-btn crm-btn-primary">🖨️ ${tLang('Sačuvaj i preuzmi PDF', 'Save & Download')}</button>
+              <button id="email-offer-btn" class="crm-btn crm-btn-primary" style="background:#4f46e5;">📧 ${tLang('Pošalji mail', 'Send email')}</button>
           </div>
       </div>
       
@@ -294,9 +365,22 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
             renderItemsList();
             updateDetails();
         }));
-        document.querySelectorAll('.item-qty').forEach(el => el.addEventListener('input', e => { currentItems[e.target.dataset.idx].quantity = parseFloat(e.target.value) || 0; updateDetails(); }));
-        document.querySelectorAll('.item-price').forEach(el => el.addEventListener('input', e => { currentItems[e.target.dataset.idx].price = parseFloat(e.target.value) || 0; renderItemsList(); updateDetails(); }));
-        document.querySelectorAll('.item-unit').forEach(el => el.addEventListener('change', e => { currentItems[e.target.dataset.idx].unit = e.target.value; updateDetails(); }));
+        // KRITIČNO: `input` handler NIKAD ne sme da poziva renderItemsList()
+        // jer to re-kreira DOM i uništi cursor u polju u koje korisnik trenutno
+        // kuca. Umesto toga ažuriramo samo state i totale (updateDetails).
+        // renderItemsList se poziva tek na change (blur), delete ili add.
+        document.querySelectorAll('.item-qty').forEach(el => el.addEventListener('input', e => {
+            currentItems[e.target.dataset.idx].quantity = parseFloat(e.target.value) || 0;
+            updateDetails();
+        }));
+        document.querySelectorAll('.item-price').forEach(el => el.addEventListener('input', e => {
+            currentItems[e.target.dataset.idx].price = parseFloat(e.target.value) || 0;
+            updateDetails();
+        }));
+        document.querySelectorAll('.item-unit').forEach(el => el.addEventListener('change', e => {
+            currentItems[e.target.dataset.idx].unit = e.target.value;
+            updateDetails();
+        }));
         document.querySelectorAll('.item-del').forEach(el => el.addEventListener('click', e => { currentItems.splice(e.target.dataset.idx, 1); renderItemsList(); updateDetails(); }));
     }
 

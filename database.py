@@ -72,6 +72,41 @@ def init_db():
             for table in tables:
                 c.execute(f'''CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT)''')
 
+            # DOCUMENT REGISTER — trajni zapis SVIH izdatih dokumentacionih brojeva
+            # sa strogim UNIQUE constraint-om koji sprečava dupliranje. Broj se
+            # rezerviše atomično čim admin klikne "Pošalji". Nikad se ne briše.
+            c.execute('''CREATE TABLE IF NOT EXISTS document_register (
+                docType TEXT NOT NULL,
+                year INTEGER NOT NULL,
+                seq INTEGER NOT NULL,
+                docNumber TEXT NOT NULL,
+                entityId TEXT,
+                revision INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                issuedAt TEXT NOT NULL,
+                issuedBy TEXT,
+                PRIMARY KEY (docType, year, seq, revision)
+            )''')
+            c.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_docreg_number ON document_register(docNumber)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_docreg_entity ON document_register(entityId)')
+
+            # DOCUMENT REVISIONS — svaka izmena izdatog dokumenta se snima kao
+            # potpun snapshot podataka + hash + reason. Ovim se za bilo koji broj
+            # dokumenta u istoriji može rekonstruisati SVAKA verzija.
+            c.execute('''CREATE TABLE IF NOT EXISTS document_revisions (
+                id TEXT PRIMARY KEY,
+                docNumber TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                entityId TEXT,
+                snapshot TEXT NOT NULL,
+                contentHash TEXT,
+                bindingHash TEXT,
+                changeReason TEXT,
+                changedBy TEXT,
+                changedAt TEXT NOT NULL
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_docrev_number ON document_revisions(docNumber)')
+
             # Ako je baza prazna (nema korisnika), kreiraj početnog admina da se izbegne
             # zaključavanje van sistema (npr. sveža baza na produkciji).
             seed_admin_if_empty(c)

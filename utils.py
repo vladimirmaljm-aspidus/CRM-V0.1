@@ -392,6 +392,16 @@ def _housekeeping_loop():
             for ip in stale_ips:
                 FirewallCache.login_attempts.pop(ip, None)
 
+            # 4) email queue retry — svakih 60s (mora se odvojiti u zaseban loop
+            #    da ne čeka sat vremena između pokušaja). Ovde samo trigger prvi put.
+            try:
+                from utils_email import process_email_queue
+                stats = process_email_queue(max_batch=20)
+                if stats['processed']:
+                    _util_logger.info(f'HOUSEKEEPING: email queue {stats}')
+            except Exception:
+                _util_logger.warning('email queue processing failed', exc_info=True)
+
             gc.collect()
         except Exception:
             _util_logger.warning('HOUSEKEEPING: iteration failed', exc_info=True)
@@ -411,6 +421,22 @@ def start_housekeeping():
     # Isto tako pokreni backup thread (zaseban od housekeeping-a; posao je I/O-težak).
     tb = threading.Thread(target=_backup_loop, name='crm-backup', daemon=True)
     tb.start()
+    # Email queue retry loop — svakih 60s. Odvojen thread jer 1h je predugo
+    # za retry neuspelih mejlova (klijent ne sme da čeka).
+    tq = threading.Thread(target=_email_queue_loop, name='crm-email-queue', daemon=True)
+    tq.start()
+
+
+def _email_queue_loop():
+    """Retry-uje neuspele mejlove iz email_queue tabele svakih 60s."""
+    time.sleep(30)  # čekaj startup
+    while True:
+        try:
+            from utils_email import process_email_queue
+            process_email_queue(max_batch=5)
+        except Exception:
+            _util_logger.warning('email queue loop iteration failed', exc_info=True)
+        time.sleep(60)
 
 
 # ==========================================================
