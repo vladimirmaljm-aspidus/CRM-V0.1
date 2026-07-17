@@ -53,69 +53,28 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
 
     const datalists = `
       <datalist id="payment-terms-list">
-        <!-- Advance Payments (T/T) -->
-        <option value="100% Advance Payment (T/T)">
-        <option value="30% Advance (T/T), 70% Before Shipment">
-        <option value="30% Advance (T/T), 70% Against Copy of B/L">
-        <option value="50% Advance (T/T), 50% Before Shipment">
-        
-        <!-- Letters of Credit (L/C) -->
-        <option value="100% Irrevocable L/C at Sight">
-        <option value="Irrevocable L/C 30 Days">
-        <option value="Irrevocable L/C 60 Days">
-        
-        <!-- Documentary Collections -->
+        <option value="100% Avans (Advance)">
+        <option value="30% Avans, 70% pre isporuke">
+        <option value="100% Neopozivi L/C po viđenju">
         <option value="CAD (Cash Against Documents)">
-        <option value="D/P (Documents Against Payment) at Sight">
-        <option value="D/A (Documents Against Acceptance) 30 Days">
-        
-        <!-- Net Terms / Open Account -->
-        <option value="Net 15 Days">
-        <option value="Net 30 Days">
-        <option value="Net 45 Days">
-        <option value="Net 60 Days">
-        <option value="Net 90 Days">
+        <option value="Net 30 Dana">
+        <option value="Net 60 Dana">
       </datalist>
-
       <datalist id="packaging-list">
-        <!-- Bags & Sacks -->
         <option value="25kg Multi-wall Kraft Paper Bags">
         <option value="25kg PP Woven Bags">
         <option value="50kg PP Woven Bags">
-        
-        <!-- FIBC / Jumbo Bags -->
-        <option value="500kg FIBC (Jumbo Bags)">
         <option value="1 MT Jumbo Bags (FIBC)">
-        <option value="1.2 MT Jumbo Bags (FIBC)">
-        
-        <!-- Cartons, Pallets & Crates -->
-        <option value="25kg Cartons with inner PE liner">
-        <option value="Corrugated Carton Boxes">
-        <option value="Wooden Crates / Cases">
-        <option value="Palletized and Shrink-wrapped">
-        <option value="Palletized and Stretch-wrapped">
-        
-        <!-- Drums & Totes (Liquids/Chemicals) -->
-        <option value="200 Liter Steel Drums">
-        <option value="200 Liter HDPE Drums">
-        <option value="1000 Liter IBC Totes">
-        
-        <!-- Bulk Containers -->
         <option value="Bulk in 20ft Container">
         <option value="Bulk in 40ft Container">
+        <option value="25kg Cartons with inner PE liner">
         <option value="Flexitanks">
-        <option value="ISO Tank Container">
+        <option value="Palletized and Shrink-wrapped">
       </datalist>
-
       <datalist id="tax-clause-list">
-        <!-- Tax Clauses for Quotes -->
         <option value="${tLang('Oslobođeno PDV-a (Izvoz)', 'VAT Exempt (Export)')}">
-        <option value="${tLang('Obrnuto zaduženje', 'Reverse Charge Mechanism')}">
-        <option value="${tLang('Isporuka unutar EU (Nulta stopa)', 'Intra-Community Supply (Zero-Rated)')}">
+        <option value="Reverse Charge">
         <option value="${tLang('Uključen PDV', 'VAT Included')}">
-        <option value="${tLang('Nulta stopa PDV-a (0%)', 'Zero Rated VAT (0%)')}">
-        <option value="${tLang('Van sistema PDV-a', 'Out of Scope of VAT')}">
-        <option value="${tLang('Porezi i carine isključeni (DAP/EXW)', 'Taxes and Duties Excluded (DAP/EXW)')}">
       </datalist>
     `;
     
