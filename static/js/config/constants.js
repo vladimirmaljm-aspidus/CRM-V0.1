@@ -2,6 +2,71 @@ const PRODUCT_CATEGORIES = [ 'agriculture', 'food', 'beverages', 'inputs', 'indu
 
 const UNITS = ['kg - Kilogram', 'MT - Metric Ton', 'g - Gram', 'lb - Pound', 'oz - Ounce', 'pcs - Pieces', 'L - Liter', 'mL - Milliliter', 'CBM - Cubic Meter', 'sqm - Square Meter', 'm - Meter', 'plt - Pallet', 'ctr - Container', 'FCL - Full Container Load', 'box - Box', 'ctn - Carton', 'bag - Bag', 'bbl - Barrel', 'gal - Gallon'];
 
+// ==========================================================
+//  UNIT NORMALIZATION SYSTEM
+// ==========================================================
+// Bilo koji tekst iz UNITS liste ili "MT", "mt", "tona", "Metric Ton" itd.
+// mapira se u kanonski oblik (kg / t / L / mL / pcs / box / ...).
+// Sve konverzije mase se rade kroz KILOGRAM kao pivot.
+const UNIT_CANONICAL = {
+    // Masa
+    'kg': { canonical: 'kg', kind: 'mass', toKg: 1 },
+    'g':  { canonical: 'g',  kind: 'mass', toKg: 0.001 },
+    'mg': { canonical: 'mg', kind: 'mass', toKg: 0.000001 },
+    't':  { canonical: 't',  kind: 'mass', toKg: 1000 },
+    'mt': { canonical: 't',  kind: 'mass', toKg: 1000 },
+    'ton':{ canonical: 't',  kind: 'mass', toKg: 1000 },
+    'tona':{canonical: 't',  kind: 'mass', toKg: 1000 },
+    'tonna':{canonical: 't', kind: 'mass', toKg: 1000 },
+    'metric ton':{ canonical: 't', kind: 'mass', toKg: 1000 },
+    'lb': { canonical: 'lb', kind: 'mass', toKg: 0.45359237 },
+    'lbs':{ canonical: 'lb', kind: 'mass', toKg: 0.45359237 },
+    'oz': { canonical: 'oz', kind: 'mass', toKg: 0.0283495 },
+    // Zapremina
+    'l':  { canonical: 'L',  kind: 'volume', toL: 1 },
+    'ml': { canonical: 'mL', kind: 'volume', toL: 0.001 },
+    'cbm':{ canonical: 'CBM',kind: 'volume', toL: 1000 },
+    'm3': { canonical: 'CBM',kind: 'volume', toL: 1000 },
+    'gal':{ canonical: 'gal',kind: 'volume', toL: 3.78541 },
+    'bbl':{ canonical: 'bbl',kind: 'volume', toL: 158.987 },
+    // Diskretni
+    'pcs':{ canonical: 'pcs',kind: 'count' },
+    'pc': { canonical: 'pcs',kind: 'count' },
+    'kom':{ canonical: 'pcs',kind: 'count' },
+    'box':{ canonical: 'box',kind: 'count' },
+    'ctn':{ canonical: 'ctn',kind: 'count' },
+    'bag':{ canonical: 'bag',kind: 'count' },
+    'plt':{ canonical: 'plt',kind: 'count' },
+    'plt.':{canonical: 'plt',kind: 'count' },
+    'pallet':{canonical:'plt',kind:'count' },
+    'paleta':{canonical:'plt',kind:'count' },
+    'ctr':{ canonical: 'ctr',kind: 'count' },
+    'fcl':{ canonical: 'fcl',kind: 'count' },
+    // Površina / dužina
+    'sqm':{ canonical: 'sqm',kind: 'area', toSqm: 1 },
+    'm':  { canonical: 'm',  kind: 'length', toM: 1 },
+};
+
+function _normalizeUnitKey(raw) {
+    if (!raw && raw !== 0) return '';
+    // "MT - Metric Ton" → "mt"; "40 kg" → "kg"; " Kilogram" → "kilogram"
+    const s = String(raw).trim().toLowerCase();
+    // Uzmi prvi token pre "-" ili razmaka koji nije broj
+    const beforeDash = s.split(/[-–—]/)[0].trim();
+    if (UNIT_CANONICAL[beforeDash]) return beforeDash;
+    // Numeric prefix ("40 kg") → skini brojeve
+    const stripped = beforeDash.replace(/^[\d.\s]+/, '').trim();
+    if (UNIT_CANONICAL[stripped]) return stripped;
+    // Whole string as-is
+    if (UNIT_CANONICAL[s]) return s;
+    return beforeDash || s;
+}
+
+if (typeof window !== 'undefined') {
+    window.UNIT_CANONICAL = UNIT_CANONICAL;
+    window._normalizeUnitKey = _normalizeUnitKey;
+}
+
 const CURRENCIES = ['USD', 'EUR', 'AED', 'RSD', 'GBP', 'CHF', 'BAM', 'TRY', 'CNY'];
 
 const INCOTERMS = [

@@ -75,11 +75,12 @@ function renderNetworkView() {
     main.appendChild(container);
 
     window.openPartner = (id) => { state.currentView = 'partnerDetail'; state.detailViewId = id; render(); };
-    window.deleteConnection = async (id) => { 
-        if(confirm(Utils.t('misc.confirmDelete'))) { 
-            state.data.connections = state.data.connections.filter(c => c.id !== id); 
+    window.deleteConnection = async (id) => {
+        const _ok = await window.askConfirm('Obrisati vezu?', Utils.t('misc.confirmDelete'), { danger: true });
+        if(_ok) {
+            state.data.connections = state.data.connections.filter(c => c.id !== id);
             await deleteItemFromServer('connections', id);
-            render(); 
-        } 
+            render();
+        }
     };
 }

@@ -346,8 +346,9 @@ function renderPartnerDetailView(partnerId) {
     document.getElementById('edit-partner-btn').addEventListener('click', () => showPartnerForm(partnerId));
     document.getElementById('docs-partner-btn').addEventListener('click', () => typeof showDocumentsModal === 'function' && showDocumentsModal('partners', partnerId));
     
-    document.getElementById('delete-partner-btn').addEventListener('click', () => {
-        if (confirm(Utils.t('misc.confirmDelete'))) {
+    document.getElementById('delete-partner-btn').addEventListener('click', async () => {
+        const _ok = await window.askConfirm('Obrisati partnera?', Utils.t('misc.confirmDelete'), { danger: true });
+        if (_ok) {
             Utils.handleDelete('partners', partnerId);
             state.currentView = 'partners';
             render();
