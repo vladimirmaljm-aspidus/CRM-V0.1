@@ -1,0 +1,57 @@
+{
+  "disruptions": [
+    {
+      "id": "red-sea-2024",
+      "type": "war_zone",
+      "severity": "high",
+      "title": "Red Sea / Bab-el-Mandeb — Houthi attacks",
+      "description": "Ongoing missile and drone attacks on commercial shipping. Many carriers rerouting around Cape of Good Hope, adding 10-14 days transit time and higher fuel cost.",
+      "affects": ["sea"],
+      "region": [
+        {"lat": 12.5, "lon": 43.5},
+        {"lat": 15.0, "lon": 42.0},
+        {"lat": 18.0, "lon": 40.5}
+      ],
+      "detour_via": "cape_of_good_hope",
+      "impact_days": 12,
+      "since": "2023-11-19",
+      "source": "IMB / Public advisories"
+    },
+    {
+      "id": "panama-drought-2024",
+      "type": "capacity",
+      "severity": "medium",
+      "title": "Panama Canal — draft & slot restrictions",
+      "description": "Water level in Gatun Lake affects transit slots and maximum draft. Larger vessels may face delays or need to lighten load.",
+      "affects": ["sea"],
+      "region": [{"lat": 9.08, "lon": -79.68}],
+      "impact_days": 3,
+      "since": "2023-08-01",
+      "source": "Panama Canal Authority"
+    },
+    {
+      "id": "ukraine-airspace",
+      "type": "airspace_closure",
+      "severity": "high",
+      "title": "Ukraine airspace closed to civil aviation",
+      "description": "Full civil airspace closure. Overflight not permitted; cargo routed via Poland/Romania/Turkey.",
+      "affects": ["air"],
+      "region": [{"lat": 50.45, "lon": 30.52}],
+      "impact_days": 0,
+      "since": "2022-02-24",
+      "source": "Eurocontrol NOTAM"
+    },
+    {
+      "id": "russia-belarus-airspace",
+      "type": "sanctions_airspace",
+      "severity": "high",
+      "title": "Russian/Belarusian airspace closed to EU/US carriers",
+      "description": "EU, UK, US, Canada carriers banned from Russian airspace and vice versa. Trans-Siberian route unavailable to affected carriers — long detours via Middle East / Alaska.",
+      "affects": ["air"],
+      "region": [{"lat": 55.75, "lon": 37.61}],
+      "impact_days": 3,
+      "since": "2022-02-27",
+      "source": "EU / FAA NOTAMs"
+    }
+  ]
+}
