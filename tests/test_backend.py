@@ -776,6 +776,75 @@ class T14LogisticsPlanner(BaseCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.get_json()['hits'], [])
 
+    def test_08_smart_perishable_light_recommends_air(self):
+        """Kritičan business scenario: 300kg perishable + 3-day deadline → AIR."""
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 51.9, 'lon': 4.5, 'label': 'Rotterdam'},
+            'destination': {'lat': 40.7, 'lon': -74.0, 'label': 'NYC'},
+            'cargo_tons': 0.3,
+            'perishable': True,
+            'deadline_days': 3,
+        })
+        self.assertEqual(r.status_code, 200)
+        js = r.get_json()
+        self.assertEqual(js['recommended_mode'], 'air',
+                         msg=f'expected air for 300kg perishable + 3d deadline, got {js["recommended_mode"]}')
+        air_plan = next(p for p in js['plans'] if p['mode'] == 'air')
+        self.assertGreaterEqual(air_plan['fitness_score'], 70)
+        self.assertTrue(any('perishable' in r.lower() for r in air_plan['fitness_reasons']))
+
+    def test_09_smart_heavy_bulk_recommends_sea(self):
+        """500t suvog rasutog tereta bez roka → SEA."""
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 51.9, 'lon': 4.5, 'label': 'Rotterdam'},
+            'destination': {'lat': 40.7, 'lon': -74.0, 'label': 'NYC'},
+            'cargo_tons': 500,
+            'container_type': 'bulk_dry',
+        })
+        self.assertEqual(r.status_code, 200)
+        js = r.get_json()
+        self.assertEqual(js['recommended_mode'], 'sea')
+        sea_plan = next(p for p in js['plans'] if p['mode'] == 'sea')
+        self.assertGreaterEqual(sea_plan['fitness_score'], 60)
+
+    def test_10_port_dwell_uses_per_port_data(self):
+        """Za identičan cargo Singapore mora imati kraći dwell od Lagos-a."""
+        # Rotterdam → Singapore (top_tier)
+        r1 = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 51.9, 'lon': 4.5, 'label': 'Rotterdam'},
+            'destination': {'lat': 1.264, 'lon': 103.842, 'label': 'Singapore'},
+            'cargo_tons': 20, 'container_type': 'teu',
+        })
+        # Rotterdam → Lagos (congested)
+        r2 = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 51.9, 'lon': 4.5, 'label': 'Rotterdam'},
+            'destination': {'lat': 6.45, 'lon': 3.4, 'label': 'Lagos'},
+            'cargo_tons': 20, 'container_type': 'teu',
+        })
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        sea1 = next(p for p in r1.get_json()['plans'] if p['mode'] == 'sea')
+        sea2 = next(p for p in r2.get_json()['plans'] if p['mode'] == 'sea')
+        # Singapore ima kraći dwell u destination portu nego Lagos (congested)
+        sg_dwell = sea1['legs'][1]['destination_port']['dwell_hours']
+        lg_dwell = sea2['legs'][1]['destination_port']['dwell_hours']
+        self.assertLess(sg_dwell, lg_dwell,
+                        msg=f'Singapore dwell ({sg_dwell}h) should be < Lagos ({lg_dwell}h)')
+        # Tier metadata je prisutan
+        self.assertEqual(sea1['legs'][1]['destination_port']['tier'], 'top_tier')
+        self.assertEqual(sea2['legs'][1]['destination_port']['tier'], 'congested')
+
+    def test_11_cost_estimate_present(self):
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 51.9, 'lon': 4.5, 'label': 'Rotterdam'},
+            'destination': {'lat': 40.7, 'lon': -74.0, 'label': 'NYC'},
+            'cargo_tons': 20, 'container_type': 'feu',
+        })
+        js = r.get_json()
+        for p in js['plans']:
+            self.assertIn('estimated_cost_usd', p)
+            self.assertGreater(p['estimated_cost_usd'], 0)
+
     def test_07d_search_filter_by_country(self):
         r = self.client.get('/api/logistics/search?q=port&country=NL&limit=15')
         self.assertEqual(r.status_code, 200)

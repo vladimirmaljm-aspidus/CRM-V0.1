@@ -48,6 +48,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 PORTS_FILE = os.path.join(DATA_DIR, 'ports_world.json')
 AIRPORTS_FILE = os.path.join(DATA_DIR, 'airports_world.json')
 DISRUPTIONS_FILE = os.path.join(DATA_DIR, 'disruptions.json')
+PORT_OPS_FILE = os.path.join(DATA_DIR, 'port_operations.json')
 
 
 # ==========================================================
@@ -76,6 +77,47 @@ def _load_json_cached(kind, path):
 
 def _load_ports():     return _load_json_cached('ports', PORTS_FILE)
 def _load_airports():  return _load_json_cached('airports', AIRPORTS_FILE)
+
+def _load_port_ops():
+    """Vraća (ports_map, defaults, tiers) iz port_operations.json.
+    ports_map: {UNLOCODE: {name, tier, ...}}
+    defaults: baseline vrednosti za nepoznate luke
+    tiers: skup baseline vrednosti po tier-u
+    """
+    try:
+        with open(PORT_OPS_FILE, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        return (raw.get('ports') or {},
+                (raw.get('_meta') or {}).get('defaults') or {},
+                (raw.get('_meta') or {}).get('tiers') or {})
+    except Exception:
+        return {}, {}, {}
+
+def _port_ops_for(unlocode):
+    """Za dati UN/LOCODE vraća merged dict operativnih parametara.
+    Ako luka nije eksplicitno u bazi, koristi average tier defaults."""
+    ports_map, defaults, tiers = _load_port_ops()
+    fallback = dict(defaults or {})
+    entry = ports_map.get(unlocode or '')
+    if entry:
+        tier = entry.get('tier') or 'average'
+        tier_defs = tiers.get(tier) or tiers.get('average') or {}
+        merged = {**fallback, **tier_defs}
+        # per-port override polja (ako neko doda override koji nije tier baseline)
+        for k, v in entry.items():
+            if k in ('name', 'tier', 'notes', 'annual_teu_millions'): continue
+            merged[k] = v
+        merged['_source'] = 'known_port'
+        merged['_tier'] = tier
+        merged['_port_name'] = entry.get('name', '')
+        merged['_notes'] = entry.get('notes', '')
+        return merged
+    # fallback: average tier
+    tier_defs = tiers.get('average') or {}
+    merged = {**fallback, **tier_defs}
+    merged['_source'] = 'default_average'
+    merged['_tier'] = 'average'
+    return merged
 
 def _load_disruptions():
     try:
@@ -486,6 +528,234 @@ def portal_plan_route():
     return _do_plan()
 
 
+# ==========================================================
+#  CARGO PROFILE — sve što je bitno za smart odabir moda
+# ==========================================================
+
+def _cargo_profile(payload):
+    """Normalizuje ulaz u cargo profil. Podržava naslijeđeni cargo_tons ali
+    prihvata i puni profil sa volume, kontejnerima, hazmat i deadline-om.
+    Sve vrednosti su sanitizovane (klemovane na razumnim granicama)."""
+    def _num(v, mn=0.0, mx=1e9, dflt=0.0):
+        try:
+            n = float(v)
+            if n != n or n < mn or n > mx: return dflt
+            return n
+        except (TypeError, ValueError):
+            return dflt
+    def _bool(v):
+        if isinstance(v, bool): return v
+        return str(v).lower() in ('1','true','yes','on')
+
+    weight_tons = _num(payload.get('cargo_tons'), 0.001, 500000, 20.0)
+    volume_m3 = _num(payload.get('cargo_volume_m3'), 0.001, 500000, 0.0)
+    if volume_m3 == 0.0:
+        # Ako ništa nije rečeno o volume, procenimo ga iz mase (prosečno 0.6 m3/t
+        # za mešovitu robu, 3 m3/t za light-weight kartone itd). Za bezbedan default
+        # uzimamo 1.0 m3 po toni što odgovara medium density robi.
+        volume_m3 = weight_tons * 1.0
+
+    container_type = str(payload.get('container_type') or '').lower()
+    # Prihvatamo: 'teu' (20ft), 'feu' (40ft), 'reefer' (frižider), 'lcl'
+    # (less-than-container-load), 'bulk_dry', 'bulk_liquid', 'breakbulk', 'oog'
+    # (out-of-gauge). Ako nije zadato, izvodimo iz veličine tereta.
+    if not container_type:
+        if weight_tons <= 0.5 and volume_m3 <= 2:
+            container_type = 'parcel'   # < 500kg — možda direktno kurir/air
+        elif weight_tons <= 18 and volume_m3 <= 30:
+            container_type = 'teu'
+        elif weight_tons <= 26 and volume_m3 <= 60:
+            container_type = 'feu'
+        elif weight_tons > 100:
+            container_type = 'bulk_dry'
+        else:
+            container_type = 'breakbulk'
+
+    profile = {
+        'weight_tons': round(weight_tons, 3),
+        'volume_m3': round(volume_m3, 3),
+        'container_type': container_type,
+        'perishable': _bool(payload.get('perishable')),
+        'hazmat': _bool(payload.get('hazmat')),
+        'oversize': _bool(payload.get('oversize')),
+        'high_value': _bool(payload.get('high_value')),
+        'value_usd': _num(payload.get('value_usd'), 0, 1e10, 0),
+        'deadline_days': _num(payload.get('deadline_days'), 0, 365, 0),
+        'container_count': int(_num(payload.get('container_count'), 0, 10000, 0)),
+    }
+    # Auto-flag za high_value bazirano na $/kg (>50$/kg = uglavnom air freight kandidat)
+    if not profile['high_value'] and profile['value_usd'] > 0 and profile['weight_tons'] > 0:
+        usd_per_kg = profile['value_usd'] / (profile['weight_tons'] * 1000)
+        if usd_per_kg >= 50:
+            profile['high_value'] = True
+    # Broj kontejnera derived (za estimate crane moves)
+    if profile['container_count'] == 0:
+        if container_type == 'teu':
+            profile['container_count'] = max(1, int(round(profile['weight_tons'] / 18 + 0.4)))
+        elif container_type == 'feu':
+            profile['container_count'] = max(1, int(round(profile['weight_tons'] / 26 + 0.4)))
+    return profile
+
+
+def _port_dwell_hours(port_ops, profile):
+    """Vraća procenu ukupnog vremena zadržavanja u luci (utovar + istovar +
+    carina) za dati profil tereta i operativne parametre luke.
+
+    Formula je fizički zasnovana:
+      - Container:  moves = container_count; hours = moves / cranes_per_h × 2
+                    (× 2 jer se broji i utovar i istovar), plus customs.
+      - Bulk:       hours = tons / discharge_rate × 2 + customs.
+      - Breakbulk:  hours = tons / handling_rate × 2 + customs.
+      - Congested luke imaju multiplier 1.4x (out of the tier_defaults).
+    """
+    ct = profile['container_type']
+    customs = float(port_ops.get('customs_clearance_hours', 24))
+    congestion = float(port_ops.get('congestion_factor', 1.0))
+    dwell = 0.0
+    if ct in ('teu', 'feu', 'reefer', 'lcl', 'parcel'):
+        cranes = float(port_ops.get('container_crane_moves_per_hour', 25))
+        moves = max(1, profile['container_count'])
+        # 2 × jer se broji i utovar u polaznoj i istovar u odredišnoj luci
+        dwell = (moves / cranes) * 2
+        # Baseline dwell (kontejner sedi u luci) je uglavnom veći od pure handling
+        # time-a — dodajemo ga kao "yard buffer".
+        dwell += float(port_ops.get('container_dwell_hours', 48))
+    elif ct == 'bulk_dry':
+        rate = float(port_ops.get('bulk_discharge_tons_per_hour', 800))
+        dwell = (profile['weight_tons'] / max(rate, 1)) * 2
+        dwell += float(port_ops.get('bulk_dwell_hours', 72))
+    elif ct == 'bulk_liquid':
+        rate = float(port_ops.get('bulk_discharge_tons_per_hour', 1500))
+        dwell = (profile['weight_tons'] / max(rate, 1)) * 2
+        dwell += float(port_ops.get('bulk_dwell_hours', 60))
+    elif ct in ('breakbulk', 'oog'):
+        rate = float(port_ops.get('breakbulk_tons_per_hour', 120))
+        dwell = (profile['weight_tons'] / max(rate, 1)) * 2
+        dwell += float(port_ops.get('breakbulk_dwell_hours', 120))
+    else:
+        dwell = float(port_ops.get('container_dwell_hours', 48))
+
+    total = (dwell + customs) * congestion
+    return round(total, 1)
+
+
+def _airport_dwell_hours(profile):
+    """Airport handling: cargo cutoff (min 4h pre leta), unload (1-3h),
+    customs (typical 6-8h za normal, 24h za hazmat). Bez congestion faktora
+    jer airport cargo terminali retko trpe zagušenja u istoj meri kao luke."""
+    handling = 4 + 2  # cutoff + unload
+    if profile['hazmat']: handling += 12
+    if profile['perishable']: handling += 2  # reefer chain handoff
+    customs = 12 if profile['hazmat'] else 6
+    return round(handling + customs, 1)
+
+
+# ==========================================================
+#  MOD FITNESS SCORING — koja je od 3 opcije NAJPAMETNIJA
+#  za DATI cargo profil? Vraća score + human-readable razloge.
+# ==========================================================
+
+def _mode_fitness(mode, profile, plan):
+    """Vraća (score, reasons_list). Score je 0-100. Viši = bolji fit
+    za dati cargo profil. Reasons su UI-friendly stringovi."""
+    reasons = []
+    score = 50  # baseline
+    wt = profile['weight_tons']
+    vol = profile['volume_m3']
+
+    if mode == 'air':
+        # Air je optimalno za mali brz teret. Skalira loše sa masom.
+        if wt <= 0.5:
+            score += 30; reasons.append(f'Very light cargo ({wt} t) — air is standard.')
+        elif wt <= 5:
+            score += 20; reasons.append(f'Light cargo ({wt} t) fits well in air cargo.')
+        elif wt <= 30:
+            score -= 10; reasons.append(f'Cargo weight ({wt} t) approaches air freight cost efficiency limit.')
+        else:
+            score -= 30; reasons.append(f'Cargo weight ({wt} t) is too heavy for cost-effective air freight.')
+        if profile['perishable']:
+            score += 25; reasons.append('Perishable cargo — air minimizes transit time.')
+        if profile['high_value']:
+            score += 15; reasons.append('High-value shipment — air reduces insurance exposure.')
+        if profile['deadline_days'] and profile['deadline_days'] <= 5:
+            score += 20; reasons.append(f'Tight deadline ({int(profile["deadline_days"])}d) — only air can meet it reliably.')
+        if profile['hazmat']:
+            score -= 15; reasons.append('Hazmat restrictions apply to air cargo — extra documentation.')
+        if profile['oversize'] or vol > 100:
+            score -= 20; reasons.append('Oversized cargo — special charter needed.')
+
+    elif mode == 'sea':
+        # Sea je optimalno za velike količine, tolerantno na trajanje.
+        if wt >= 10:
+            score += 25; reasons.append(f'Bulk / container-friendly volume ({wt} t) — sea is most cost-effective.')
+        elif wt >= 2:
+            score += 10; reasons.append(f'Consolidatable cargo ({wt} t) fits well in LCL/FCL.')
+        else:
+            score -= 15; reasons.append(f'Small cargo ({wt} t) — LCL surcharges may make sea uneconomical.')
+        if profile['perishable']:
+            score -= 15; reasons.append('Perishable — sea transit exceeds shelf life unless reefer container is used.')
+        if profile['deadline_days'] and profile['deadline_days'] <= 10:
+            score -= 20; reasons.append(f'Deadline of {int(profile["deadline_days"])}d is aggressive for sea freight.')
+        if profile['deadline_days'] and profile['deadline_days'] > 30:
+            score += 15; reasons.append('Ample lead time — sea maximizes savings.')
+        if profile['hazmat']:
+            score -= 5; reasons.append('Hazmat manageable in dedicated ISO tanks or IMO classes.')
+        if profile['oversize']:
+            score += 10; reasons.append('Oversized / breakbulk cargo — sea handles it natively.')
+
+    elif mode == 'road':
+        # Road je optimalno za srednje distance, jedan continent, brzo za < 24t
+        if plan['total_distance_km'] <= 800:
+            score += 25; reasons.append(f'Short leg ({int(plan["total_distance_km"])} km) — road is fastest end-to-end.')
+        elif plan['total_distance_km'] <= 2500:
+            score += 10; reasons.append(f'Regional distance ({int(plan["total_distance_km"])} km) — road remains competitive.')
+        elif plan['total_distance_km'] <= 5000:
+            score -= 15; reasons.append(f'Long distance ({int(plan["total_distance_km"])} km) — driver hours and fuel add cost.')
+        else:
+            score -= 30; reasons.append(f'Distance ({int(plan["total_distance_km"])} km) exceeds practical road transit.')
+        if wt > 24:
+            score -= 15; reasons.append(f'Cargo weight ({wt} t) exceeds single-trailer capacity — multiple trucks required.')
+        if profile['perishable'] and plan['total_days'] <= 3:
+            score += 10; reasons.append('Perishable — road is fine at this distance with a reefer trailer.')
+        if profile['hazmat']:
+            score -= 5; reasons.append('ADR-compliant driver and vehicle required.')
+
+    score = max(0, min(100, score))
+    return score, reasons
+
+
+def _cost_estimate_usd(mode, plan, profile):
+    """Vrlo okvirno: koristi javne tarifne prosečne cene (per kg-km ili
+    ton-km) da bi korisnik dobio red veličine. NE zamenjuje pravi tender.
+    Izvor: DHL / MAERSK / IATA public rate cards 2024 median.
+      - Air:  1.80-4.50 $/kg (uzimamo 3.00 $/kg average za intercontinental)
+      - Sea container FCL:  ~2500-4000 $/TEU intercontinental (uzimamo 3200 avg)
+      - Sea LCL:  ~40-80 $/CBM (uzimamo 60 $/CBM)
+      - Road:   ~1.20-2.20 $/km per FTL (uzimamo 1.60 $/km × distance)
+    """
+    wt_kg = profile['weight_tons'] * 1000
+    if mode == 'air':
+        # Rate scaled po distanci (dulja = malo skuplje)
+        base = 3.0
+        dist_factor = 1.0 + max(0, (plan['total_distance_km'] - 3000) / 10000) * 0.3
+        return round(base * dist_factor * wt_kg, 0)
+    if mode == 'sea':
+        ct = profile['container_type']
+        if ct in ('teu', 'feu', 'reefer'):
+            per_container = 3200 if ct == 'teu' else 4200 if ct == 'feu' else 5200
+            return round(per_container * max(1, profile['container_count']), 0)
+        elif ct == 'lcl' or profile['volume_m3'] < 15:
+            return round(60 * max(1, profile['volume_m3']), 0)
+        else:
+            # bulk: ~40 $/ton port-to-port
+            return round(40 * profile['weight_tons'], 0)
+    if mode == 'road':
+        # 1.60 $/km × trucks needed
+        trucks = max(1, int((profile['weight_tons'] + 23) // 24))
+        return round(1.6 * plan['total_distance_km'] * trucks, 0)
+    return 0
+
+
 def _do_plan():
     payload = request.get_json(silent=True) or {}
     o_lat, o_lon, o_lbl = _resolve_point('origin', payload)
@@ -493,22 +763,27 @@ def _do_plan():
     d_lat, d_lon, d_lbl = _resolve_point('destination', payload)
     if d_lat is None: return _bad(d_lbl)
 
-    cargo_tons = float(payload.get('cargo_tons') or 20.0)
+    profile = _cargo_profile(payload)
+    cargo_tons = profile['weight_tons']
     prefer = (payload.get('prefer') or 'auto').lower()
 
     plans = []
 
     # --- 1. ROAD ONLY -----------------------------------------------------
     d_road = _haversine_km(o_lat, o_lon, d_lat, d_lon)
-    # Preko okeana kopneno nemoguće — heuristika: ako dužina veće od 5000 km
-    # ili prelazi ekvator + ide preko okeana, road-only može biti nerealan.
     road_ok = d_road < 6000
     if road_ok:
-        # Kopno approx 1.3x haversine (nije prava linija)
         d_road_actual = d_road * 1.3
+        # Broj kamiona (24t FTL kapacitet). Vreme se ne povećava linearno sa
+        # brojem kamiona — svi voze paralelno.
+        trucks_needed = max(1, int((cargo_tons + 23) // 24))
         hours = d_road_actual / SPEED_KMH['road']
+        # Border crossing overhead (5h EU intra, 8h EU-non-EU, 24h transit sa carinom)
+        border_h = 8 if d_road_actual > 800 else 0
+        total_h = hours + border_h
         co2_t = d_road_actual * cargo_tons * CO2_G_PER_TKM['road'] / 1_000_000
-        plans.append({
+
+        plan_road = {
             'mode': 'road',
             'label': 'Road only (truck)',
             'legs': [{
@@ -518,26 +793,31 @@ def _do_plan():
                 'polyline': _great_circle_polyline(o_lat, o_lon, d_lat, d_lon, segments=24),
                 'distance_km': round(d_road_actual, 1),
                 'hours': round(hours, 1),
+                'trucks_needed': trucks_needed,
+                'border_crossing_hours': border_h,
             }],
             'total_distance_km': round(d_road_actual, 1),
-            'total_hours': round(hours, 1),
-            'total_days': round(hours / 24, 2),
+            'total_hours': round(total_h, 1),
+            'total_days': round(total_h / 24, 2),
             'co2_tons': round(co2_t, 3),
             'warnings': [],
-        })
+        }
+        score, reasons = _mode_fitness('road', profile, plan_road)
+        plan_road['fitness_score'] = score
+        plan_road['fitness_reasons'] = reasons
+        plan_road['estimated_cost_usd'] = _cost_estimate_usd('road', plan_road, profile)
+        plans.append(plan_road)
 
     # --- 2. ROAD → SEA → ROAD --------------------------------------------
     ports = _load_ports()
-    n_o_port = _nearest(ports, o_lat, o_lon, k=1)[0]
-    n_d_port = _nearest(ports, d_lat, d_lon, k=1)[0]
+    n_o_port = _nearest(ports, o_lat, o_lon, k=1)[0] if ports else None
+    n_d_port = _nearest(ports, d_lat, d_lon, k=1)[0] if ports else None
     if n_o_port and n_d_port:
         d_op, p_o = n_o_port
         d_dp, p_d = n_d_port
-        # Land legs to/from ports
         land_o_km = d_op * 1.3
         land_d_km = d_dp * 1.3
 
-        # Poremećaji (Red Sea) - preusmeri
         avoid = set()
         raw_wps = _sea_route_waypoints(p_o['lat'], p_o['lon'], p_d['lat'], p_d['lon'])
         if 'suez' in raw_wps:
@@ -546,7 +826,6 @@ def _do_plan():
                     avoid.add('suez')
         wps = _sea_route_waypoints(p_o['lat'], p_o['lon'], p_d['lat'], p_d['lon'], avoid=avoid)
 
-        # Konstruiši sea polyline preko waypoint-a
         chain = [(p_o['lat'], p_o['lon'])]
         for name in wps:
             chain.append(WAYPOINTS[name])
@@ -558,11 +837,15 @@ def _do_plan():
             sea_poly.extend(seg)
         sea_km = _polyline_length_km(sea_poly)
 
-        # Vreme + emisije
+        # Per-luka dwell time — koristi realne parametre iz port_operations.json
+        origin_ops = _port_ops_for(p_o.get('unlocode'))
+        dest_ops = _port_ops_for(p_d.get('unlocode'))
+        h_dwell_origin = _port_dwell_hours(origin_ops, profile)
+        h_dwell_dest = _port_dwell_hours(dest_ops, profile)
+        h_port_dwell = h_dwell_origin + h_dwell_dest
+
         h_road_o = land_o_km / SPEED_KMH['road']
         h_sea = sea_km / SPEED_KMH['sea']
-        # Realan port handling buffer (dwell time, customs)
-        h_port_dwell = 24 + 24  # 24h loading + 24h unloading
         h_road_d = land_d_km / SPEED_KMH['road']
         total_h = h_road_o + h_sea + h_port_dwell + h_road_d
         total_km = land_o_km + sea_km + land_d_km
@@ -577,7 +860,7 @@ def _do_plan():
                       ((dis['id'] == 'red-sea-2024' and 'cape_good_hope' in wps) or
                        (dis['id'] == 'panama-drought-2024' and 'panama' in wps))]
 
-        plans.append({
+        plan_sea = {
             'mode': 'sea',
             'label': 'Truck → Sea → Truck',
             'legs': [
@@ -588,6 +871,7 @@ def _do_plan():
                     'polyline': _great_circle_polyline(o_lat, o_lon, p_o['lat'], p_o['lon'], segments=16),
                     'distance_km': round(land_o_km, 1),
                     'hours': round(h_road_o, 1),
+                    'trucks_needed': max(1, int((cargo_tons + 23) // 24)),
                 },
                 {
                     'kind': 'sea',
@@ -597,7 +881,23 @@ def _do_plan():
                     'via_waypoints': wps,
                     'distance_km': round(sea_km, 1),
                     'hours': round(h_sea, 1),
-                    'port_dwell_hours': h_port_dwell,
+                    'port_dwell_hours': round(h_port_dwell, 1),
+                    'origin_port': {
+                        'unlocode': p_o.get('unlocode'),
+                        'name': p_o.get('name'),
+                        'country': p_o.get('country'),
+                        'tier': origin_ops.get('_tier'),
+                        'dwell_hours': round(h_dwell_origin, 1),
+                        'notes': origin_ops.get('_notes') or '',
+                    },
+                    'destination_port': {
+                        'unlocode': p_d.get('unlocode'),
+                        'name': p_d.get('name'),
+                        'country': p_d.get('country'),
+                        'tier': dest_ops.get('_tier'),
+                        'dwell_hours': round(h_dwell_dest, 1),
+                        'notes': dest_ops.get('_notes') or '',
+                    },
                 },
                 {
                     'kind': 'road',
@@ -606,6 +906,7 @@ def _do_plan():
                     'polyline': _great_circle_polyline(p_d['lat'], p_d['lon'], d_lat, d_lon, segments=16),
                     'distance_km': round(land_d_km, 1),
                     'hours': round(h_road_d, 1),
+                    'trucks_needed': max(1, int((cargo_tons + 23) // 24)),
                 },
             ],
             'total_distance_km': round(total_km, 1),
@@ -613,7 +914,12 @@ def _do_plan():
             'total_days': round(total_h / 24, 2),
             'co2_tons': round(co2_t, 3),
             'warnings': active_dis,
-        })
+        }
+        score, reasons = _mode_fitness('sea', profile, plan_sea)
+        plan_sea['fitness_score'] = score
+        plan_sea['fitness_reasons'] = reasons
+        plan_sea['estimated_cost_usd'] = _cost_estimate_usd('sea', plan_sea, profile)
+        plans.append(plan_sea)
 
     # --- 3. ROAD → AIR → ROAD --------------------------------------------
     airports = _load_airports()
@@ -628,7 +934,7 @@ def _do_plan():
         air_km = _polyline_length_km(air_poly)
         h_road_o = land_o_km / SPEED_KMH['road']
         h_air = air_km / SPEED_KMH['air']
-        h_air_dwell = 6 + 6  # cargo cutoff + unload
+        h_air_dwell = _airport_dwell_hours(profile)
         h_road_d = land_d_km / SPEED_KMH['road']
         total_h = h_road_o + h_air + h_air_dwell + h_road_d
         total_km = land_o_km + air_km + land_d_km
@@ -640,7 +946,7 @@ def _do_plan():
 
         active_dis = [d for d in _load_disruptions() if 'air' in d.get('affects', [])]
 
-        plans.append({
+        plan_air = {
             'mode': 'air',
             'label': 'Truck → Air Cargo → Truck',
             'legs': [
@@ -659,7 +965,9 @@ def _do_plan():
                     'polyline': air_poly,
                     'distance_km': round(air_km, 1),
                     'hours': round(h_air, 1),
-                    'airport_dwell_hours': h_air_dwell,
+                    'airport_dwell_hours': round(h_air_dwell, 1),
+                    'origin_airport': {'iata': a_o.get('iata'), 'name': a_o.get('name')},
+                    'destination_airport': {'iata': a_d.get('iata'), 'name': a_d.get('name')},
                 },
                 {
                     'kind': 'road',
@@ -675,26 +983,41 @@ def _do_plan():
             'total_days': round(total_h / 24, 2),
             'co2_tons': round(co2_t, 3),
             'warnings': active_dis,
-        })
+        }
+        score, reasons = _mode_fitness('air', profile, plan_air)
+        plan_air['fitness_score'] = score
+        plan_air['fitness_reasons'] = reasons
+        plan_air['estimated_cost_usd'] = _cost_estimate_usd('air', plan_air, profile)
+        plans.append(plan_air)
 
     if not plans:
         return _bad('No routing possible for given coordinates', 422)
 
-    # Recommendation: fastest by default, or lowest emissions if prefer='green'
+    # ---- SMART RECOMMENDATION ----
+    # Kombinujemo user preference sa fitness score-om. `auto` uzima best fitness;
+    # `fastest`/`cheapest`/`green` favorizuje pojedinu metriku ali još uvek uzima
+    # fitness u obzir.
     if prefer == 'green':
-        recommended = min(plans, key=lambda p: p['co2_tons'])
-    elif prefer == 'cheap':
-        # rough cost heuristic: road cheap, sea cheaper for long, air expensive
-        cost_wt = {'road': 1.0, 'sea': 0.35, 'air': 4.5}
-        recommended = min(plans, key=lambda p: p['total_distance_km'] * cost_wt[p['mode']])
-    else:
-        recommended = min(plans, key=lambda p: p['total_hours'])
+        recommended = min(plans, key=lambda p: p['co2_tons'] * (100 / max(p['fitness_score'], 20)))
+        rec_reason = f"Lowest CO₂ option that also fits the cargo profile."
+    elif prefer in ('cheap', 'cheapest'):
+        recommended = min(plans, key=lambda p: p['estimated_cost_usd'] * (100 / max(p['fitness_score'], 20)))
+        rec_reason = "Cheapest option that also fits the cargo profile."
+    elif prefer in ('fast', 'fastest', 'time'):
+        recommended = min(plans, key=lambda p: p['total_hours'] * (100 / max(p['fitness_score'], 20)))
+        rec_reason = "Fastest option that also fits the cargo profile."
+    else:  # 'auto'
+        recommended = max(plans, key=lambda p: p['fitness_score'])
+        rec_reason = f"Selected on smart-fit score ({recommended['fitness_score']}/100) for the given cargo profile."
 
     return jsonify({
         'origin': {'lat': o_lat, 'lon': o_lon, 'label': o_lbl},
         'destination': {'lat': d_lat, 'lon': d_lon, 'label': d_lbl},
-        'cargo_tons': cargo_tons,
+        'cargo_profile': profile,
+        'cargo_tons': cargo_tons,  # backward-compat
         'plans': plans,
         'recommended_mode': recommended['mode'],
+        'recommendation_reason': rec_reason,
+        'recommendation_score': recommended['fitness_score'],
         'generated_at': int(time.time()),
     })
