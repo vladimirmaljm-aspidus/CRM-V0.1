@@ -804,6 +804,7 @@ function renderOffers() {
                 <div class="flex gap-2">
                     ${o?.documentId ? `<button class="btn btn-ghost small text-xs" onclick="downloadPortalDocument('${safeText(o.documentId)}')">${t('btn_download_pdf') || 'Download PDF'}</button>` : ''}
                     <button class="btn btn-ghost small text-xs" onclick="showOfferDetail('${safeText(o.id)}')">${t('view_details') || 'View Details'}</button>
+                    <button class="btn btn-ghost small text-xs" onclick="openPortalLogistics('${safeText(o.id)}')" title="Multimodal shipping planner">🌍 ${t('logistics_planner') || 'Route Planner'}</button>
                 </div>
                 <div class="flex gap-2">
                     ${canAct ? `
@@ -945,6 +946,43 @@ function showOfferDetail(offerId) {
     modal.classList.remove('hidden'); modal.classList.add('flex');
 }
 function closeOfferDetail() { const m = document.getElementById('offer-detail-modal'); if (m) { m.classList.add('hidden'); m.classList.remove('flex'); } }
+
+// ==========================================================
+//  LOGISTICS PLANNER (portal)
+// ==========================================================
+// Klijent može, iz svoje ponude, da pogleda predloženu multimodalnu rutu
+// (kopno → more/vazduh → kopno) sa procenom vremena, distance i CO2.
+// Podaci se pune iz same ponude i profila klijenta (buyer address).
+function openPortalLogistics(offerId) {
+    const offer = (portalData?.offers || []).find(o => o.id === offerId);
+    if (!offer) return;
+    if (typeof window.openLogisticsPlanner !== 'function') {
+        alert('Logistics planner module not loaded. Please refresh the page.');
+        return;
+    }
+    // Polazište: adresa naše (prodavčeve) firme iz profila brenda ako je poslata
+    const originAddr = (portalData?.company_profile && [
+        portalData.company_profile.address,
+        portalData.company_profile.city,
+        portalData.company_profile.country
+    ].filter(Boolean).join(', ')) || 'Rotterdam, Netherlands';
+    // Odredište: adresa klijenta iz profila portala
+    const p = portalData?.profile || {};
+    const destAddr = [p.address, p.city, p.country].filter(Boolean).join(', ');
+
+    // Teret
+    const qty = parseFloat(offer.quantity) || 20;
+    const unit = String(offer.unit || 'MT').toLowerCase();
+    const cargoTons = unit === 'kg' ? qty / 1000 : qty;
+
+    window.openLogisticsPlanner({
+        origin: { address: originAddr },
+        destination: destAddr ? { address: destAddr } : null,
+        cargoTons,
+        apiBase: '/api/portal/logistics',
+        portalAuth: (typeof authKey !== 'undefined') ? authKey : null,
+    });
+}
 
 // ==========================================================
 //  RFQ
