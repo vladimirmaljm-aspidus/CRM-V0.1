@@ -107,6 +107,14 @@ def init_db():
             )''')
             c.execute('CREATE INDEX IF NOT EXISTS idx_docrev_number ON document_revisions(docNumber)')
 
+########## --- NOVA LINIJA KODA ZA EMAIL RED ČEKANJA ---
+            c.execute('''CREATE TABLE IF NOT EXISTS email_queue (
+                id TEXT PRIMARY KEY, recipient TEXT NOT NULL, subject TEXT,
+                plain_body TEXT, html_body TEXT, attachments_ref TEXT,
+                attempts INTEGER DEFAULT 0, last_error TEXT,
+                queued_at TEXT NOT NULL, next_retry_at TEXT, status TEXT DEFAULT 'pending'
+            )''')
+
             # Ako je baza prazna (nema korisnika), kreiraj početnog admina da se izbegne
             # zaključavanje van sistema (npr. sveža baza na produkciji).
             seed_admin_if_empty(c)
