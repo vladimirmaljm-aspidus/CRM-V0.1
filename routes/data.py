@@ -638,6 +638,136 @@ def verify_offer_hash():
         conn.close()
 
 
+@data_bp.route('/api/documents/verify_upload', methods=['POST'])
+@login_required
+def verify_document_upload():
+    """Kriptografska provera integriteta uploadovanog PDF-a.
+
+    Admin (ili neko sa dozvolom) uploaduje PDF fajl koji je vratio klijent
+    (potpisan, ili čak i ne). Server:
+      1) Računa SHA-256 nad bajtovima.
+      2) Traži u shared_documents zapis koji ima taj pdfContentHash.
+      3) Ako pronađe → binding hash + snapshot ponude → dokument je autentičan.
+      4) Ako NE pronađe → poredi sa svim shared_documents.pdfContentHash-ovima
+         i vraća prvi mismatch kao "modified" ako binding hash SEED odgovara
+         (offerNo se pronađe u PDF metapodacima ili fajl-imenu).
+      5) U svakom slučaju vraća detaljne rezultate za forensiku.
+
+    Ovo štiti od:
+      - Zamene brojeva (cena, količina) u PDF editoru
+      - Umetanja/brisanja stranica
+      - Menjanja footer verification hash-a
+      - Menjanja metadata (Author, Title, Subject)
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "FILE_REQUIRED"}), 400
+    f = request.files['file']
+    if not f.filename:
+        return jsonify({"error": "FILE_EMPTY"}), 400
+    data = f.read()
+    if not data:
+        return jsonify({"error": "FILE_EMPTY"}), 400
+    if not data.startswith(b'%PDF'):
+        return jsonify({"error": "NOT_A_PDF"}), 400
+
+    import hashlib
+    computed_hash = hashlib.sha256(data).hexdigest().upper()
+
+    # Traži direct match
+    conn = get_db_connection()
+    match = None
+    matched_by_seed = None
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, data FROM shared_documents")
+        rows = c.fetchall()
+        for r in rows:
+            doc = decrypt_data(r[1])
+            if not isinstance(doc, dict): continue
+            if doc.get('pdfContentHash') == computed_hash:
+                match = doc; break
+        if not match:
+            # Sekundarni pretres: možda je fajl-ime `Offer_XYZ.pdf` → izvuci offerNo
+            import re as _re
+            m = _re.search(rb'/Title\s*\((.*?)\)', data[:16384])
+            if m:
+                title = m.group(1).decode('utf-8', errors='replace')
+                m2 = _re.search(r'Offer\s+([A-Za-z0-9\-/_]+)', title)
+                if m2:
+                    seed_offer_no = m2.group(1)
+                    for r in rows:
+                        doc = decrypt_data(r[1])
+                        if isinstance(doc, dict) and doc.get('fileName', '').endswith(f'{seed_offer_no}.pdf'):
+                            matched_by_seed = doc; break
+    finally:
+        conn.close()
+
+    if match:
+        offer = None
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT data FROM offers WHERE id=?", (match.get('sourceOfferId'),))
+            row = c.fetchone()
+            if row: offer = decrypt_data(row[0])
+            conn.close()
+        except Exception:
+            pass
+        log_audit('SECURITY', 'documents',
+                  f"PDF integrity check: MATCH for {match.get('fileName')} (hash={computed_hash[:16]}...)",
+                  is_suspicious=False)
+        return jsonify({
+            "valid": True,
+            "status": "AUTHENTIC",
+            "message": "Document is bit-exact identical to the version sent from this system.",
+            "computed_hash": computed_hash,
+            "document": {
+                "id": match.get('id'),
+                "fileName": match.get('fileName'),
+                "docType": match.get('docType'),
+                "createdAt": match.get('createdAt'),
+                "sourceOfferId": match.get('sourceOfferId'),
+                "bindingHash": match.get('bindingHash'),
+                "shortVerification": match.get('shortVerification'),
+            },
+            "offer_snapshot": {
+                "offerNo": offer.get('offerNo') if offer else None,
+                "customerId": offer.get('customerId') if offer else None,
+                "sellingPrice": offer.get('sellingPrice') if offer else None,
+                "currency": offer.get('currency') if offer else None,
+                "quantity": offer.get('quantity') if offer else None,
+            } if offer else None,
+        })
+
+    if matched_by_seed:
+        log_audit('SECURITY', 'documents',
+                  f"PDF integrity check: MODIFIED — filename matches {matched_by_seed.get('fileName')} but content hash differs (uploaded={computed_hash[:16]}, expected={matched_by_seed.get('pdfContentHash', '')[:16]})",
+                  is_suspicious=True)
+        return jsonify({
+            "valid": False,
+            "status": "MODIFIED",
+            "message": "This PDF appears to be a modified version of a document issued from this system. Content has been altered.",
+            "computed_hash": computed_hash,
+            "expected_hash": matched_by_seed.get('pdfContentHash'),
+            "document": {
+                "id": matched_by_seed.get('id'),
+                "fileName": matched_by_seed.get('fileName'),
+                "docType": matched_by_seed.get('docType'),
+                "createdAt": matched_by_seed.get('createdAt'),
+            }
+        })
+
+    log_audit('SECURITY', 'documents',
+              f"PDF integrity check: UNKNOWN document (hash={computed_hash[:16]}...)",
+              is_suspicious=True)
+    return jsonify({
+        "valid": False,
+        "status": "UNKNOWN",
+        "message": "This PDF was not issued from this system. Content hash not found in our records.",
+        "computed_hash": computed_hash,
+    })
+
+
 @data_bp.route('/api/offers/preview_pdf', methods=['POST'])
 @login_required
 def preview_offer_pdf():

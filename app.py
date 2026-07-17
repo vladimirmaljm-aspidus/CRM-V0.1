@@ -227,7 +227,7 @@ def apply_brutal_security_headers(response):
         "font-src 'self' data: https://cdnjs.cloudflare.com; "
         "img-src 'self' data: blob: https://googleusercontent.com https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; "
         "frame-src 'self' blob:; "
-        "connect-src 'self' http://ip-api.com https://open.er-api.com https://nominatim.openstreetmap.org https://router.project-osrm.org;"
+        "connect-src 'self' http://ip-api.com https://open.er-api.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://www.trading-economics.com;"
     )
     response.headers['Content-Security-Policy'] = csp
     
