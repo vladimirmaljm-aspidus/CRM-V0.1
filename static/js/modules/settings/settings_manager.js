@@ -601,46 +601,123 @@ const SettingsManager = {
             e.preventDefault();
             const fd = new FormData(e.target);
             const saveBtn = document.getElementById('save-settings-btn');
-            saveBtn.innerText = tLang('⏳ ČUVANJE...', '⏳ PROCESSING...'); saveBtn.disabled = true;
+            const originalText = saveBtn.innerText;
+            saveBtn.innerText = tLang('⏳ ČUVANJE...', '⏳ PROCESSING...');
+            saveBtn.disabled = true;
+            let anyFailure = null;
 
-            // 1. Core & Company
-            state.settings.lang = fd.get('lang') || 'en'; state.lang = state.settings.lang; state.settings.currency = fd.get('currency') || 'USD'; 
-            state.settings.commissionRate = (parseFloat(fd.get('commissionRate')) || 0) / 100; state.settings.lastInvoiceNumber = parseInt(fd.get('lastInvoiceNumber')||0,10); 
-            state.settings.lastOfferNumber = parseInt(fd.get('lastOfferNumber')||0,10); state.settings.fileLimitMB = parseFloat(fd.get('fileLimitMB')) || FILE_LIMIT_MB; FILE_LIMIT_MB = state.settings.fileLimitMB;
-            state.settings.vatRate = parseFloat(fd.get('vatRate')) || 5; state.settings.paymentWarningDays = parseInt(fd.get('paymentWarningDays') || 7, 10);
-            state.settings.defaultOfferNotes = fd.get('defaultOfferNotes') || ''; state.settings.defaultInvoiceNotes = fd.get('defaultInvoiceNotes') || '';
-            state.company.name = fd.get('companyName'); state.company.address = fd.get('companyAddress'); state.company.taxId = fd.get('companyTax'); state.company.regNumber = fd.get('companyReg');
-            // Prilagodljiv brending: primarna boja za portal i PDF. Prihvata #RRGGBB, ignoriše nevalidne unose.
-            const bc = (fd.get('brandColorHex') || fd.get('brandColor') || '').trim();
-            if (bc && /^#[0-9a-fA-F]{6}$/.test(bc)) state.company.brandColor = bc;
-            const site = (fd.get('companyWebsite') || '').trim();
-            if (site) state.company.website = site;
-            
-            if (typeof uploadFileToServer === 'function') {
-                const logoFile = fd.get('companyLogo'); if(logoFile && logoFile.size > 0){ try{ if(state.company.logoDataUrl) await deleteFileFromServer(state.company.logoDataUrl); const logoUrl = await uploadFileToServer(logoFile); if (logoUrl) state.company.logoDataUrl = logoUrl; } catch(err){} }
-                const stampFile = fd.get('companyStamp'); if(stampFile && stampFile.size > 0) { try { if(state.company.stampDataUrl) await deleteFileFromServer(state.company.stampDataUrl); const stampUrl = await uploadFileToServer(stampFile); if(stampUrl) state.company.stampDataUrl = stampUrl; } catch(err){} }
+            try {
+                // 1. Core & Company — kompletno se čuva bez granica pošto lokalni state
+                //    treba da odražava sve promene čak i pre network poziva.
+                state.settings.lang = fd.get('lang') || 'en';
+                state.lang = state.settings.lang;
+                state.settings.currency = fd.get('currency') || 'USD';
+                state.settings.commissionRate = (parseFloat(fd.get('commissionRate')) || 0) / 100;
+                state.settings.lastInvoiceNumber = parseInt(fd.get('lastInvoiceNumber') || 0, 10);
+                state.settings.lastOfferNumber = parseInt(fd.get('lastOfferNumber') || 0, 10);
+                state.settings.fileLimitMB = parseFloat(fd.get('fileLimitMB')) || FILE_LIMIT_MB;
+                FILE_LIMIT_MB = state.settings.fileLimitMB;
+                state.settings.vatRate = parseFloat(fd.get('vatRate')) || 5;
+                state.settings.paymentWarningDays = parseInt(fd.get('paymentWarningDays') || 7, 10);
+                state.settings.defaultOfferNotes = fd.get('defaultOfferNotes') || '';
+                state.settings.defaultInvoiceNotes = fd.get('defaultInvoiceNotes') || '';
+                state.company.name = fd.get('companyName');
+                state.company.address = fd.get('companyAddress');
+                state.company.taxId = fd.get('companyTax');
+                state.company.regNumber = fd.get('companyReg');
+
+                // Brand color: prihvata samo validan hex #RRGGBB.
+                const bc = (fd.get('brandColorHex') || fd.get('brandColor') || '').trim();
+                if (bc && /^#[0-9a-fA-F]{6}$/.test(bc)) state.company.brandColor = bc;
+                const site = (fd.get('companyWebsite') || '').trim();
+                if (site) state.company.website = site;
+
+                if (typeof uploadFileToServer === 'function') {
+                    const logoFile = fd.get('companyLogo');
+                    if (logoFile && logoFile.size > 0) {
+                        try {
+                            if (state.company.logoDataUrl) await deleteFileFromServer(state.company.logoDataUrl);
+                            const logoUrl = await uploadFileToServer(logoFile);
+                            if (logoUrl) state.company.logoDataUrl = logoUrl;
+                        } catch (err) { console.warn('logo upload failed', err); anyFailure = err; }
+                    }
+                    const stampFile = fd.get('companyStamp');
+                    if (stampFile && stampFile.size > 0) {
+                        try {
+                            if (state.company.stampDataUrl) await deleteFileFromServer(state.company.stampDataUrl);
+                            const stampUrl = await uploadFileToServer(stampFile);
+                            if (stampUrl) state.company.stampDataUrl = stampUrl;
+                        } catch (err) { console.warn('stamp upload failed', err); anyFailure = err; }
+                    }
+                }
+                await saveToStorage('settings');
+                await saveToStorage('company');
+
+                // 2. Comms
+                const commsData = {
+                    smtpServer: fd.get('smtpServer'),
+                    smtpPort: parseInt(fd.get('smtpPort') || 587, 10),
+                    smtpUser: fd.get('smtpUser'),
+                    smtpPass: fd.get('smtpPass'),
+                    smtpSecurity: fd.get('smtpSecurity'),
+                    senderName: fd.get('senderName'),
+                    senderEmail: fd.get('senderEmail'),
+                    defaultBcc: fd.get('defaultBcc'),
+                    emailSubjectTpl: fd.get('emailSubjectTpl'),
+                    emailBodyTpl: fd.get('emailBodyTpl'),
+                    waBodyTpl: fd.get('waBodyTpl')
+                };
+                const commsRes = await fetch('/api/data/comms_settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ value: commsData })
+                });
+                if (!commsRes.ok) throw new Error('Comms save failed: HTTP ' + commsRes.status);
+                if (typeof Comms !== 'undefined') Comms.settings = commsData;
+
+                // 3. Firewall
+                const wList = document.getElementById('fw-whitelist').value
+                                     .split('\n').map(i => i.trim()).filter(Boolean);
+                const bList = document.getElementById('fw-blacklist').value
+                                     .split('\n').map(i => i.trim()).filter(Boolean);
+                const fwConfig = {
+                    whitelist: wList, blacklist: bList,
+                    max_login: parseInt(fd.get('fwMaxLogin') || 10, 10),
+                    max_portal: parseInt(fd.get('fwMaxPortal') || 50, 10)
+                };
+                const fwRes = await fetch('/api/firewall/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(fwConfig)
+                });
+                if (!fwRes.ok) throw new Error('Firewall save failed: HTTP ' + fwRes.status);
+
+                // Success — obavesti korisnika i osveži da bi UI reflektovao nov jezik/brand.
+                if (typeof showToast === 'function') {
+                    showToast(tLang('Konfiguracija uspešno sačuvana.',
+                                    'Configuration saved successfully.'), 'success');
+                } else {
+                    alert(tLang('Konfiguracija uspešno sačuvana.',
+                                'System Configuration Saved Successfully.'));
+                }
+                closeModal();
+                // Reload posle kratke pauze da toast bude vidljiv i da se save
+                // završi pre reset-a app state-a.
+                setTimeout(() => window.location.reload(), 800);
+            } catch (err) {
+                console.error('Settings save failed:', err);
+                if (typeof showToast === 'function') {
+                    showToast(tLang('Greška pri čuvanju: ', 'Save error: ') + (err.message || err), 'error');
+                } else {
+                    alert(tLang('Greška pri čuvanju: ', 'Save error: ') + (err.message || err));
+                }
+            } finally {
+                // OBAVEZNO — dugme se uvek vraća u aktivno stanje, čak i posle greške.
+                // Bez ovog finally bloka, dugme je ostajalo trajno onesposobljeno i
+                // korisnik nije mogao ponovo da klikne Save bez refresh-a stranice.
+                saveBtn.innerText = originalText;
+                saveBtn.disabled = false;
             }
-            await saveToStorage('settings'); await saveToStorage('company');
-
-            // 2. Comms
-            const commsData = {
-                smtpServer: fd.get('smtpServer'), smtpPort: parseInt(fd.get('smtpPort')||587,10), smtpUser: fd.get('smtpUser'), smtpPass: fd.get('smtpPass'), smtpSecurity: fd.get('smtpSecurity'),
-                senderName: fd.get('senderName'), senderEmail: fd.get('senderEmail'), defaultBcc: fd.get('defaultBcc'), emailSubjectTpl: fd.get('emailSubjectTpl'), emailBodyTpl: fd.get('emailBodyTpl'), waBodyTpl: fd.get('waBodyTpl')
-            };
-            await fetch('/api/data/comms_settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: commsData }) });
-            if(typeof Comms !== 'undefined') Comms.settings = commsData;
-
-            // 3. Firewall
-            const wList = document.getElementById('fw-whitelist').value.split('\n').map(i => i.trim()).filter(i => i);
-            const bList = document.getElementById('fw-blacklist').value.split('\n').map(i => i.trim()).filter(i => i);
-            const fwConfig = {
-                whitelist: wList, blacklist: bList,
-                max_login: parseInt(fd.get('fwMaxLogin')||10, 10), max_portal: parseInt(fd.get('fwMaxPortal')||50, 10)
-            };
-            await fetch('/api/firewall/config', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(fwConfig) });
-
-            alert(tLang('Konfiguracija uspešno sačuvana.', 'System Configuration Saved Successfully.')); 
-            closeModal(); window.location.reload(); 
         });
     }
 };

@@ -372,3 +372,171 @@ thead,
     line-height: 1.4 !important;
     color: #000 !important;
 }
+/* ==========================================================
+   UX POLISH — TOOLTIPS, VISUAL HIERARCHY, HELPER TEXT
+   ========================================================== */
+
+/* Pure-CSS tooltip. Dodajte data-tooltip="Poruka" na bilo koji element.
+   Prikazuje se posle 400ms hover-a, sa profesionalnim slate-800 pozadinom.
+   Ne blokira click, ne pravi race sa focusom.
+*/
+[data-tooltip] {
+    position: relative;
+}
+[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%) translateY(4px);
+    background: #1e293b;
+    color: #f1f5f9;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: 0.01em;
+    padding: 6px 10px;
+    border-radius: 6px;
+    white-space: pre;
+    max-width: 260px;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.25);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    transition-delay: 0s;
+    z-index: 9999;
+}
+[data-tooltip]::before {
+    content: '';
+    position: absolute;
+    bottom: calc(100% + 2px);
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: #1e293b;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    z-index: 9999;
+}
+[data-tooltip]:hover::after,
+[data-tooltip]:hover::before,
+[data-tooltip]:focus-visible::after,
+[data-tooltip]:focus-visible::before {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+    transition-delay: 0.4s;
+}
+[data-tooltip-position="right"]::after {
+    bottom: auto;
+    top: 50%;
+    left: calc(100% + 8px);
+    transform: translateY(-50%) translateX(4px);
+}
+[data-tooltip-position="right"]::before {
+    bottom: auto;
+    top: 50%;
+    left: calc(100% + 2px);
+    transform: translateY(-50%);
+    border: 6px solid transparent;
+    border-right-color: #1e293b;
+    border-top-color: transparent;
+}
+[data-tooltip-position="right"]:hover::after,
+[data-tooltip-position="right"]:focus-visible::after {
+    transform: translateY(-50%) translateX(0);
+}
+
+/* Helper text ispod input polja (opciono) */
+.form-help {
+    display: block;
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 4px;
+    line-height: 1.4;
+}
+.form-help.form-help-error { color: #b91c1c; }
+.form-help.form-help-success { color: #047857; }
+
+/* Info ikonica koja pokreće tooltip */
+.help-hint {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 10px;
+    font-weight: 800;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    margin-left: 6px;
+    cursor: help;
+    user-select: none;
+    transition: all 0.15s ease;
+}
+.help-hint:hover { background: #cbd5e1; color: #1e293b; }
+
+/* Sekcije unutar Settings modala — jasnija hijerarhija */
+.settings-section-header {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin: 24px 0 12px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e2e8f0;
+}
+.settings-section-header h3 {
+    font-size: 15px;
+    font-weight: 700;
+    color: #0f172a;
+    margin: 0;
+    letter-spacing: -0.01em;
+}
+.settings-section-header .section-desc {
+    font-size: 12px;
+    color: #64748b;
+    margin: 0;
+}
+
+/* Prime action button — subtile depth for CTAs */
+.btn-primary {
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    transition: transform 0.08s ease, box-shadow 0.15s ease;
+}
+.btn-primary:hover {
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.15),
+                inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+.btn-primary:active { transform: translateY(1px); }
+
+/* Focus ring za accessibility — vidljiv kada korisnik navigira Tab-om */
+button:focus-visible, a:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, [role="button"]:focus-visible {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+}
+
+/* Skeleton loading za tabele — koristi .skeleton na td/div dok se učitava */
+.skeleton {
+    background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.4s ease-in-out infinite;
+    border-radius: 4px;
+    color: transparent;
+    user-select: none;
+    pointer-events: none;
+}
+@keyframes skeleton-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* Responzivne popravke za male ekrane */
+@media (max-width: 640px) {
+    .btn { min-height: 44px; padding: 10px 16px; }  /* iOS-standard 44px touch target */
+    [data-tooltip]::after { max-width: 90vw; white-space: normal; }
+    .settings-section-header { flex-direction: column; align-items: flex-start; gap: 2px; }
+}

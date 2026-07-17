@@ -281,7 +281,15 @@ function resetFilters() {
   }; 
 }
 
-function handleFilterChange(view, name, value) { state.activeFilters[view][name] = value; render(); }
+function handleFilterChange(view, name, value) {
+    // Defensive: ako view još nema svoj filter bucket (novi view, prazan state),
+    // inicijalizuj pre pisanja. Bez ovoga TypeError obara render pipeline i sva
+    // dugmad na stranici prestaju da odgovaraju.
+    if (!state.activeFilters) state.activeFilters = {};
+    if (!state.activeFilters[view]) state.activeFilters[view] = {};
+    state.activeFilters[view][name] = value;
+    render();
+}
 
 function createViewHeader(title, buttonText, onButtonClick) {
   const header = document.createElement('div');
@@ -354,7 +362,8 @@ function closeModal() {
   if(mdContent) mdContent.id = 'modal-content';
 }
 
-async function handleDelete(key, id) { 
+async function handleDelete(key, id) {
+    // 1) Integritet — sprečava brisanje entiteta koji su vezani za deal/offer/transaction.
     if (key === 'partners') {
         const hasDeals = state.data.deals.some(d => d.buyerId === id || d.supplierId === id || (d.associates && d.associates.some(a => a.partnerId === id)));
         const hasOffers = state.data.offers && state.data.offers.some(o => o.customerId === id);
@@ -370,12 +379,40 @@ async function handleDelete(key, id) {
         if (hasTxs) { alert(typeof t === 'function' ? t('misc.rejectAccountDelete') : 'Cannot delete account.'); return; }
     }
 
+    // 2) Potvrda korisnika — obavezan zaštitni sloj. Ranije se brisanje transakcije
+    //    dešavalo BEZ potvrde na klik "Obriši" u finansijskoj tabeli, što je
+    //    često dovodilo do slučajnog gubitka podataka. Sada koristimo askConfirm
+    //    modal (ili native confirm kao fallback).
+    const srLang = (typeof getLang === 'function' ? getLang() : 'sr') === 'sr';
+    const title = srLang ? 'Trajno obrisati?' : 'Delete permanently?';
+    const msg = srLang
+        ? 'Ova akcija se NE MOŽE poništiti. Zapis se briše iz baze.'
+        : 'This action CANNOT be undone. Record will be removed from the database.';
+    let yes;
+    if (typeof window.askConfirm === 'function') {
+        try {
+            yes = await window.askConfirm(title, msg, {
+                danger: true,
+                confirmText: srLang ? 'Obriši' : 'Delete'
+            });
+        } catch (_) { yes = window.confirm(msg); }
+    } else {
+        yes = window.confirm(msg);
+    }
+    if (!yes) return;
+
     try {
         await deleteItemFromServer(key, id);
-        state.data[key] = state.data[key].filter(it => it.id !== id); 
-        render(); 
+        state.data[key] = state.data[key].filter(it => it.id !== id);
+        render();
+        if (typeof showToast === 'function') {
+            showToast(srLang ? 'Zapis obrisan.' : 'Record deleted.', 'success');
+        }
     } catch(e) {
         console.error("Delete failed", e);
+        if (typeof showToast === 'function') {
+            showToast(srLang ? 'Greška pri brisanju.' : 'Delete failed.', 'error');
+        }
     }
 }
 
