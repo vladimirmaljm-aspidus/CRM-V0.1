@@ -49,6 +49,7 @@ PORTS_FILE = os.path.join(DATA_DIR, 'ports_world.json')
 AIRPORTS_FILE = os.path.join(DATA_DIR, 'airports_world.json')
 DISRUPTIONS_FILE = os.path.join(DATA_DIR, 'disruptions.json')
 PORT_OPS_FILE = os.path.join(DATA_DIR, 'port_operations.json')
+VESSEL_TYPES_FILE = os.path.join(DATA_DIR, 'vessel_types.json')
 
 
 # ==========================================================
@@ -118,6 +119,122 @@ def _port_ops_for(unlocode):
     merged['_source'] = 'default_average'
     merged['_tier'] = 'average'
     return merged
+
+def _load_vessels():
+    try:
+        with open(VESSEL_TYPES_FILE, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        return raw.get('classes', [])
+    except Exception:
+        return []
+
+
+def _match_vessels_for_cargo(profile, sea_distance_km):
+    """Vraća listu vessel klasa koje su tehnički prikladne za dati cargo
+    profil, sortiranu po fitness score-u. Score kombinuje:
+      - kapacitet vs teret (previše veliki brod = niski score jer košta više po toni)
+      - kategoriju (dry/tanker/gas/roro/container) vs cargo container_type
+      - geared status (bitno za congested/male luke bez shore cranes)
+      - trans-oceanski domet (VLOC/Capesize za ultra-long distance)
+    """
+    vessels = _load_vessels()
+    if not vessels: return []
+
+    ct = profile.get('container_type', '').lower()
+    tons = float(profile.get('weight_tons') or 0)
+    is_bulk_dry = ct in ('bulk_dry', 'breakbulk', 'oog')
+    is_bulk_liquid_oil = ct in ('bulk_liquid',)
+    is_gas = ct in ('lng', 'lpg')
+    is_container = ct in ('teu', 'feu', 'reefer', 'lcl', 'parcel')
+
+    hits = []
+    for v in vessels:
+        cat = v.get('category', '')
+        # kategorijski filter — bulk cargo ne ide na tankerima itd
+        if is_container and cat != 'container': continue
+        if is_bulk_dry and cat not in ('dry_bulk', 'specialized'): continue
+        if is_bulk_liquid_oil and cat != 'tanker': continue
+        if is_gas and cat != 'gas_carrier': continue
+
+        # Kapacitet filter — brod mora imati dovoljno DWT/TEU/CBM
+        dwt_max = v.get('dwt_max') or v.get('dwt_typical') or 0
+        teu_max = v.get('teu_capacity') or 0
+        cbm_max = v.get('cbm_capacity') or 0
+        capacity_ok = False
+        capacity_use = 0.0
+
+        if cat == 'container':
+            containers = profile.get('container_count') or max(1, int(tons / 20))
+            # FEU zauzima 2× TEU sloter — moramo pretvoriti u TEU-ekvivalent
+            # pre poređenja sa teu_capacity, inače feeder od 1000 TEU deluje
+            # dovoljan za 500 FEU (u stvarnosti bi trebalo 2× više).
+            teu_equiv = containers * (2 if ct == 'feu' else 1)
+            if teu_max >= teu_equiv:
+                capacity_ok = True
+                capacity_use = teu_equiv / teu_max
+        elif cat in ('dry_bulk', 'specialized'):
+            if dwt_max >= tons or (v.get('id') == 'heavy_lift' and profile.get('oversize')):
+                capacity_ok = True
+                capacity_use = tons / max(dwt_max, 1)
+        elif cat == 'tanker':
+            if dwt_max >= tons:
+                capacity_ok = True
+                capacity_use = tons / max(dwt_max, 1)
+        elif cat == 'gas_carrier':
+            # Za LPG/LNG korisnik unosi volume_m3 (npr. m³ tečnosti). Ako je 0,
+            # vratimo natrag jer gas carrier ne sluzi za crude/dry bulk.
+            vol = profile.get('volume_m3') or 0
+            if cbm_max and vol > 0 and cbm_max >= vol:
+                capacity_ok = True
+                capacity_use = vol / max(cbm_max, 1)
+        elif cat == 'roro':
+            if profile.get('oversize'):
+                capacity_ok = True
+                capacity_use = 0.3
+
+        if not capacity_ok: continue
+
+        # Score bazira se na utilization sweet-spot 40-80%.
+        #  < 10%  = ogroman brod za mali teret (ekonomski loše)
+        #  10-40% = pomalo veliki (score neutral)
+        #  40-80% = SWEET SPOT (booster +25)
+        #  80-95% = tesno (mali booster)
+        #  > 95%  = na granici kapaciteta (rizično — score -15)
+        score = 60
+        if capacity_use >= 0.95: score -= 15
+        elif 0.8 <= capacity_use < 0.95: score += 10
+        elif 0.4 <= capacity_use < 0.8: score += 25    # sweet spot
+        elif 0.1 <= capacity_use < 0.4: score -= 5
+        elif capacity_use < 0.1: score -= 25            # brod ogroman za teret
+
+        if v.get('geared'): score += 8                  # geared = fleksibilno na svaku luku
+        if sea_distance_km and sea_distance_km > 12000 and (dwt_max or 0) < 40000:
+            score -= 15                                 # mali brodovi ne za ultra-long
+        if profile.get('oversize') and v.get('id') == 'heavy_lift': score += 30
+
+        cargo_days = 0
+        rate = v.get('loading_rate_tph') or 0
+        if rate and tons:
+            cargo_days = round((tons / rate) * 2 / 24, 2)  # utovar + istovar u danima
+
+        hits.append({
+            'id': v['id'], 'name': v['name'], 'category': cat,
+            'dwt': dwt_max, 'teu': teu_max, 'cbm': cbm_max,
+            'draft_m': v.get('draft_m'), 'loa_m': v.get('loa_m'), 'beam_m': v.get('beam_m'),
+            'geared': v.get('geared'), 'cranes': v.get('cranes'),
+            'loading_rate_tph': v.get('loading_rate_tph'),
+            'discharge_rate_tph': v.get('discharge_rate_tph'),
+            'typical_speed_knots': v.get('typical_speed_knots'),
+            'typical_cargo': v.get('typical_cargo') or [],
+            'notes': v.get('notes') or '',
+            'capacity_utilization': round(capacity_use, 3),
+            'estimated_load_unload_days': cargo_days,
+            'fitness_score': max(0, min(100, score)),
+        })
+
+    hits.sort(key=lambda x: -x['fitness_score'])
+    return hits[:5]  # top 5 candidates
+
 
 def _load_disruptions():
     try:
@@ -489,6 +606,79 @@ def portal_search_locations():
     return jsonify({'hits': _do_search(payload)})
 
 
+# ==========================================================
+#  LIVE MARKET DATA (opciono) — Baltic Dry Index, IMB Piracy, GDACS
+#  Ovi feed-ovi su besplatni i javno dostupni. Cache 4h u memoriji da ne
+#  bismo forsirali external hit-ove.
+# ==========================================================
+
+_market_cache = {'ts': 0, 'data': None}
+
+def _fetch_live_market_data():
+    """Vraća {baltic_dry_index, bunker_price_ifo, freight_multiplier, source}.
+    freight_multiplier = 1.0 na baseline (nema podataka), skalira sea cost estimate.
+    Cache 4h. Ako network fail-uje, vraća baseline."""
+    now = time.time()
+    if _market_cache['data'] and (now - _market_cache['ts']) < 4 * 3600:
+        return _market_cache['data']
+
+    import urllib.request as _u
+    baseline = {'baltic_dry_index': None, 'bunker_price_ifo': None,
+                'freight_multiplier': 1.0, 'source': 'baseline (no network)'}
+    try:
+        # Baltic Dry Index je slobodno dostupan preko investing.com-style feed-a
+        # ali oni ne pružaju stable JSON API. Umesto toga koristimo trading-economics
+        # free tier endpoint (community mirror).
+        req = _u.Request(
+            'https://www.trading-economics.com/commodity/baltic',
+            headers={'User-Agent': 'AspidusCRM/1.0 (+logistics)'}
+        )
+        with _u.urlopen(req, timeout=6) as r:
+            html = r.read()[:200000].decode('utf-8', 'ignore')
+            # Ekstraktujemo tekst poput 'Baltic Exchange Dry Index ... 1900'
+            import re as _re
+            m = _re.search(r'([Bb]altic[^0-9]{0,60})([\d,]{3,6})', html)
+            if m:
+                idx = int(m.group(2).replace(',', ''))
+                baseline['baltic_dry_index'] = idx
+                # Historijski median ~1500. Skaliraj sea cost proporcionalno.
+                baseline['freight_multiplier'] = round(idx / 1500, 2)
+                baseline['source'] = 'trading-economics'
+                _market_cache['data'] = baseline
+                _market_cache['ts'] = now
+                return baseline
+    except Exception:
+        logger.debug('live market fetch failed', exc_info=True)
+
+    _market_cache['data'] = baseline
+    _market_cache['ts'] = now
+    return baseline
+
+
+@logistics_bp.route('/api/logistics/market', methods=['GET'])
+@login_required
+def get_market_data():
+    return jsonify(_fetch_live_market_data())
+
+
+@logistics_bp.route('/api/portal/logistics/market', methods=['GET'])
+def portal_get_market_data():
+    return jsonify(_fetch_live_market_data())
+
+
+@logistics_bp.route('/api/logistics/vessels', methods=['GET'])
+@login_required
+def list_vessels():
+    """Lista svih vessel klasa iz baze. Frontend ih koristi za pregled flote
+    i za manuelni override predloga na sea planu."""
+    return jsonify({'classes': _load_vessels()})
+
+
+@logistics_bp.route('/api/portal/logistics/vessels', methods=['GET'])
+def portal_list_vessels():
+    return jsonify({'classes': _load_vessels()})
+
+
 @logistics_bp.route('/api/logistics/disruptions', methods=['GET'])
 @login_required
 def get_disruptions():
@@ -741,14 +931,21 @@ def _cost_estimate_usd(mode, plan, profile):
         return round(base * dist_factor * wt_kg, 0)
     if mode == 'sea':
         ct = profile['container_type']
+        # Baltic Dry Index utiče na bulk freight cene. Za container tržište
+        # analog je SCFI ali za sada uzimamo isti multiplier.
+        try:
+            mkt = _fetch_live_market_data()
+            m = float(mkt.get('freight_multiplier') or 1.0)
+        except Exception:
+            m = 1.0
         if ct in ('teu', 'feu', 'reefer'):
             per_container = 3200 if ct == 'teu' else 4200 if ct == 'feu' else 5200
-            return round(per_container * max(1, profile['container_count']), 0)
+            return round(per_container * max(1, profile['container_count']) * m, 0)
         elif ct == 'lcl' or profile['volume_m3'] < 15:
-            return round(60 * max(1, profile['volume_m3']), 0)
+            return round(60 * max(1, profile['volume_m3']) * m, 0)
         else:
-            # bulk: ~40 $/ton port-to-port
-            return round(40 * profile['weight_tons'], 0)
+            # bulk: ~40 $/ton port-to-port, direktno skalirano BDI-jem
+            return round(40 * profile['weight_tons'] * m, 0)
     if mode == 'road':
         # 1.60 $/km × trucks needed
         trucks = max(1, int((profile['weight_tons'] + 23) // 24))
@@ -919,6 +1116,8 @@ def _do_plan():
         plan_sea['fitness_score'] = score
         plan_sea['fitness_reasons'] = reasons
         plan_sea['estimated_cost_usd'] = _cost_estimate_usd('sea', plan_sea, profile)
+        # Predloži tipove brodova koji su tehnički prikladni za ovaj cargo profil
+        plan_sea['vessel_recommendations'] = _match_vessels_for_cargo(profile, sea_km)
         plans.append(plan_sea)
 
     # --- 3. ROAD → AIR → ROAD --------------------------------------------

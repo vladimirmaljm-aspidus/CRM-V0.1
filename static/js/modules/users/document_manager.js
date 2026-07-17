@@ -29,11 +29,15 @@ function renderDocumentManagerView() {
           <p class="text-sm text-[var(--muted)] mt-1">${escapeHtml(desc)}</p>
         </div>
         <div class="flex flex-wrap gap-2">
+          <button id="dm-verify" class="btn bg-emerald-600 hover:bg-emerald-700 text-white text-sm" title="Kriptografski verifikuj vraćen/potpisan PDF">🔐 Verify PDF integrity</button>
           <button id="dm-refresh" class="btn bg-[var(--panel)] border border-[var(--border)] text-main text-sm">🔄 Refresh</button>
           <button id="dm-bulk-zip" class="btn bg-indigo-600 text-white text-sm">📦 Download all (ZIP)</button>
           <button id="dm-delete-selected" class="btn bg-red-600 text-white text-sm hidden">🗑 Delete selected</button>
         </div>
       </div>
+
+      <input type="file" id="dm-verify-file" accept="application/pdf" style="display:none;">
+      <div id="dm-verify-result" class="hidden mb-6 rounded-2xl p-5 border shadow-sm"></div>
 
       <!-- Filters -->
       <div class="mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -270,6 +274,72 @@ function renderDocumentManagerView() {
         // Direct-download link — browser triggers save-as
         window.location.href = '/api/admin/documents/bulk_zip' + (q ? '?' + q : '');
     });
+
+    // ---------- PDF INTEGRITY VERIFICATION ----------
+    const verifyBtn = document.getElementById('dm-verify');
+    const verifyInp = document.getElementById('dm-verify-file');
+    const verifyRes = document.getElementById('dm-verify-result');
+    if (verifyBtn && verifyInp && verifyRes) {
+        verifyBtn.addEventListener('click', () => verifyInp.click());
+        verifyInp.addEventListener('change', async (e) => {
+            const file = e.target.files && e.target.files[0];
+            if (!file) return;
+            const originalBtn = verifyBtn.innerHTML;
+            verifyBtn.disabled = true;
+            verifyBtn.innerHTML = '⏳ Analyzing…';
+            verifyRes.classList.add('hidden');
+            try {
+                const fd = new FormData();
+                fd.append('file', file);
+                const r = await fetch('/api/documents/verify_upload', { method: 'POST', body: fd });
+                const d = await r.json();
+                const status = d.status || 'UNKNOWN';
+                const bg = status === 'AUTHENTIC' ? 'bg-emerald-50 border-emerald-200' :
+                          status === 'MODIFIED' ? 'bg-red-50 border-red-200' :
+                          'bg-amber-50 border-amber-200';
+                const iconChar = status === 'AUTHENTIC' ? '✅' : status === 'MODIFIED' ? '⚠️' : '❓';
+                const titleCol = status === 'AUTHENTIC' ? 'text-emerald-800' :
+                                status === 'MODIFIED' ? 'text-red-800' : 'text-amber-800';
+                const bindingRow = d.document && d.document.bindingHash
+                    ? `<div class="text-xs font-mono text-slate-500 mt-1"><b>Binding hash:</b> ${d.document.bindingHash.slice(0,32)}…</div>` : '';
+                const shortVerRow = d.document && d.document.shortVerification
+                    ? `<div class="text-xs font-mono text-slate-500 mt-1"><b>Short verification:</b> ${d.document.shortVerification}</div>` : '';
+                const offerSnap = d.offer_snapshot ? `
+                    <div class="mt-3 pt-3 border-t border-slate-200">
+                        <div class="text-xs font-bold text-slate-600 uppercase tracking-wider mb-1">Ponuda u našoj bazi (trenutno stanje)</div>
+                        <div class="text-sm text-slate-700">
+                            Offer <b>${escapeHtml(d.offer_snapshot.offerNo || '')}</b> ·
+                            ${d.offer_snapshot.sellingPrice || '-'} ${escapeHtml(d.offer_snapshot.currency || '')} ·
+                            qty ${d.offer_snapshot.quantity || '-'}
+                        </div>
+                    </div>` : '';
+                verifyRes.className = `mb-6 rounded-2xl p-5 border shadow-sm ${bg}`;
+                verifyRes.classList.remove('hidden');
+                verifyRes.innerHTML = `
+                    <div class="flex items-start gap-4">
+                        <div class="text-4xl">${iconChar}</div>
+                        <div class="flex-1">
+                            <div class="text-lg font-black ${titleCol} mb-1">${status}</div>
+                            <div class="text-sm text-slate-700">${escapeHtml(d.message || '')}</div>
+                            <div class="text-xs font-mono text-slate-500 mt-3 break-all"><b>File SHA-256:</b> ${d.computed_hash || ''}</div>
+                            ${d.expected_hash ? `<div class="text-xs font-mono text-red-700 mt-1 break-all"><b>Očekivani hash:</b> ${d.expected_hash}</div>` : ''}
+                            ${d.document ? `<div class="text-xs text-slate-600 mt-2"><b>Fajl u bazi:</b> ${escapeHtml(d.document.fileName || '')} · <b>Kreiran:</b> ${escapeHtml(d.document.createdAt || '')}</div>` : ''}
+                            ${bindingRow}
+                            ${shortVerRow}
+                            ${offerSnap}
+                        </div>
+                    </div>`;
+            } catch (err) {
+                verifyRes.classList.remove('hidden');
+                verifyRes.className = 'mb-6 rounded-2xl p-5 border shadow-sm bg-red-50 border-red-200';
+                verifyRes.innerHTML = `<div class="text-red-800 font-bold">Verification error: ${escapeHtml(err.message || err)}</div>`;
+            } finally {
+                verifyBtn.disabled = false;
+                verifyBtn.innerHTML = originalBtn;
+                verifyInp.value = '';
+            }
+        });
+    }
 
     document.getElementById('dm-delete-selected').addEventListener('click', async () => {
         const items = [...document.querySelectorAll('.dm-select:checked')]

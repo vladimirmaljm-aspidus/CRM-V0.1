@@ -293,6 +293,10 @@ def build_offer_pdf(offer, company=None, settings=None):
         subject=_meta['subject'],
         keywords=_meta['keywords'],
         creator=_meta['creator'],
+        # invariant=True čini output DETERMINISTIC — nema random /ID u trailer-u,
+        # nema wall-clock timestamp-a. Bez ovoga SHA-256 istog PDF-a se menja pri
+        # svakom generisanju, što lomi integrity verification workflow.
+        invariant=True,
     )
 
     story = []
@@ -640,11 +644,15 @@ def build_offer_pdf(offer, company=None, settings=None):
         canvas.drawRightString(A4[0] - 15*mm, 8*mm,
                                f"Page {canvas.getPageNumber()}")
 
-        # Document date — levo dole (za štampu bez ekrana)
+        # Document date — levo dole (za štampu bez ekrana).
+        # KRITIČNO: NIKAD ne koristi datetime.now() ovde. Ako se PDF svaki put
+        # generiše sa trenutnim vremenom, SHA-256 se menja svaki generisanjem
+        # → hash-based integrity check je slomljen. Umesto toga vezujemo za
+        # offer.date koji je deterministicno vreme kreiranja ponude.
+        stamp = (offer.get('date') or offer.get('createdAt') or '')[:16]
         canvas.setFont('Helvetica', 7)
         canvas.setFillColor(colors.HexColor('#98a2b3'))
-        canvas.drawString(15*mm, 8*mm,
-                          f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+        canvas.drawString(15*mm, 8*mm, f"Issued: {stamp}" if stamp else "")
 
         canvas.restoreState()
 
@@ -652,23 +660,59 @@ def build_offer_pdf(offer, company=None, settings=None):
     return buf.getvalue()
 
 
+def _sha256_bytes(data):
+    """SHA-256 nad proizvoljnim bajtovima, hex encoded u uppercase."""
+    return hashlib.sha256(data).hexdigest().upper()
+
+
 def save_offer_pdf_to_vault(offer):
-    """Upisuje samo REFERENCU u shared_documents; PDF se generiše on-demand.
+    """Snima referencu na dokument u shared_documents + BINDING HASH nad
+    kanonizovanim podacima ponude.
 
-    Ranije: server je pravio PDF na disk (uploads/) i vault upis sa file_url.
-    Sad: samo vault upis sa sourceOfferId='<offer_id>' i sourceType='OFFER'.
-    Kada klijent otvori dokument u portalu, /api/portal/document/<token>/<doc_id>
-    endpoint prepozna sourceOfferId i regeneriše PDF u memoriji iz aktuelnih
-    podataka o ponudi u bazi. Prednosti:
-      - nema akumulacije PDF fajlova na disku,
-      - PDF uvek reflektuje najnovije podatke o ponudi (ako admin ispravi
-        cenu/logistiku, klijent vidi tačno stanje pri sledećem otvaranju),
-      - preview u modalu pre nego što klijent skine "hard copy".
+    Binding hash je SHA-256 nad JSON snapshot-om ključnih polja koja
+    definišu tekst dokumenta: cena, količine, kupac, uslovi plaćanja,
+    incoterm, banke, itd. Ovim se garantuje kriptografska veza:
+      * ako klijent kasnije pošalje potpisan PDF, mi ga generišemo iz iste
+        ponude i uporedimo binding hash → identičan = sadržaj netaknut;
+      * pored toga sam PDF fajl dobija svoj content hash (SHA-256 nad
+        bajtovima) koji se upisuje u shared_documents.pdfContentHash pri
+        prvom generisanju; svaka izmena PDF-a mesto tog hash-a više se
+        neće poklopiti.
 
-    Vraca (doc_id, None) — drugi element je nasleđen (file_url), sada nema
-    smisla; pozivaoci ga ignorišu."""
+    Vraca (doc_id, None)."""
     doc_id = f"doc_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    # 1) Generiši PDF u memoriji i izračunaj content hash
+    try:
+        pdf_bytes = build_offer_pdf(offer)
+        content_hash = _sha256_bytes(pdf_bytes)
+    except Exception as e:
+        logger.error(f"Failed to build PDF for hash: {e}", exc_info=True)
+        content_hash = None
+
+    # 2) Kanonizovan snapshot za binding hash — samo POLJA KOJA IMAJU
+    #    TEKSTUALNU REFLEKSIJU U DOKUMENTU. Redosled je fiksan.
+    canonical = {
+        'offerId': offer.get('id'),
+        'offerNo': offer.get('offerNo'),
+        'date': offer.get('date'),
+        'validUntil': offer.get('validUntil'),
+        'customerId': offer.get('customerId'),
+        'productId': offer.get('productId'),
+        'quantity': offer.get('quantity'),
+        'unit': offer.get('unit'),
+        'sellingPrice': offer.get('sellingPrice') or offer.get('price'),
+        'currency': offer.get('currency'),
+        'incoterm': offer.get('incoterm'),
+        'paymentTerms': offer.get('paymentTerms'),
+        'pol': offer.get('pol'), 'pod': offer.get('pod'),
+        'items': offer.get('items') or [],
+        'paymentBankIdx': offer.get('paymentBankIdx'),
+    }
+    binding_seed = json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    binding_hash = _sha256_bytes(binding_seed)
+
     doc = {
         'id': doc_id,
         'partnerId': offer.get('customerId'),
@@ -678,6 +722,11 @@ def save_offer_pdf_to_vault(offer):
         'sourceOfferId': offer.get('id'),
         'sourceType': 'OFFER',
         'createdAt': now,
+        # Integrity fields
+        'pdfContentHash': content_hash,       # SHA-256 nad bajtovima PDF-a
+        'bindingHash': binding_hash,          # SHA-256 nad kanonizovanim poljima
+        'shortVerification': _make_verification_hash(offer.get('id'), offer.get('offerNo')),
+        'hashAlgorithm': 'SHA-256',
     }
     try:
         with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
