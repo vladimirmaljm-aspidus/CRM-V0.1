@@ -439,7 +439,26 @@ def submit_rfq(token):
         except (TypeError, ValueError):
             return 0.0
 
+    # Ako klijent traži ponudu za KONKRETAN proizvod iz kataloga (klik na "Request quote"
+    # sa katalog kartice), prosleđuje productId. Validiraćemo da postoji u bazi i da je
+    # taj proizvod dostupan klijentu (nalazi se u partner.portalVisibleProducts).
+    raw_product_id = str(demand_data.get("productId") or "").strip()
+    linked_product_id = None
+    linked_product = None
+    if raw_product_id:
+        c.execute("SELECT data FROM products WHERE id=?", (raw_product_id,))
+        prow = c.fetchone()
+        if prow:
+            pdata = safe_parse(prow[0])
+            if isinstance(pdata, dict):
+                visible = partner.get('portalVisibleProducts')
+                if not isinstance(visible, list) or raw_product_id in visible:
+                    linked_product_id = raw_product_id
+                    linked_product = pdata
+
     product_name = str(demand_data.get("productName", "")).strip()[:100]
+    if not product_name and linked_product:
+        product_name = str(linked_product.get('name', '')).strip()[:100]
     if not product_name:
         product_name = "Unspecified Commodity"
 
@@ -449,9 +468,11 @@ def submit_rfq(token):
         "id": demand_id,
         "customerId": partner_id,
         "buyerId": partner_id,
-        "productId": None,
-        "isNewProduct": True,
+        "productId": linked_product_id,
+        "isNewProduct": linked_product_id is None,
         "productName": product_name,
+        "hsCode": (linked_product or {}).get('hsCode') if linked_product else None,
+        "unit": (linked_product or {}).get('unit') if linked_product else demand_data.get('unit'),
         "quantity": _safe_num(demand_data.get("quantity")),
         "targetPrice": _safe_num(demand_data.get("targetPrice")),
         "notes": str(demand_data.get("notes", "")).strip()[:1000],
