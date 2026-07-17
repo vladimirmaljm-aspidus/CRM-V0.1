@@ -294,9 +294,22 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
             renderItemsList();
             updateDetails();
         }));
-        document.querySelectorAll('.item-qty').forEach(el => el.addEventListener('input', e => { currentItems[e.target.dataset.idx].quantity = parseFloat(e.target.value) || 0; updateDetails(); }));
-        document.querySelectorAll('.item-price').forEach(el => el.addEventListener('input', e => { currentItems[e.target.dataset.idx].price = parseFloat(e.target.value) || 0; renderItemsList(); updateDetails(); }));
-        document.querySelectorAll('.item-unit').forEach(el => el.addEventListener('change', e => { currentItems[e.target.dataset.idx].unit = e.target.value; updateDetails(); }));
+        // KRITIČNO: `input` handler NIKAD ne sme da poziva renderItemsList()
+        // jer to re-kreira DOM i uništi cursor u polju u koje korisnik trenutno
+        // kuca. Umesto toga ažuriramo samo state i totale (updateDetails).
+        // renderItemsList se poziva tek na change (blur), delete ili add.
+        document.querySelectorAll('.item-qty').forEach(el => el.addEventListener('input', e => {
+            currentItems[e.target.dataset.idx].quantity = parseFloat(e.target.value) || 0;
+            updateDetails();
+        }));
+        document.querySelectorAll('.item-price').forEach(el => el.addEventListener('input', e => {
+            currentItems[e.target.dataset.idx].price = parseFloat(e.target.value) || 0;
+            updateDetails();
+        }));
+        document.querySelectorAll('.item-unit').forEach(el => el.addEventListener('change', e => {
+            currentItems[e.target.dataset.idx].unit = e.target.value;
+            updateDetails();
+        }));
         document.querySelectorAll('.item-del').forEach(el => el.addEventListener('click', e => { currentItems.splice(e.target.dataset.idx, 1); renderItemsList(); updateDetails(); }));
     }
 

@@ -141,20 +141,145 @@ def _send(recipient, subject, html_body, plain_body, attachments=None):
         msg.attach(MIMEText(plain_body or subject, "plain", "utf-8"))
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
+    # Retry logika sa exponential backoff. Gmail/PythonAnywhere SMTP zna da
+    # baci prolazne TLS/handshake greške (SMTPServerDisconnected, socket.timeout,
+    # SMTPResponseException 421/451). Bez retry-ja, ti korisnički mejlovi
+    # jednostavno nestanu. Pokušavamo 4 puta sa 2s → 4s → 8s pauzama; ako
+    # nakon toga i dalje pada, upisujemo u email_queue tabelu koju cron
+    # kasnije retry-uje. Cilj: mejl NIKAD ne izgubljen tiho.
+    import time as _time
+    last_err = None
+    for attempt in range(4):
+        server = None
+        try:
+            if security == "ssl" or server_port == 465:
+                server = smtplib.SMTP_SSL(server_host, server_port, timeout=20)
+            else:
+                server = smtplib.SMTP(server_host, server_port, timeout=20)
+                server.ehlo()
+                if security != "none":
+                    server.starttls()
+                    server.ehlo()
+            server.login(user, pw)
+            server.send_message(msg)
+            server.quit()
+            logger.info(f"SMTP send OK to {recipient} (attempt {attempt+1})")
+            return True, None
+        except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError,
+                smtplib.SMTPResponseException, TimeoutError, OSError) as e:
+            last_err = str(e)
+            logger.warning(f"SMTP transient error to {recipient} attempt {attempt+1}: {e}")
+            try:
+                if server: server.close()
+            except Exception: pass
+            if attempt < 3:
+                _time.sleep(2 ** attempt)  # 1, 2, 4 s
+                continue
+            # Poslednji pokušaj propao — parkiraj u queue umesto da nestane
+            try: _park_in_queue(recipient, subject, plain_body, html_body,
+                                attachments, last_err)
+            except Exception as qerr:
+                logger.error(f'email queue write failed: {qerr}')
+            return False, f"TRANSIENT_AFTER_RETRIES: {last_err}"
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error(f"SMTP AUTH failed: {e} — check smtpUser/smtpPass in Settings.")
+            return False, "SMTP_AUTH_FAILED"
+        except smtplib.SMTPRecipientsRefused as e:
+            logger.error(f"SMTP recipient refused: {e}")
+            return False, f"RECIPIENT_REFUSED: {recipient}"
+        except Exception as e:
+            last_err = str(e)
+            logger.error(f"SMTP send permanent error to {recipient}: {e}")
+            try: _park_in_queue(recipient, subject, plain_body, html_body,
+                                attachments, last_err)
+            except Exception: pass
+            return False, str(e)
+    return False, last_err
+
+
+def _park_in_queue(recipient, subject, plain_body, html_body, attachments, error):
+    """Snima neuspeli mejl u email_queue tabelu tako da ga cron worker
+    kasnije može retry-ovati. Cron radi svakih 60s dok queue ne bude prazna."""
+    import sqlite3, json, uuid
+    from datetime import datetime, timezone
+    from config import DB_FILE
     try:
-        if security == "ssl" or server_port == 465:
-            server = smtplib.SMTP_SSL(server_host, server_port, timeout=15)
-        else:
-            server = smtplib.SMTP(server_host, server_port, timeout=15)
-            if security != "none":
-                server.starttls()
-        server.login(user, pw)
-        server.send_message(msg)
-        server.quit()
-        return True, None
+        conn = sqlite3.connect(DB_FILE, timeout=15)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('''CREATE TABLE IF NOT EXISTS email_queue (
+            id TEXT PRIMARY KEY,
+            recipient TEXT NOT NULL,
+            subject TEXT,
+            plain_body TEXT,
+            html_body TEXT,
+            attachments_ref TEXT,
+            attempts INTEGER DEFAULT 0,
+            last_error TEXT,
+            queued_at TEXT NOT NULL,
+            next_retry_at TEXT,
+            status TEXT DEFAULT 'pending'
+        )''')
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        # Attachmente ne pakujemo (mogu biti veliki) — zapisujemo samo
+        # metadata; sistem tehnički ne pokušava re-send attachmenata iz queue-a,
+        # jer je klijent PRVI put dobio failure. Admin dobija reminder.
+        atts_meta = json.dumps([{'filename': a.get('filename'),
+                                  'size': len(a.get('data') or b'')}
+                                for a in (attachments or [])])
+        conn.execute(
+            'INSERT INTO email_queue (id, recipient, subject, plain_body, '
+            'html_body, attachments_ref, attempts, last_error, queued_at, '
+            'next_retry_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (str(uuid.uuid4()), recipient, subject, plain_body, html_body,
+             atts_meta, 3, error, now, now, 'pending' if not attachments else 'needs_admin')
+        )
+        conn.commit()
+        conn.close()
+        logger.info(f'Parked mail to {recipient} in queue for retry')
     except Exception as e:
-        logger.error(f"SMTP send failed to {recipient}: {e}")
-        return False, str(e)
+        logger.error(f'_park_in_queue failed: {e}')
+
+
+def process_email_queue(max_batch=10):
+    """Cron worker — pokušava retry svih pending mejlova. Preskače one koji
+    su probali > 8 puta ili čekaju attachmente. Vraća statistiku."""
+    import sqlite3, json
+    from datetime import datetime, timezone, timedelta
+    from config import DB_FILE
+    now = datetime.now(timezone.utc)
+    stats = {'processed': 0, 'ok': 0, 'failed': 0, 'skipped': 0}
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=15)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT * FROM email_queue WHERE status='pending' AND next_retry_at <= ? "
+            "ORDER BY queued_at ASC LIMIT ?",
+            (now.isoformat().replace('+00:00', 'Z'), max_batch)
+        )
+        rows = cur.fetchall()
+        for r in rows:
+            stats['processed'] += 1
+            if r['attempts'] >= 8:
+                conn.execute("UPDATE email_queue SET status='abandoned' WHERE id=?", (r['id'],))
+                stats['skipped'] += 1
+                continue
+            ok, err = _send_email(r['recipient'], r['subject'],
+                                   r['plain_body'], r['html_body'], attachments=None)
+            if ok:
+                conn.execute("UPDATE email_queue SET status='sent' WHERE id=?", (r['id'],))
+                stats['ok'] += 1
+            else:
+                next_r = (now + timedelta(minutes=2 ** min(r['attempts'] + 1, 6))).isoformat().replace('+00:00', 'Z')
+                conn.execute(
+                    "UPDATE email_queue SET attempts=?, last_error=?, next_retry_at=? WHERE id=?",
+                    (r['attempts'] + 1, err, next_r, r['id'])
+                )
+                stats['failed'] += 1
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f'process_email_queue error: {e}')
+    return stats
 
 
 # ==========================================================

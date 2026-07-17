@@ -122,3 +122,48 @@ def test_smtp():
     except Exception as e:
         log_audit('ERROR', 'system', f'SMTP Test nije uspeo (Ostalo): {str(e)}')
         return jsonify({"error": f"SMTP Error: {str(e)}"}), 400
+
+@comms_bp.route('/api/comms/email_queue', methods=['GET'])
+@login_required
+def email_queue_view():
+    """Admin pregled pending/failed mejlova sa mogucnoscu manuelnog retry-ja."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    import sqlite3
+    from config import DB_FILE
+    try:
+        conn = sqlite3.connect(DB_FILE, timeout=10)
+        conn.row_factory = sqlite3.Row
+        # Kreiraj tabelu ako još ne postoji (prvi start)
+        conn.execute('''CREATE TABLE IF NOT EXISTS email_queue (
+            id TEXT PRIMARY KEY, recipient TEXT NOT NULL, subject TEXT,
+            plain_body TEXT, html_body TEXT, attachments_ref TEXT,
+            attempts INTEGER DEFAULT 0, last_error TEXT,
+            queued_at TEXT NOT NULL, next_retry_at TEXT, status TEXT DEFAULT 'pending'
+        )''')
+        rows = conn.execute(
+            'SELECT id, recipient, subject, attempts, last_error, queued_at, '
+            'next_retry_at, status FROM email_queue ORDER BY queued_at DESC LIMIT 200'
+        ).fetchall()
+        conn.close()
+        return jsonify({
+            'items': [{
+                'id': r['id'], 'recipient': r['recipient'], 'subject': r['subject'],
+                'attempts': r['attempts'], 'lastError': r['last_error'],
+                'queuedAt': r['queued_at'], 'nextRetryAt': r['next_retry_at'],
+                'status': r['status'],
+            } for r in rows]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@comms_bp.route('/api/comms/email_queue/retry_now', methods=['POST'])
+@login_required
+def email_queue_retry_now():
+    """Manuelni trigger — pokreni retry čitave queue odmah."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    from utils_email import process_email_queue
+    stats = process_email_queue(max_batch=100)
+    return jsonify(stats)
