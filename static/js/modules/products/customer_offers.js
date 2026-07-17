@@ -898,20 +898,47 @@ function installOfferLogisticsDelegatedHandler() {
             return;
         }
 
-        // Kupac (odredište)
-        const buyer = (state.data.customers || []).find(c => c.id === offer.customerId);
-        // Dobavljač (polazište) — nađemo iz proizvoda, ako je pod-item ponude
+        // Svi partneri (kupci + dobavljači) su u state.data.partners.
+        // Kupac (odredište): partner sa istim id kao offer.customerId.
+        // Dobavljač (polazište): iz product.supplyOffers[0].supplierId ako postoji,
+        //   inače iz product.supplierId, inače pad na company address (naša firma).
+        const allPartners = state.data.partners || [];
+        const buyer = allPartners.find(c => c.id === offer.customerId);
+
         const productId = offer.productId || (offer.items && offer.items[0] && offer.items[0].productId);
         const product = productId ? (state.data.products || []).find(p => p.id === productId) : null;
-        const supplierId = product && (product.supplierId || product.supplier_id);
-        const supplier = supplierId ? (state.data.suppliers || []).find(s => s.id === supplierId) : null;
+        let supplier = null;
+        if (product) {
+            const supplyOffers = product.supplyOffers || [];
+            const supIdx = offer.items && offer.items[0] && offer.items[0].supplyOfferIndex;
+            const supplyOffer = (typeof supIdx === 'number' && supplyOffers[supIdx]) ? supplyOffers[supIdx] : supplyOffers[0];
+            const supId = (supplyOffer && supplyOffer.supplierId) || product.supplierId;
+            if (supId) supplier = allPartners.find(p => p.id === supId);
+        }
+
+        // Formatiraj label — koristi ime + adresu ili samo adresu.
+        // Ako je partner.address DICT, izvuci street/city/country komponente.
+        const partnerToLabel = (p) => {
+            if (!p) return '';
+            const parts = [p.companyName || p.name];
+            const addr = p.address;
+            if (typeof addr === 'string' && addr) parts.push(addr);
+            else if (addr && typeof addr === 'object') {
+                if (addr.street) parts.push(addr.street);
+                if (addr.city) parts.push(addr.city);
+                if (addr.country) parts.push(addr.country);
+            } else {
+                if (p.city) parts.push(p.city);
+                if (p.country) parts.push(p.country);
+            }
+            return parts.filter(Boolean).join(', ');
+        };
 
         const originLabel = supplier
-            ? [supplier.name, supplier.address, supplier.city, supplier.country].filter(Boolean).join(', ')
-            : (state.company && [state.company.address, state.company.city, state.company.country].filter(Boolean).join(', ')) || '';
-        const destLabel = buyer
-            ? [buyer.name, buyer.address, buyer.city, buyer.country].filter(Boolean).join(', ')
-            : '';
+            ? partnerToLabel(supplier)
+            : (state.company && [state.company.address, state.company.city, state.company.country]
+                                 .filter(Boolean).join(', ')) || '';
+        const destLabel = partnerToLabel(buyer);
 
         // Teret (t) — pokušavamo pretvoriti sve u tone
         const qty = parseFloat(offer.quantity || (offer.items && offer.items[0] && offer.items[0].quantity) || 0) || 20;

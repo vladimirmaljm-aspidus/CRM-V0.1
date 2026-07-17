@@ -149,6 +149,74 @@
           .logi-side { position: absolute; top: 10px; left: 10px; right: 10px; bottom: 10px; width: auto; }
           .logi-map { display: none; }
         }
+
+        /* ---- AUTOCOMPLETE ---- */
+        .logi-ac-wrap { position: relative; }
+        .logi-ac-input-wrap { position: relative; }
+        .logi-ac-input { padding-right: 34px; }
+        .logi-ac-clear {
+            position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+            width: 22px; height: 22px; border-radius: 50%;
+            background: #e5e7eb; color: #475569; border: 0;
+            font-size: 14px; line-height: 1; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            padding: 0;
+        }
+        .logi-ac-clear:hover { background: #cbd5e1; color: #1e293b; }
+        .logi-ac-dropdown {
+            position: absolute; left: 0; right: 0; top: calc(100% + 4px);
+            background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
+            box-shadow: 0 12px 28px rgba(15,23,42,0.14);
+            max-height: 340px; overflow-y: auto; z-index: 100;
+            display: none;
+        }
+        .logi-ac-dropdown.open { display: block; }
+        .logi-ac-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 12px; border-bottom: 1px solid #f1f5f9;
+            cursor: pointer; transition: background .1s;
+        }
+        .logi-ac-item:last-child { border-bottom: 0; }
+        .logi-ac-item:hover, .logi-ac-item.active { background: #eff6ff; }
+        .logi-ac-item .ico {
+            width: 32px; height: 32px; border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px; color: #fff; flex-shrink: 0;
+        }
+        .logi-ac-item .ico.port    { background: #10b981; }
+        .logi-ac-item .ico.airport { background: #f59e0b; }
+        .logi-ac-item .ico.address { background: #3b82f6; }
+        .logi-ac-item .text { flex: 1; min-width: 0; }
+        .logi-ac-item .primary {
+            font-size: 13px; font-weight: 700; color: #111827;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .logi-ac-item .secondary {
+            font-size: 11px; color: #6b7280; margin-top: 1px;
+        }
+        .logi-ac-item .badge {
+            font-size: 9px; font-weight: 800; text-transform: uppercase;
+            letter-spacing: .04em; padding: 3px 6px; border-radius: 4px;
+            background: #f3f4f6; color: #475569;
+            white-space: nowrap;
+        }
+        .logi-ac-empty {
+            padding: 20px 12px; text-align: center;
+            font-size: 12px; color: #6b7280;
+        }
+        .logi-ac-hint {
+            margin-top: 6px; font-size: 11px; color: #6b7280;
+            padding: 6px 8px; border-radius: 6px;
+            background: #f9fafb; border: 1px solid #e5e7eb;
+        }
+        .logi-ac-hint.error {
+            background: #fef2f2; border-color: #fecaca; color: #991b1b;
+        }
+        .logi-badge-auto {
+            font-size: 9px; font-weight: 800; letter-spacing: .05em;
+            padding: 2px 6px; border-radius: 999px;
+            background: #dbeafe; color: #1e40af; text-transform: uppercase;
+        }
         `;
         document.head.appendChild(s);
     }
@@ -195,13 +263,33 @@
                 <button class="logi-close" id="logi-close" title="Close">✕</button>
               </div>
               <div class="logi-body" id="logi-body">
-                <div style="margin-bottom:14px;">
-                  <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">${T('Polazište','Origin')}</label>
-                  <input class="logi-input" id="logi-origin" placeholder="${T('adresa, grad ili UN/LOCODE...','address, city or UN/LOCODE...')}" style="margin-top:4px;">
+                <div style="margin-bottom:14px;position:relative;" class="logi-ac-wrap">
+                  <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:center;gap:6px;">
+                    <span>${T('Polazište (odakle roba kreće)','Origin (where goods depart)')}</span>
+                    <span class="logi-badge-auto" id="logi-origin-auto" style="display:none;">${T('AUTO','AUTO')}</span>
+                  </label>
+                  <div class="logi-ac-input-wrap" style="position:relative;margin-top:4px;">
+                    <input class="logi-input logi-ac-input" id="logi-origin" autocomplete="off"
+                           placeholder="${T('Kucaj: Rotterdam, JFK, USNYC, ili adresa…','Type: Rotterdam, JFK, USNYC, or any address…')}">
+                    <button type="button" class="logi-ac-clear" id="logi-origin-clear"
+                            title="${T('Očisti','Clear')}" style="display:none;">×</button>
+                  </div>
+                  <div class="logi-ac-dropdown" id="logi-origin-dd"></div>
+                  <div class="logi-ac-hint" id="logi-origin-hint" style="display:none;"></div>
                 </div>
-                <div style="margin-bottom:14px;">
-                  <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">${T('Odredište','Destination')}</label>
-                  <input class="logi-input" id="logi-dest" placeholder="${T('adresa, grad ili UN/LOCODE...','address, city or UN/LOCODE...')}" style="margin-top:4px;">
+                <div style="margin-bottom:14px;position:relative;" class="logi-ac-wrap">
+                  <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:center;gap:6px;">
+                    <span>${T('Odredište (gde roba stiže)','Destination (where goods arrive)')}</span>
+                    <span class="logi-badge-auto" id="logi-dest-auto" style="display:none;">${T('AUTO','AUTO')}</span>
+                  </label>
+                  <div class="logi-ac-input-wrap" style="position:relative;margin-top:4px;">
+                    <input class="logi-input logi-ac-input" id="logi-dest" autocomplete="off"
+                           placeholder="${T('Kucaj: Shanghai, LAX, CNSHA, ili adresa…','Type: Shanghai, LAX, CNSHA, or any address…')}">
+                    <button type="button" class="logi-ac-clear" id="logi-dest-clear"
+                            title="${T('Očisti','Clear')}" style="display:none;">×</button>
+                  </div>
+                  <div class="logi-ac-dropdown" id="logi-dest-dd"></div>
+                  <div class="logi-ac-hint" id="logi-dest-hint" style="display:none;"></div>
                 </div>
                 <div style="display:flex;gap:8px;margin-bottom:16px;">
                   <div style="flex:1;">
@@ -408,31 +496,275 @@
               ${items}`;
         }
 
-        // -------- INPUT: automatsko popunjavanje iz opts --------
+        // -------- AUTOCOMPLETE + AUTO-DETECT --------
 
         const originInp = overlay.querySelector('#logi-origin');
         const destInp = overlay.querySelector('#logi-dest');
 
-        // Prihvatamo tri oblika: {lat,lon,label}, {address}, {unlocode}, {iata}
-        function fmtInput(x) {
-            if (!x) return '';
-            if (x.label) return x.label;
-            if (x.unlocode) return x.unlocode;
-            if (x.iata) return x.iata;
-            if (x.address) return x.address;
-            if (x.lat != null && x.lon != null) return `${x.lat}, ${x.lon}`;
-            return '';
+        // "Resolved" znači da imamo tačan {lat, lon, label} — bilo iz konteksta
+        // (auto-detektovana adresa iz portala/CRM-a) ili iz autocomplete klika.
+        let originResolved = null;
+        let destResolved = null;
+
+        function attachAutocomplete(inputEl, dropdownEl, clearBtnEl, autoBadgeEl, hintEl, onPick) {
+            let debounceT = null;
+            let currentHits = [];
+            let activeIdx = -1;
+            let isSelecting = false;
+
+            const setResolved = (h) => {
+                if (h) {
+                    inputEl.value = h.label || h.name || `${h.lat}, ${h.lon}`;
+                    inputEl.dataset.resolved = 'true';
+                    inputEl.dataset.lat = String(h.lat);
+                    inputEl.dataset.lon = String(h.lon);
+                    autoBadgeEl.style.display = 'none';
+                    hintEl.style.display = 'none';
+                    clearBtnEl.style.display = 'flex';
+                    onPick({ lat: h.lat, lon: h.lon, label: h.label || h.name });
+                } else {
+                    inputEl.value = '';
+                    delete inputEl.dataset.resolved;
+                    delete inputEl.dataset.lat;
+                    delete inputEl.dataset.lon;
+                    autoBadgeEl.style.display = 'none';
+                    clearBtnEl.style.display = 'none';
+                    hintEl.style.display = 'none';
+                    onPick(null);
+                }
+                closeDd();
+            };
+
+            const closeDd = () => {
+                dropdownEl.classList.remove('open');
+                dropdownEl.innerHTML = '';
+                activeIdx = -1;
+                currentHits = [];
+            };
+
+            const renderDd = (hits, nominatimHits = []) => {
+                if (!hits.length && !nominatimHits.length) {
+                    dropdownEl.innerHTML = `<div class="logi-ac-empty">
+                        ${T('Nema rezultata iz baze luka/aerodroma.', 'No ports/airports match.')}
+                        <br><span style="color:#9ca3af;">${T('Nastavljam pretragu opštih adresa…','Searching general addresses…')}</span>
+                    </div>`;
+                    dropdownEl.classList.add('open');
+                    return;
+                }
+                const items = [];
+                hits.forEach((h, i) => {
+                    const iconChar = h.type === 'port' ? '🚢' : (h.type === 'airport' ? '✈️' : '📍');
+                    const badge = h.type === 'port'
+                        ? `<span class="badge">${T('Luka','Port')} · ${escapeHtml(h.code)}</span>`
+                        : `<span class="badge">${T('Aerodrom','Airport')} · ${escapeHtml(h.code)}</span>`;
+                    items.push(`
+                        <div class="logi-ac-item ${i===activeIdx?'active':''}" data-idx="${i}">
+                            <div class="ico ${h.type}">${iconChar}</div>
+                            <div class="text">
+                                <div class="primary">${escapeHtml(h.name)}</div>
+                                <div class="secondary">${escapeHtml(h.municipality || '')} · ${escapeHtml(h.country || '')}</div>
+                            </div>
+                            ${badge}
+                        </div>`);
+                });
+                nominatimHits.forEach((h, i) => {
+                    const globalIdx = hits.length + i;
+                    items.push(`
+                        <div class="logi-ac-item ${globalIdx===activeIdx?'active':''}" data-idx="${globalIdx}">
+                            <div class="ico address">📍</div>
+                            <div class="text">
+                                <div class="primary">${escapeHtml(h.name || h.label)}</div>
+                                <div class="secondary">${T('Opšta adresa (OpenStreetMap)','General address (OpenStreetMap)')}</div>
+                            </div>
+                            <span class="badge">${T('Adresa','Address')}</span>
+                        </div>`);
+                });
+                currentHits = [...hits, ...nominatimHits];
+                dropdownEl.innerHTML = items.join('');
+                dropdownEl.classList.add('open');
+                dropdownEl.querySelectorAll('.logi-ac-item').forEach(el => {
+                    el.addEventListener('mousedown', (ev) => {
+                        // mousedown umesto click, jer input.blur brise dropdown pre nego što click stigne
+                        ev.preventDefault();
+                        isSelecting = true;
+                        const idx = parseInt(el.dataset.idx, 10);
+                        setResolved(currentHits[idx]);
+                        setTimeout(() => { isSelecting = false; }, 100);
+                    });
+                });
+            };
+
+            const runSearch = async (q) => {
+                if (!q || q.length < 2) { closeDd(); return; }
+
+                // 1) Naša baza luka+aerodroma
+                let dbHits = [];
+                try {
+                    const r = await apiFetch(apiBase + '/search?q=' + encodeURIComponent(q) + '&limit=8', {}, apiOpts);
+                    if (r.ok) {
+                        const j = await r.json();
+                        dbHits = j.hits || [];
+                    }
+                } catch (_) {}
+
+                // 2) Ako je manje od 3 hita, dodaj Nominatim (opšte adrese)
+                let nomHits = [];
+                if (dbHits.length < 3 && q.length >= 3) {
+                    try {
+                        const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=4&q=' + encodeURIComponent(q);
+                        const nres = await fetch(url, { headers: { 'Accept-Language': _isSr() ? 'sr,en' : 'en' } });
+                        if (nres.ok) {
+                            const arr = await nres.json();
+                            nomHits = arr.map(x => ({
+                                type: 'address',
+                                name: x.display_name,
+                                label: x.display_name,
+                                lat: parseFloat(x.lat), lon: parseFloat(x.lon),
+                                country: '', municipality: ''
+                            }));
+                        }
+                    } catch (_) {}
+                }
+                renderDd(dbHits, nomHits);
+            };
+
+            inputEl.addEventListener('input', () => {
+                // Korisnik je počeo da menja input → invalidate resolved
+                if (inputEl.dataset.resolved) {
+                    delete inputEl.dataset.resolved;
+                    delete inputEl.dataset.lat;
+                    delete inputEl.dataset.lon;
+                    autoBadgeEl.style.display = 'none';
+                    onPick(null);
+                }
+                clearBtnEl.style.display = inputEl.value ? 'flex' : 'none';
+                hintEl.style.display = 'none';
+                clearTimeout(debounceT);
+                const q = inputEl.value.trim();
+                if (!q) { closeDd(); return; }
+                debounceT = setTimeout(() => runSearch(q), 220);
+            });
+
+            inputEl.addEventListener('focus', () => {
+                if (inputEl.value.trim().length >= 2 && !inputEl.dataset.resolved) {
+                    runSearch(inputEl.value.trim());
+                }
+            });
+
+            inputEl.addEventListener('blur', () => {
+                setTimeout(() => { if (!isSelecting) closeDd(); }, 150);
+            });
+
+            inputEl.addEventListener('keydown', (e) => {
+                if (!dropdownEl.classList.contains('open')) return;
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    activeIdx = Math.min(activeIdx + 1, currentHits.length - 1);
+                    updateActive();
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    activeIdx = Math.max(activeIdx - 1, 0);
+                    updateActive();
+                } else if (e.key === 'Enter') {
+                    if (activeIdx >= 0 && currentHits[activeIdx]) {
+                        e.preventDefault();
+                        setResolved(currentHits[activeIdx]);
+                    }
+                } else if (e.key === 'Escape') {
+                    closeDd();
+                }
+            });
+
+            const updateActive = () => {
+                dropdownEl.querySelectorAll('.logi-ac-item').forEach((el, i) => {
+                    el.classList.toggle('active', i === activeIdx);
+                });
+                const el = dropdownEl.querySelectorAll('.logi-ac-item')[activeIdx];
+                if (el) el.scrollIntoView({ block: 'nearest' });
+            };
+
+            clearBtnEl.addEventListener('click', () => {
+                setResolved(null);
+                inputEl.focus();
+            });
+
+            // API za spolja
+            return {
+                setPresetLabel: (label, resolved) => {
+                    inputEl.value = label || '';
+                    if (resolved && resolved.lat != null) {
+                        inputEl.dataset.resolved = 'true';
+                        inputEl.dataset.lat = String(resolved.lat);
+                        inputEl.dataset.lon = String(resolved.lon);
+                        clearBtnEl.style.display = 'flex';
+                        autoBadgeEl.style.display = 'inline-block';
+                        onPick({ lat: resolved.lat, lon: resolved.lon, label });
+                    } else if (label) {
+                        // Nema koordinata — pokušaj auto-resolve preko naše baze/geokodera
+                        clearBtnEl.style.display = 'flex';
+                        autoBadgeEl.style.display = 'inline-block';
+                        runSearch(label.split(',')[0].trim());
+                    }
+                },
+                showHint: (msg, isError) => {
+                    hintEl.textContent = msg;
+                    hintEl.className = 'logi-ac-hint' + (isError ? ' error' : '');
+                    hintEl.style.display = 'block';
+                },
+                getResolved: () => {
+                    if (inputEl.dataset.resolved === 'true') {
+                        return {
+                            lat: parseFloat(inputEl.dataset.lat),
+                            lon: parseFloat(inputEl.dataset.lon),
+                            label: inputEl.value
+                        };
+                    }
+                    return null;
+                },
+                getText: () => inputEl.value.trim(),
+            };
         }
-        originInp.value = fmtInput(opts.origin);
-        destInp.value = fmtInput(opts.destination);
 
-        // Skladištimo resolved lat/lon iz opts ako su prosleđeni
-        let originResolved = (opts.origin && opts.origin.lat != null) ? opts.origin : null;
-        let destResolved = (opts.destination && opts.destination.lat != null) ? opts.destination : null;
+        const originAC = attachAutocomplete(
+            overlay.querySelector('#logi-origin'),
+            overlay.querySelector('#logi-origin-dd'),
+            overlay.querySelector('#logi-origin-clear'),
+            overlay.querySelector('#logi-origin-auto'),
+            overlay.querySelector('#logi-origin-hint'),
+            (r) => { originResolved = r; }
+        );
+        const destAC = attachAutocomplete(
+            overlay.querySelector('#logi-dest'),
+            overlay.querySelector('#logi-dest-dd'),
+            overlay.querySelector('#logi-dest-clear'),
+            overlay.querySelector('#logi-dest-auto'),
+            overlay.querySelector('#logi-dest-hint'),
+            (r) => { destResolved = r; }
+        );
 
-        // Auto-compute ako imamo obe strane iz kontekstuelnih podataka
+        // Preset iz opts (auto-detekcija iz portala/CRM konteksta)
+        if (opts.origin) {
+            if (opts.origin.lat != null) {
+                originAC.setPresetLabel(opts.origin.label || `${opts.origin.lat},${opts.origin.lon}`, opts.origin);
+            } else if (opts.origin.address) {
+                originAC.setPresetLabel(opts.origin.address, null);
+            } else if (opts.origin.unlocode || opts.origin.iata) {
+                originAC.setPresetLabel(opts.origin.unlocode || opts.origin.iata, null);
+            }
+        }
+        if (opts.destination) {
+            if (opts.destination.lat != null) {
+                destAC.setPresetLabel(opts.destination.label || `${opts.destination.lat},${opts.destination.lon}`, opts.destination);
+            } else if (opts.destination.address) {
+                destAC.setPresetLabel(opts.destination.address, null);
+            } else if (opts.destination.unlocode || opts.destination.iata) {
+                destAC.setPresetLabel(opts.destination.unlocode || opts.destination.iata, null);
+            }
+        }
+
+        // Auto-compute samo ako smo dobili KOORDINATE (ne samo address string)
         if (originResolved && destResolved) {
-            setTimeout(() => overlay.querySelector('#logi-compute').click(), 200);
+            setTimeout(() => overlay.querySelector('#logi-compute').click(), 400);
         }
 
         overlay.querySelector('#logi-compute').addEventListener('click', async () => {
@@ -443,25 +775,49 @@
             btn.innerHTML = `<span class="logi-spinner"></span>&nbsp;${T('Računam…','Computing…')}`;
             box.innerHTML = '';
             try {
-                const originAddr = originInp.value.trim();
-                const destAddr = destInp.value.trim();
-                if (!originAddr || !destAddr) throw new Error(T('Unesite polazište i odredište.','Enter origin and destination.'));
+                let origin = originResolved || originAC.getResolved();
+                let dest = destResolved || destAC.getResolved();
+                const originText = originAC.getText();
+                const destText = destAC.getText();
 
-                // Ako lat/lon već postoji iz opts i input nije menjan, koristi ih.
-                // U suprotnom geokodiraj.
-                let origin = originResolved;
-                if (!origin || (origin.label && origin.label !== originAddr)) {
-                    origin = /^-?\d+\.?\d*\s*,\s*-?\d+\.?\d*$/.test(originAddr)
-                        ? (function(){ const [la, lo] = originAddr.split(',').map(x => parseFloat(x.trim())); return { lat: la, lon: lo, label: originAddr }; })()
-                        : await geocodeAddress(originAddr);
+                if (!originText || !destText) {
+                    throw new Error(T('Unesite polazište i odredište.','Enter origin and destination.'));
                 }
-                let dest = destResolved;
-                if (!dest || (dest.label && dest.label !== destAddr)) {
-                    dest = /^-?\d+\.?\d*\s*,\s*-?\d+\.?\d*$/.test(destAddr)
-                        ? (function(){ const [la, lo] = destAddr.split(',').map(x => parseFloat(x.trim())); return { lat: la, lon: lo, label: destAddr }; })()
-                        : await geocodeAddress(destAddr);
+
+                // Ako nemamo resolved koordinate, pokušaj lat,lon parse, pa Nominatim geokoding
+                const parseLatLon = (s) => {
+                    const m = /^\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*$/.exec(s);
+                    return m ? { lat: parseFloat(m[1]), lon: parseFloat(m[2]), label: s } : null;
+                };
+
+                if (!origin) {
+                    origin = parseLatLon(originText);
+                    if (!origin) {
+                        try { origin = await geocodeAddress(originText); }
+                        catch (_) {
+                            originAC.showHint(T(
+                                'Adresa "'+originText+'" nije prepoznata. Otvorite dropdown i izaberite luku ili aerodrom iz liste.',
+                                'Address "'+originText+'" not recognized. Open the dropdown and pick a port or airport from the list.'
+                            ), true);
+                            throw new Error(T('Polazište nije rešeno.','Origin not resolved.'));
+                        }
+                    }
+                    originResolved = origin;
                 }
-                originResolved = origin; destResolved = dest;
+                if (!dest) {
+                    dest = parseLatLon(destText);
+                    if (!dest) {
+                        try { dest = await geocodeAddress(destText); }
+                        catch (_) {
+                            destAC.showHint(T(
+                                'Adresa "'+destText+'" nije prepoznata. Otvorite dropdown i izaberite luku ili aerodrom iz liste.',
+                                'Address "'+destText+'" not recognized. Open the dropdown and pick a port or airport from the list.'
+                            ), true);
+                            throw new Error(T('Odredište nije rešeno.','Destination not resolved.'));
+                        }
+                    }
+                    destResolved = dest;
+                }
 
                 const cargo = Math.max(0.1, parseFloat(overlay.querySelector('#logi-cargo').value) || 20);
                 const prefer = overlay.querySelector('#logi-prefer').value;
