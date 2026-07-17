@@ -507,20 +507,13 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
         }
         await saveSingleItem('offers', offerObj);
 
-        // Automatski generiši PDF na serveru i sačuvaj u vault (klijent u portalu
-        // odmah može da preuzme). Radi se u pozadini — greška ne blokira save.
-        try {
-            fetch(`/api/offers/${offerObj.id}/generate_pdf`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            }).then(r => r.ok ? r.json() : null).then(d => {
-                if (d && d.documentId) {
-                    offerObj.documentId = d.documentId;
-                    // Osveži tabelu ako je vidljiva
-                    if (typeof renderOffersView === 'function' && document.getElementById('offers-container-marker')) renderOffersView();
-                }
-            }).catch(() => {});
-        } catch (e) { /* silent */ }
+        // NAPOMENA: Auto-slanje PDF-a klijentu je NAMERNO uklonjeno.
+        // Save samo čuva ponudu u bazi. Da bi klijent dobio dokument, admin mora
+        // EKSPLICITNO da klikne '📤 Pošalji klijentu' u tabeli ponuda. Time se
+        // izbegava rizik da klijent u portalu vidi verziju pre nego što je admin
+        // proverio i odobrio konačan izgled i podatke.
+        //
+        // Ako želiš da pregledaš PDF pre slanja, koristi dugme '🔍 Pregled PDF'.
 
         if (typeof renderOffersView === 'function' && document.getElementById('offers-container-marker')) renderOffersView();
         return true;
@@ -833,6 +826,10 @@ function renderOffersView() {
                   <td class="p-5 font-black text-emerald-600 text-lg">${Utils.formatCurrency(totalVal, offer.currency)}</td>
                   <td class="p-5 text-right whitespace-nowrap">
                       ${convertBtn}
+                      <button class="bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-preview-offer="${offer.id}" title="Pregled PDF-a (ne šalje se klijentu)">🔍 ${Utils.t('offer.previewPdf') || 'Pregled'}</button>
+                      ${offer.documentId
+                          ? `<button class="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-resend-offer="${offer.id}" title="Ponovo generiši i pošalji klijentu">📤 ${Utils.t('offer.resendPdf') || 'Pošalji ponovo'}</button>`
+                          : `<button class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-send-offer="${offer.id}" title="Pošalji dokument klijentu u portal">📤 ${Utils.t('offer.sendPdf') || 'Pošalji klijentu'}</button>`}
                       <button class="bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-logistics-offer="${offer.id}" title="${Utils.t('logistics.plannerTitle') || 'Multimodalni logistički planer'}">🌍 ${Utils.t('logistics.plan') || 'Ruta'}</button>
                       <button class="bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" onclick="document.dispatchEvent(new CustomEvent('createCustomerOffer', {detail: {savedOfferId: '${offer.id}'}}))">${Utils.t('actions.openEdit') || 'Otvori / Uredi'}</button>
                       <button class="bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors offer-delete-btn" data-offer-id="${offer.id}">🗑️</button>
@@ -872,6 +869,104 @@ function renderOffersView() {
     // vezivanje sprečimo klik. Dugmad ostaju standardna <button data-convert-offer>.
     installOfferConvertDelegatedHandler();
     installOfferLogisticsDelegatedHandler();
+    installOfferPdfDelegatedHandler();
+}
+
+// Delegirani handler za dva dugmeta u tabeli ponuda:
+//   🔍 Pregled — otvara PDF blob u novom tabu (ne dira bazu, ne šalje klijentu)
+//   📤 Pošalji — generiše dokument, snima u shared_documents, poziva optional email
+let __offerPdfHandlerInstalled = false;
+function installOfferPdfDelegatedHandler() {
+    if (__offerPdfHandlerInstalled) return;
+    __offerPdfHandlerInstalled = true;
+
+    document.addEventListener('click', async (ev) => {
+        const previewBtn = ev.target && ev.target.closest ? ev.target.closest('[data-preview-offer]') : null;
+        const sendBtn = ev.target && ev.target.closest ? ev.target.closest('[data-send-offer]') : null;
+        const resendBtn = ev.target && ev.target.closest ? ev.target.closest('[data-resend-offer]') : null;
+        if (!previewBtn && !sendBtn && !resendBtn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        const srLang = Utils.getLang() === 'sr';
+        const T = (sr, en) => srLang ? sr : en;
+        const toast = (msg, kind) => {
+            if (typeof showToast === 'function') showToast(msg, kind || 'info');
+            else if (kind === 'error') alert(msg);
+        };
+
+        // -------- PREVIEW (nije trajno, ne dira bazu) --------
+        if (previewBtn) {
+            const offerId = previewBtn.dataset.previewOffer;
+            const offer = (state.data.offers || []).find(o => o.id === offerId);
+            if (!offer) { toast(T('Ponuda nije nađena.','Offer not found.'), 'error'); return; }
+            const origText = previewBtn.innerHTML;
+            previewBtn.disabled = true;
+            previewBtn.innerHTML = T('⏳ Otvaram…','⏳ Opening…');
+            try {
+                const res = await fetch('/api/offers/preview_pdf', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(offer)
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                // Otvara u novom tabu — korisnik vidi PDF viewer, može da preuzme,
+                // ali dokument NIJE upisan u vault niti dostupan klijentu.
+                const w = window.open(url, '_blank');
+                if (!w) toast(T('Popup blokiran — dozvolite popup-e za pregled.','Popup blocked — allow popups to preview.'), 'warning');
+                // Cleanup URL posle 60s
+                setTimeout(() => URL.revokeObjectURL(url), 60000);
+                toast(T('Pregled otvoren u novom tabu (dokument NIJE poslat klijentu).',
+                        'Preview opened in a new tab (document was NOT sent to client).'), 'info');
+            } catch (err) {
+                toast(T('Greška pri generisanju pregleda: ','Preview generation failed: ') + err.message, 'error');
+            } finally {
+                previewBtn.disabled = false;
+                previewBtn.innerHTML = origText;
+            }
+            return;
+        }
+
+        // -------- SEND / RESEND (upisuje u vault, klijent dobija u portalu) --------
+        const btn = sendBtn || resendBtn;
+        const offerId = btn.dataset.sendOffer || btn.dataset.resendOffer;
+        const isResend = !!resendBtn;
+
+        const yes = await (window.askConfirm
+            ? window.askConfirm(
+                T('Poslati klijentu?','Send to client?'),
+                isResend
+                    ? T('Ovo će REPLACE-ovati postojeći dokument novom verzijom u portalu klijenta. Nastavljate?',
+                        'This will REPLACE the existing document with a new version in the client portal. Continue?')
+                    : T('Klijent će odmah videti ovaj dokument u B2B portalu i moći će da ga preuzme sa audit tragom. Nastavljate?',
+                        'The client will immediately see this document in the B2B portal and be able to download it with an audit trail. Continue?'),
+                { danger: false, confirmText: T('Pošalji','Send') })
+            : confirm(T('Poslati klijentu?','Send to client?')));
+        if (!yes) return;
+
+        const origText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = T('⏳ Šaljem…','⏳ Sending…');
+        try {
+            const res = await fetch(`/api/offers/${encodeURIComponent(offerId)}/generate_pdf`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
+            toast(T('Dokument poslat u portal klijenta. Hash je ubeležen u audit trag.',
+                    'Document sent to client portal. Verification hash logged in audit trail.'), 'success');
+            if (typeof loadFromStorage === 'function') { try { await loadFromStorage(); } catch (_) {} }
+            if (typeof renderOffersView === 'function') { try { renderOffersView(); } catch (_) {} }
+        } catch (err) {
+            toast(T('Greška pri slanju: ','Send failed: ') + err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = origText;
+        }
+    }, false);
 }
 
 // Delegirani handler za dugme "🌍 Ruta" u tabeli ponuda (CRM). Kada se klikne,

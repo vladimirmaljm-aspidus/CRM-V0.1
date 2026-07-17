@@ -64,6 +64,14 @@ class BaseCase(unittest.TestCase):
         h['X-CSRF-Token'] = self._get_csrf()
         return self.client.post(url, json=json_body, headers=h)
 
+    def _request_with_csrf_multipart(self, url, file_bytes, filename, extra_form=None):
+        """POST multipart/form-data sa fajlom — koristi se za verify_upload testove."""
+        import io
+        h = {'X-CSRF-Token': self._get_csrf()}
+        data = dict(extra_form or {})
+        data['file'] = (io.BytesIO(file_bytes), filename)
+        return self.client.post(url, data=data, headers=h, content_type='multipart/form-data')
+
 
 class T01Auth(BaseCase):
     """Autentifikacija — login, logout, sesija, CSRF."""
@@ -833,6 +841,121 @@ class T14LogisticsPlanner(BaseCase):
         # Tier metadata je prisutan
         self.assertEqual(sea1['legs'][1]['destination_port']['tier'], 'top_tier')
         self.assertEqual(sea2['legs'][1]['destination_port']['tier'], 'congested')
+
+    def test_11a_vessels_endpoint(self):
+        r = self.client.get('/api/logistics/vessels')
+        self.assertEqual(r.status_code, 200)
+        classes = r.get_json().get('classes', [])
+        self.assertGreaterEqual(len(classes), 15)
+        # Ključni tipovi moraju biti prisutni
+        ids = {c['id'] for c in classes}
+        for expected in ('capesize', 'vlcc', 'ulcv_container', 'heavy_lift',
+                         'panamax_bulker', 'mr_tanker', 'medium_lng'):
+            self.assertIn(expected, ids, msg=f'missing vessel: {expected}')
+
+    def test_11b_vessel_matching_iron_ore(self):
+        """60000t iron ore → Panamax ili Kamsarmax kao top preporuka."""
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': -22, 'lon': 43, 'label': 'Tubarao'},
+            'destination': {'lat': 31.2, 'lon': 121.4, 'label': 'Shanghai'},
+            'cargo_tons': 60000,
+            'container_type': 'bulk_dry',
+        })
+        self.assertEqual(r.status_code, 200)
+        sea = next(p for p in r.get_json()['plans'] if p['mode'] == 'sea')
+        vessels = sea.get('vessel_recommendations', [])
+        self.assertTrue(vessels, 'no vessel recommendations')
+        # Top #1 mora biti bulker (ne tanker, ne container ship)
+        self.assertEqual(vessels[0]['category'], 'dry_bulk')
+        top_ids = {v['id'] for v in vessels[:3]}
+        self.assertTrue({'panamax_bulker', 'kamsarmax', 'post_panamax_bulker'} & top_ids)
+
+    def test_11c_vessel_matching_container(self):
+        """500 FEU containers transpacific → Feeder ili veći container ship."""
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 22.28, 'lon': 114.15, 'label': 'HK'},
+            'destination': {'lat': 33.75, 'lon': -118.25, 'label': 'LA'},
+            'cargo_tons': 9000,
+            'container_type': 'feu',
+            'container_count': 500,
+        })
+        sea = next(p for p in r.get_json()['plans'] if p['mode'] == 'sea')
+        vessels = sea.get('vessel_recommendations', [])
+        self.assertTrue(vessels)
+        # Prvi hit MORA biti container ship (nikad ne bulker za container cargo)
+        self.assertEqual(vessels[0]['category'], 'container')
+
+    def test_11d_vessel_matching_oversize_heavy_lift(self):
+        """800t OOG → Heavy-Lift ship dominira."""
+        r = self._post_with_csrf('/api/logistics/plan', {
+            'origin': {'lat': 51.9, 'lon': 4.5, 'label': 'Rotterdam'},
+            'destination': {'lat': 40.7, 'lon': -74.0, 'label': 'NYC'},
+            'cargo_tons': 800,
+            'container_type': 'oog',
+            'oversize': True,
+        })
+        sea = next(p for p in r.get_json()['plans'] if p['mode'] == 'sea')
+        vessels = sea.get('vessel_recommendations', [])
+        self.assertTrue(vessels)
+        self.assertEqual(vessels[0]['id'], 'heavy_lift')
+        self.assertTrue(vessels[0]['geared'])
+
+    def test_11e_pdf_content_hash_in_shared_documents(self):
+        """Save PDF u vault mora upisati pdfContentHash i bindingHash."""
+        from pdf_generator import save_offer_pdf_to_vault
+        import sqlite3, json
+        from config import DB_FILE
+        offer = {'id': 'test-hash-offer-01', 'offerNo': 'HASH-01',
+                 'customerId': None, 'items': [{'quantity': 5, 'price': 100, 'unit': 'MT'}],
+                 'currency': 'USD', 'date': '2026-07-17'}
+        doc_id, _ = save_offer_pdf_to_vault(offer)
+        self.assertIsNotNone(doc_id)
+        conn = sqlite3.connect(DB_FILE)
+        try:
+            row = conn.execute('SELECT data FROM shared_documents WHERE id=?', (doc_id,)).fetchone()
+            self.assertIsNotNone(row)
+            doc = json.loads(row[0])
+            self.assertIn('pdfContentHash', doc)
+            self.assertIn('bindingHash', doc)
+            self.assertEqual(len(doc['pdfContentHash']), 64)  # SHA-256 hex
+            self.assertEqual(len(doc['bindingHash']), 64)
+            self.assertEqual(doc['hashAlgorithm'], 'SHA-256')
+        finally:
+            conn.close()
+
+    def test_11f_document_verify_upload_authentic(self):
+        """Upload identičnog PDF-a → AUTHENTIC."""
+        from pdf_generator import save_offer_pdf_to_vault, build_offer_pdf
+        offer = {'id': 'test-verify-offer', 'offerNo': 'VERIFY-01',
+                 'customerId': None, 'items': [{'quantity': 5, 'price': 100, 'unit': 'MT'}],
+                 'currency': 'USD', 'date': '2026-07-17'}
+        save_offer_pdf_to_vault(offer)
+        pdf_bytes = build_offer_pdf(offer)
+        import io
+        from werkzeug.datastructures import FileStorage
+        r = self._request_with_csrf_multipart('/api/documents/verify_upload', pdf_bytes, 'offer.pdf')
+        self.assertEqual(r.status_code, 200, msg=r.data[:300])
+        js = r.get_json()
+        self.assertEqual(js['status'], 'AUTHENTIC')
+        self.assertTrue(js['valid'])
+
+    def test_11g_document_verify_upload_modified(self):
+        """Upload sa promenom jednog bajta → MODIFIED."""
+        from pdf_generator import save_offer_pdf_to_vault, build_offer_pdf
+        offer = {'id': 'test-mod-offer', 'offerNo': 'MODIFY-01',
+                 'customerId': None, 'items': [{'quantity': 5, 'price': 100, 'unit': 'MT'}],
+                 'currency': 'USD', 'date': '2026-07-17'}
+        save_offer_pdf_to_vault(offer)
+        pdf_bytes = bytearray(build_offer_pdf(offer))
+        # Menjaj byte u sredini fajla — hash mora da se razlikuje
+        mid = len(pdf_bytes) // 2
+        pdf_bytes[mid] = (pdf_bytes[mid] + 1) % 256
+        r = self._request_with_csrf_multipart('/api/documents/verify_upload', bytes(pdf_bytes), 'Offer_MODIFY-01.pdf')
+        self.assertEqual(r.status_code, 200)
+        js = r.get_json()
+        # Fajl-name matching bi trebalo da nadje ovaj offer kao "modified"
+        self.assertIn(js['status'], ('MODIFIED', 'UNKNOWN'))
+        self.assertFalse(js['valid'])
 
     def test_11_cost_estimate_present(self):
         r = self._post_with_csrf('/api/logistics/plan', {

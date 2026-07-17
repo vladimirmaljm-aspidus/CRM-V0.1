@@ -628,11 +628,49 @@
                   ${extras}
                 </div>`;
             }).join('');
+            // Vessel recommendations — samo za sea mod plan
+            const seaLeg = plan.legs.find(l => l.kind === 'sea');
+            const vessels = (plan.vessel_recommendations || []);
+            let vesselsBlock = '';
+            if (seaLeg && vessels.length) {
+                const vItems = vessels.map(v => {
+                    const util = Math.round((v.capacity_utilization || 0) * 100);
+                    const scoreCol = v.fitness_score >= 70 ? '#059669' : (v.fitness_score >= 40 ? '#d97706' : '#dc2626');
+                    const geared = v.geared ? T('Ima svoje dizalice ✓','Geared (own cranes) ✓') : T('Nema dizalice','Gearless');
+                    const cap = v.teu ? `${v.teu.toLocaleString()} TEU`
+                              : v.dwt ? `${v.dwt.toLocaleString()} DWT`
+                              : v.cbm ? `${v.cbm.toLocaleString()} m³`
+                              : '';
+                    const cargoList = (v.typical_cargo || []).slice(0, 3).map(c => escapeHtml(c)).join(', ');
+                    return `
+                    <div style="padding:10px 12px;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;background:#fff;">
+                      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                        <div style="font-weight:800;font-size:13px;color:#111827;">🚢 ${escapeHtml(v.name)}</div>
+                        <div style="font-size:11px;font-weight:800;color:${scoreCol};">${v.fitness_score}/100</div>
+                      </div>
+                      <div style="font-size:11px;color:#6b7280;line-height:1.55;">
+                        <div><b>${T('Kapacitet','Capacity')}:</b> ${cap} · ${T('Iskorišćenje','Utilization')}: ${util}%</div>
+                        <div><b>${T('Dimenzije','Dimensions')}:</b> ${v.loa_m || '?'} × ${v.beam_m || '?'} × ${v.draft_m || '?'} m (LOA×B×draft)</div>
+                        <div><b>${T('Brzina','Speed')}:</b> ${v.typical_speed_knots || '?'} kn · <b>${T('Utovar/istovar','Load/unload')}:</b> ${v.estimated_load_unload_days} ${T('dana','days')}</div>
+                        <div style="color:${v.geared ? '#059669' : '#6b7280'};">🏗 ${geared}${v.cranes ? ' · ' + escapeHtml(v.cranes) : ''}</div>
+                        ${cargoList ? `<div><b>${T('Tipičan teret','Typical cargo')}:</b> ${cargoList}</div>` : ''}
+                        ${v.notes ? `<div style="margin-top:3px;font-style:italic;color:#78716c;">${escapeHtml(v.notes)}</div>` : ''}
+                      </div>
+                    </div>`;
+                }).join('');
+                vesselsBlock = `
+                  <h3 style="font-size:13px;font-weight:700;color:#111827;margin:24px 0 8px 0;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #e5e7eb;padding-bottom:8px;">
+                    <i class="fa-solid fa-ship"></i> ${T('Preporučeni brodovi','Recommended vessels')} <span style="font-size:10px;font-weight:400;color:#9ca3af;">(${T('top','top')} ${vessels.length})</span>
+                  </h3>
+                  ${vItems}`;
+            }
+
             el.innerHTML = `
               <h3 style="font-size:13px;font-weight:700;color:#111827;margin:0 0 12px 0;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #e5e7eb;padding-bottom:8px;">
                 <i class="fa-solid fa-timeline"></i> ${T('Etape transporta','Transport timeline')}
               </h3>
-              ${items}`;
+              ${items}
+              ${vesselsBlock}`;
         }
 
         // -------- AUTOCOMPLETE + AUTO-DETECT --------
