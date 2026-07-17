@@ -10,60 +10,69 @@ function showDemandForm(id = null) {
     const productOptions = state.data.products.map(p => `<option value="${p.id}" ${item.productId === p.id ? 'selected' : ''}>${Utils.escapeHtml(p.name)}</option>`).join('');
     
     const html = `
-    <form id="demand-form" class="space-y-6">
-      <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-          <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${Utils.t('offer.customer')} <span class="text-red-500">*</span></label>
-          <select name="buyerId" class="w-full bg-slate-50 border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-sm" required>
-              <option value="">${Utils.t('actions.select_buyer')}</option>
-              ${buyerOptions}
-          </select>
-      </div>
-      
-      <div class="border border-slate-200 p-6 rounded-xl bg-slate-50 shadow-sm relative pt-8 mt-6">
-          <div class="absolute -top-3 left-6 bg-slate-800 text-white text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded shadow-sm">${Utils.t('fields.demandFor')}</div>
-          
-          <div class="flex gap-4 p-4 bg-white border border-slate-200 rounded-lg mb-6 shadow-sm">
-              <label class="cursor-pointer inline-flex items-center text-sm font-bold text-slate-700 hover:text-blue-600 transition-colors">
-                  <input type="radio" name="demandType" value="existing" class="mr-2 w-4 h-4 text-blue-600 focus:ring-blue-500 border-slate-300" ${!item.isNewProduct ? 'checked' : ''}>
-                  📦 ${Utils.t('fields.existingProduct')}
-              </label>
-              <label class="cursor-pointer inline-flex items-center text-sm font-bold text-slate-700 hover:text-amber-600 transition-colors">
-                  <input type="radio" name="demandType" value="new" class="mr-2 w-4 h-4 text-amber-500 focus:ring-amber-500 border-slate-300" ${item.isNewProduct ? 'checked' : ''}>
-                  ✨ ${Utils.t('fields.newProduct')}
-              </label>
-          </div>
-          
-          <div id="existing-product-container" class="mb-4">
-              <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${Utils.t('actions.select_product')}</label>
-              <select name="productId" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500 shadow-sm cursor-pointer">
-                  <option value="">-- Izaberi --</option>
-                  ${productOptions}
+    <form id="demand-form" class="crm-form-panel">
+      <div class="crm-form-section">
+          <h4 class="crm-form-section-title">👤 ${tLang('Kupac koji traži robu','Buyer requesting product')}</h4>
+          <p class="crm-form-section-desc">${tLang('Klijent iz Partners modula koji je poslao potražnju.','Client from Partners module who submitted the demand.')}</p>
+          <div class="crm-field">
+              <label class="crm-label crm-label-required">${Utils.t('offer.customer')}</label>
+              <select name="buyerId" class="crm-input" required>
+                  <option value="">${Utils.t('actions.select_buyer')}</option>
+                  ${buyerOptions}
               </select>
           </div>
-          
-          <div id="new-product-container" class="hidden mb-4">
-              <label class="block text-[10px] font-black text-amber-700 uppercase tracking-widest mb-2">${Utils.t('fields.newProductName')}</label>
-              <input name="newProductName" class="w-full bg-white border border-amber-300 text-amber-900 rounded-lg px-4 py-3 text-sm font-bold outline-none focus:ring-2 focus:ring-amber-500 shadow-sm" value="${Utils.escapeHtml(item.productName || '')}" placeholder="${Utils.t('placeholders.newProduct')}"/>
+      </div>
+
+      <div class="crm-form-section crm-form-section-highlighted">
+          <h4 class="crm-form-section-title">📦 ${Utils.t('fields.demandFor')}</h4>
+          <p class="crm-form-section-desc">${tLang('Šta klijent traži — postojeća roba iz kataloga ili sasvim nova roba.','What the client is looking for — existing catalog product or a brand new one.')}</p>
+          <div class="crm-form-grid crm-form-grid-2">
+              <label class="crm-chip" style="padding:12px;border-radius:10px;background:#fff;">
+                  <input type="radio" name="demandType" value="existing" ${!item.isNewProduct ? 'checked' : ''}/>
+                  <span>📦 <b>${Utils.t('fields.existingProduct')}</b></span>
+              </label>
+              <label class="crm-chip" style="padding:12px;border-radius:10px;background:#fff;">
+                  <input type="radio" name="demandType" value="new" ${item.isNewProduct ? 'checked' : ''}/>
+                  <span>✨ <b>${Utils.t('fields.newProduct')}</b></span>
+              </label>
           </div>
-          
-          <div class="mt-6 pt-6 border-t border-slate-200 grid grid-cols-2 gap-6">
-              <div>
-                  <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${Utils.t('fields.quantity')}</label>
-                  <input name="quantity" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-lg font-black text-slate-900 outline-none focus:ring-2 focus:ring-blue-500 shadow-sm" value="${Utils.escapeHtml(item.quantity || '')}" placeholder="0.00"/>
+          <div id="existing-product-container" class="crm-field" style="margin-top:14px;">
+              <label class="crm-label">${Utils.t('actions.select_product')}</label>
+              <select name="productId" class="crm-input">
+                  <option value="">${tLang('— Izaberi robu iz kataloga —','— Select from catalog —')}</option>
+                  ${productOptions}
+              </select>
+              <p class="crm-help">${tLang('Roba iz naše baze proizvoda.','Product from our catalog.')}</p>
+          </div>
+          <div id="new-product-container" class="crm-field hidden" style="margin-top:14px;">
+              <label class="crm-label crm-label-required" style="color:#b45309;">${Utils.t('fields.newProductName')}</label>
+              <input name="newProductName" class="crm-input crm-input-warning" value="${Utils.escapeHtml(item.productName || '')}" placeholder="${Utils.t('placeholders.newProduct')}"/>
+              <p class="crm-help">${tLang('Ako roba nije u katalogu, upiši opis; admin će je kasnije dodati u proizvode.','If the product is not in our catalog, describe it; admin will add it later.')}</p>
+          </div>
+      </div>
+
+      <div class="crm-form-section">
+          <h4 class="crm-form-section-title">📊 ${tLang('Detalji potražnje','Demand details')}</h4>
+          <div class="crm-form-grid crm-form-grid-2">
+              <div class="crm-field">
+                  <label class="crm-label crm-label-required">${Utils.t('fields.quantity')}</label>
+                  <input name="quantity" type="number" step="0.01" min="0" class="crm-input crm-input-price" value="${Utils.escapeHtml(item.quantity || '')}" placeholder="0.00"/>
+                  <p class="crm-help">${tLang('Količina koju kupac traži (u jedinici mere iz proizvoda).','Quantity requested (in the product unit of measure).')}</p>
               </div>
-              <div>
-                  <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">Status Zahteva</label>
-                  <select name="status" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-blue-500 shadow-sm cursor-pointer">
-                      <option value="open" ${item.status === 'open' ? 'selected' : ''}>Otvoreno (Tražimo)</option>
-                      <option value="sourced" ${item.status === 'sourced' ? 'selected' : ''}>Pronađen Dobavljač</option>
-                      <option value="closed" ${item.status === 'closed' ? 'selected' : ''}>Završeno / Prodato</option>
+              <div class="crm-field">
+                  <label class="crm-label">${tLang('Status zahteva','Demand status')}</label>
+                  <select name="status" class="crm-input">
+                      <option value="open" ${item.status === 'open' ? 'selected' : ''}>🟢 ${tLang('Otvoreno (tražimo)','Open (sourcing)')}</option>
+                      <option value="sourced" ${item.status === 'sourced' ? 'selected' : ''}>🔵 ${tLang('Pronađen dobavljač','Supplier found')}</option>
+                      <option value="closed" ${item.status === 'closed' ? 'selected' : ''}>⚫ ${tLang('Završeno / Prodato','Closed / Sold')}</option>
                   </select>
+                  <p class="crm-help">${tLang('Trenutna faza potražnje.','Current stage of the demand.')}</p>
               </div>
           </div>
       </div>
-      
-      <div class="flex justify-end pt-4 mt-6 border-t border-slate-200">
-          <button class="bg-blue-600 hover:bg-blue-700 text-white font-black px-10 py-3 rounded-xl shadow-xl transition-transform transform hover:-translate-y-0.5 tracking-widest uppercase" type="submit">💾 ${Utils.t('actions.save')}</button>
+
+      <div class="crm-form-actions">
+          <button type="submit" class="crm-btn crm-btn-primary">💾 ${Utils.t('actions.save')}</button>
       </div>
     </form>`;
     
