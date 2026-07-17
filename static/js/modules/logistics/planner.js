@@ -291,19 +291,63 @@
                   <div class="logi-ac-dropdown" id="logi-dest-dd"></div>
                   <div class="logi-ac-hint" id="logi-dest-hint" style="display:none;"></div>
                 </div>
-                <div style="display:flex;gap:8px;margin-bottom:16px;">
-                  <div style="flex:1;">
-                    <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">${T('Teret (t)','Cargo (t)')}</label>
-                    <input class="logi-input" id="logi-cargo" type="number" min="0.1" step="0.1" value="${opts.cargoTons || 20}" style="margin-top:4px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+                  <div>
+                    <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">${T('Masa (t)','Weight (t)')}</label>
+                    <input class="logi-input" id="logi-cargo" type="number" min="0.001" step="0.1" value="${opts.cargoTons || 20}" style="margin-top:4px;">
                   </div>
-                  <div style="flex:1;">
-                    <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">${T('Prioritet','Priority')}</label>
-                    <select class="logi-input" id="logi-prefer" style="margin-top:4px;">
-                      <option value="auto">${T('Najbrži','Fastest')}</option>
-                      <option value="cheap">${T('Najjeftiniji','Cheapest')}</option>
-                      <option value="green">${T('Najzeleniji','Lowest CO₂')}</option>
+                  <div>
+                    <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">${T('Zapremina (m³)','Volume (m³)')}</label>
+                    <input class="logi-input" id="logi-volume" type="number" min="0" step="0.1" placeholder="${T('auto iz mase','auto from weight')}" style="margin-top:4px;">
+                  </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+                  <div>
+                    <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">${T('Tip tereta','Cargo type')}</label>
+                    <select class="logi-input" id="logi-container" style="margin-top:4px;">
+                      <option value="">${T('Auto (iz mase)','Auto (from weight)')}</option>
+                      <option value="parcel">${T('Paket (< 500 kg)','Parcel (< 500 kg)')}</option>
+                      <option value="teu">${T("Kontejner 20' (TEU)","Container 20' (TEU)")}</option>
+                      <option value="feu">${T("Kontejner 40' (FEU)","Container 40' (FEU)")}</option>
+                      <option value="reefer">${T('Reefer (frižider)','Reefer (refrigerated)')}</option>
+                      <option value="lcl">${T('LCL (deljeni kontejner)','LCL (consolidated)')}</option>
+                      <option value="breakbulk">${T('Breakbulk','Breakbulk')}</option>
+                      <option value="bulk_dry">${T('Rasuti — suvi','Bulk dry')}</option>
+                      <option value="bulk_liquid">${T('Rasuti — tečni','Bulk liquid')}</option>
+                      <option value="oog">${T('OOG (vangabaritno)','OOG (out-of-gauge)')}</option>
                     </select>
                   </div>
+                  <div>
+                    <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">${T('Rok (dana)','Deadline (days)')}</label>
+                    <input class="logi-input" id="logi-deadline" type="number" min="0" step="1" placeholder="${T('bez roka','no deadline')}" style="margin-top:4px;">
+                  </div>
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:#374151;margin-bottom:12px;">
+                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                    <input type="checkbox" id="logi-perishable" style="cursor:pointer;">
+                    <span>❄️ ${T('Kvarljivo','Perishable')}</span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                    <input type="checkbox" id="logi-hazmat" style="cursor:pointer;">
+                    <span>⚠️ ${T('Opasan teret','Hazmat')}</span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                    <input type="checkbox" id="logi-highvalue" style="cursor:pointer;">
+                    <span>💎 ${T('Visoka vrednost','High value')}</span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                    <input type="checkbox" id="logi-oversize" style="cursor:pointer;">
+                    <span>📦 ${T('Vangabaritno','Oversize')}</span>
+                  </label>
+                </div>
+                <div style="margin-bottom:12px;">
+                  <label style="font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">${T('Optimizuj prema','Optimize for')}</label>
+                  <select class="logi-input" id="logi-prefer" style="margin-top:4px;">
+                    <option value="auto">${T('Automatski (pametan izbor)','Smart auto (best fit)')}</option>
+                    <option value="fast">${T('Najbrže vreme','Fastest transit')}</option>
+                    <option value="cheap">${T('Najniža cena','Cheapest')}</option>
+                    <option value="green">${T('Najmanje CO₂','Lowest CO₂')}</option>
+                  </select>
                 </div>
                 <button id="logi-compute" class="logi-btn logi-btn-primary" style="width:100%;justify-content:center;">
                   <i class="fa-solid fa-magic-wand-sparkles"></i>&nbsp;${T('Izračunaj rute','Compute routes')}
@@ -423,6 +467,15 @@
             const modeIcon = m => m === 'sea' ? 'fa-ship' : (m === 'air' ? 'fa-plane' : 'fa-truck');
             const modeCls  = m => m === 'sea' ? 'logi-tag-sea' : (m === 'air' ? 'logi-tag-air' : 'logi-tag-road');
 
+            const scoreColor = (s) => s >= 70 ? '#059669' : (s >= 40 ? '#d97706' : '#dc2626');
+            const scoreBar = (s) => `
+                <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+                  <div style="flex:1;height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;">
+                    <div style="width:${s}%;height:100%;background:${scoreColor(s)};transition:width .3s;"></div>
+                  </div>
+                  <span style="font-size:11px;font-weight:800;color:${scoreColor(s)};">${s}/100</span>
+                </div>`;
+
             const cards = payload.plans.map((p, i) => {
                 const isRec = p.mode === payload.recommended_mode;
                 const warns = (p.warnings || []).map(w =>
@@ -431,6 +484,17 @@
                         <div style="margin-top:4px;opacity:.9;">${escapeHtml(w.description || '')}</div>
                     </div>`
                 ).join('');
+                const reasonsHtml = (p.fitness_reasons || []).slice(0, 4).map(r =>
+                    `<div style="font-size:11px;color:#4b5563;padding:3px 0;display:flex;gap:6px;">
+                        <span style="color:${scoreColor(p.fitness_score)};font-weight:900;">·</span>
+                        <span>${escapeHtml(r)}</span>
+                    </div>`
+                ).join('');
+                const costHtml = p.estimated_cost_usd ? `
+                    <div class="logi-metric">
+                      <span class="k"><i class="fa-solid fa-dollar-sign"></i> ${T('Procenjena cena','Estimated cost')}</span>
+                      <span class="v">$${Number(p.estimated_cost_usd).toLocaleString()}</span>
+                    </div>` : '';
                 return `
                 <div class="logi-plan-card ${i===0 ? 'active' : ''}" data-plan-idx="${i}">
                   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
@@ -439,19 +503,50 @@
                       ${isRec ? `<span class="logi-tag" style="background:#dcfce7;color:#166534;margin-left:6px;">★ ${T('preporuka','recommended')}</span>` : ''}
                     </div>
                   </div>
+                  ${typeof p.fitness_score === 'number' ? `
+                    <div style="margin-bottom:8px;">
+                      <div style="font-size:10px;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">${T('Podobnost za teret','Fit for cargo')}</div>
+                      ${scoreBar(p.fitness_score)}
+                    </div>` : ''}
                   <div class="logi-metric"><span class="k"><i class="fa-solid fa-ruler-combined"></i> ${T('Distanca','Distance')}</span><span class="v">${p.total_distance_km.toLocaleString()} km</span></div>
                   <div class="logi-metric"><span class="k"><i class="fa-regular fa-clock"></i> ${T('Vreme (ETA)','ETA')}</span><span class="v">${p.total_days} ${T('dana','days')} (${Math.round(p.total_hours)} h)</span></div>
                   <div class="logi-metric"><span class="k"><i class="fa-solid fa-leaf"></i> CO₂</span><span class="v">${p.co2_tons} t</span></div>
+                  ${costHtml}
+                  ${reasonsHtml ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed #e5e7eb;">
+                    <div style="font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">${T('Zašto ovaj mod','Why this mode')}</div>
+                    ${reasonsHtml}
+                  </div>` : ''}
                   ${warns}
                 </div>`;
             }).join('');
 
             const activeIdx = Math.max(0, payload.plans.findIndex(p => p.mode === payload.recommended_mode));
+            const cargoProf = payload.cargo_profile || {};
+            const profileBadges = [];
+            if (cargoProf.container_type)
+                profileBadges.push(`<span class="logi-tag" style="background:#eff6ff;color:#1e40af;">📦 ${escapeHtml(cargoProf.container_type.toUpperCase())}</span>`);
+            profileBadges.push(`<span class="logi-tag" style="background:#f3f4f6;color:#374151;">⚖️ ${cargoProf.weight_tons} t</span>`);
+            if (cargoProf.perishable) profileBadges.push(`<span class="logi-tag" style="background:#dbeafe;color:#1e40af;">❄️ ${T('Kvarljivo','Perishable')}</span>`);
+            if (cargoProf.hazmat) profileBadges.push(`<span class="logi-tag" style="background:#fef3c7;color:#92400e;">⚠️ ${T('Opasan','Hazmat')}</span>`);
+            if (cargoProf.high_value) profileBadges.push(`<span class="logi-tag" style="background:#f3e8ff;color:#6b21a8;">💎 ${T('Vredno','High value')}</span>`);
+            if (cargoProf.oversize) profileBadges.push(`<span class="logi-tag" style="background:#fef3c7;color:#92400e;">📐 OOG</span>`);
+            if (cargoProf.deadline_days > 0) profileBadges.push(`<span class="logi-tag" style="background:#fee2e2;color:#991b1b;">⏱ ${cargoProf.deadline_days}d rok</span>`);
+
+            const recBanner = payload.recommendation_reason ? `
+              <div style="background:linear-gradient(135deg,#eff6ff 0%,#dbeafe 100%);border:1px solid #93c5fd;border-radius:10px;padding:10px 12px;margin-bottom:12px;">
+                <div style="font-size:11px;font-weight:800;color:#1e40af;text-transform:uppercase;letter-spacing:.06em;margin-bottom:2px;">
+                  <i class="fa-solid fa-lightbulb"></i> ${T('Pametna preporuka','Smart recommendation')}
+                </div>
+                <div style="font-size:12px;color:#1e3a8a;line-height:1.5;">${escapeHtml(payload.recommendation_reason)}</div>
+              </div>` : '';
+
             box.innerHTML = `
               <div style="font-size:12px;color:#6b7280;margin-bottom:6px;">
                 <b>${T('Od','From')}:</b> ${escapeHtml(payload.origin.label || '')} &nbsp;•&nbsp;
                 <b>${T('Do','To')}:</b> ${escapeHtml(payload.destination.label || '')}
               </div>
+              <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;">${profileBadges.join('')}</div>
+              ${recBanner}
               ${cards}
               <div id="logi-timeline" style="margin-top:20px;"></div>`;
 
@@ -472,21 +567,65 @@
         function renderTimeline(plan) {
             const el = overlay.querySelector('#logi-timeline');
             if (!el) return;
+            const tierBadge = (tier) => {
+                if (!tier) return '';
+                const t2color = {
+                    'top_tier': '#059669',
+                    'efficient': '#0284c7',
+                    'average': '#d97706',
+                    'congested': '#dc2626',
+                };
+                const c = t2color[tier] || '#6b7280';
+                return `<span style="display:inline-block;padding:1px 6px;border-radius:999px;background:${c}20;color:${c};font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;margin-left:6px;">${T(tier.replace('_',' '), tier.replace('_',' '))}</span>`;
+            };
+
             const items = plan.legs.map((leg, i) => {
-                const dwell = leg.port_dwell_hours ? T(`+ ${leg.port_dwell_hours}h u lukama (utovar/istovar)`, `+ ${leg.port_dwell_hours}h port dwell (load/unload)`)
-                             : leg.airport_dwell_hours ? T(`+ ${leg.airport_dwell_hours}h aerodromski handling`, `+ ${leg.airport_dwell_hours}h airport handling`)
-                             : '';
-                const via = (leg.via_waypoints && leg.via_waypoints.length)
-                    ? `<div style="font-size:11px;color:#6b7280;margin-top:3px;">${T('Preko','Via')}: ${leg.via_waypoints.map(w => escapeHtml(w)).join(' → ')}</div>` : '';
                 const color = leg.kind === 'sea' ? '#10b981' : (leg.kind === 'air' ? '#f59e0b' : '#3b82f6');
                 const icon = leg.kind === 'sea' ? 'fa-ship' : (leg.kind === 'air' ? 'fa-plane' : 'fa-truck');
+
+                let extras = '';
+                // Truck etapa: prikaži broj kamiona, border-crossing
+                if (leg.kind === 'road') {
+                    if (leg.trucks_needed && leg.trucks_needed > 1) {
+                        extras += `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">🚛 ${leg.trucks_needed}× ${T('kamiona (24t FTL)','trucks (24t FTL)')}</div>`;
+                    }
+                    if (leg.border_crossing_hours) {
+                        extras += `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">🛂 + ${leg.border_crossing_hours}h ${T('carina/granica','border crossing')}</div>`;
+                    }
+                }
+                // Sea etapa: raspored dwell-a po luci
+                if (leg.kind === 'sea') {
+                    if (leg.origin_port) {
+                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f9fafb;border-radius:6px;">
+                            <b>${escapeHtml(leg.origin_port.name)}</b> (${escapeHtml(leg.origin_port.unlocode || '')})${tierBadge(leg.origin_port.tier)}
+                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${leg.origin_port.dwell_hours}h ${T('utovar + carina','loading + customs')}</div>
+                            ${leg.origin_port.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(leg.origin_port.notes)}</div>` : ''}
+                        </div>`;
+                    }
+                    if (leg.destination_port) {
+                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f9fafb;border-radius:6px;">
+                            <b>${escapeHtml(leg.destination_port.name)}</b> (${escapeHtml(leg.destination_port.unlocode || '')})${tierBadge(leg.destination_port.tier)}
+                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${leg.destination_port.dwell_hours}h ${T('istovar + carina','discharge + customs')}</div>
+                            ${leg.destination_port.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(leg.destination_port.notes)}</div>` : ''}
+                        </div>`;
+                    }
+                    if (leg.via_waypoints && leg.via_waypoints.length) {
+                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:3px;">${T('Preko','Via')}: ${leg.via_waypoints.map(w => escapeHtml(w)).join(' → ')}</div>`;
+                    }
+                }
+                // Air etapa
+                if (leg.kind === 'air') {
+                    if (leg.airport_dwell_hours) {
+                        extras += `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">⏱ + ${leg.airport_dwell_hours}h ${T('cutoff/handling/carina','cutoff/handling/customs')}</div>`;
+                    }
+                }
+
                 return `
                 <div class="logi-timeline-item">
                   <div class="logi-timeline-dot" style="background:${color};box-shadow:0 0 0 2px ${color};"></div>
                   <div style="font-weight:700;font-size:13px;color:#111827;"><i class="fa-solid ${icon}" style="color:${color};margin-right:4px;"></i>${T('Etapa','Leg')} ${i+1}: ${escapeHtml(leg.from_label)} → ${escapeHtml(leg.to_label)}</div>
                   <div style="font-size:12px;color:#6b7280;margin-top:2px;">${leg.distance_km.toLocaleString()} km · ${leg.hours} h</div>
-                  ${dwell ? `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">${dwell}</div>` : ''}
-                  ${via}
+                  ${extras}
                 </div>`;
             }).join('');
             el.innerHTML = `
@@ -819,17 +958,30 @@
                     destResolved = dest;
                 }
 
-                const cargo = Math.max(0.1, parseFloat(overlay.querySelector('#logi-cargo').value) || 20);
+                const cargo = Math.max(0.001, parseFloat(overlay.querySelector('#logi-cargo').value) || 20);
                 const prefer = overlay.querySelector('#logi-prefer').value;
+                const volumeRaw = parseFloat(overlay.querySelector('#logi-volume').value);
+                const deadlineRaw = parseInt(overlay.querySelector('#logi-deadline').value, 10);
+                const containerVal = overlay.querySelector('#logi-container').value;
+                const perishable = overlay.querySelector('#logi-perishable').checked;
+                const hazmat = overlay.querySelector('#logi-hazmat').checked;
+                const highvalue = overlay.querySelector('#logi-highvalue').checked;
+                const oversize = overlay.querySelector('#logi-oversize').checked;
+
+                const requestBody = {
+                    origin: { lat: origin.lat, lon: origin.lon, label: origin.label },
+                    destination: { lat: dest.lat, lon: dest.lon, label: dest.label },
+                    cargo_tons: cargo,
+                    prefer,
+                    perishable, hazmat, oversize, high_value: highvalue,
+                };
+                if (!isNaN(volumeRaw) && volumeRaw > 0) requestBody.cargo_volume_m3 = volumeRaw;
+                if (!isNaN(deadlineRaw) && deadlineRaw > 0) requestBody.deadline_days = deadlineRaw;
+                if (containerVal) requestBody.container_type = containerVal;
 
                 const res = await apiFetch(apiBase + '/plan', {
                     method: 'POST',
-                    body: JSON.stringify({
-                        origin: { lat: origin.lat, lon: origin.lon, label: origin.label },
-                        destination: { lat: dest.lat, lon: dest.lon, label: dest.label },
-                        cargo_tons: cargo,
-                        prefer,
-                    })
+                    body: JSON.stringify(requestBody)
                 }, apiOpts);
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || 'plan failed');
