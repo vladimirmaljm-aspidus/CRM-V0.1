@@ -753,6 +753,36 @@ class T14LogisticsPlanner(BaseCase):
         self.assertIn('cape_good_hope', wps)
         self.assertNotIn('suez', wps)
 
+    def test_07a_search_returns_ports_and_airports(self):
+        r = self.client.get('/api/logistics/search?q=rotterdam&limit=10')
+        self.assertEqual(r.status_code, 200)
+        js = r.get_json()
+        hits = js.get('hits', [])
+        self.assertTrue(any(h['type'] == 'port' and 'Rotterdam' in h['name'] for h in hits))
+        # Score sortiranje: port sa exact code match ide gore
+        self.assertGreater(hits[0]['score'], 0)
+
+    def test_07b_search_iata_code_top_hit(self):
+        r = self.client.get('/api/logistics/search?q=JFK&limit=5')
+        self.assertEqual(r.status_code, 200)
+        hits = r.get_json()['hits']
+        self.assertTrue(hits, 'no results for JFK')
+        # JFK je exact IATA code — prvi hit MORA biti aerodrom
+        self.assertEqual(hits[0]['type'], 'airport')
+        self.assertEqual(hits[0]['code'], 'JFK')
+
+    def test_07c_search_short_query_returns_empty(self):
+        r = self.client.get('/api/logistics/search?q=&limit=5')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()['hits'], [])
+
+    def test_07d_search_filter_by_country(self):
+        r = self.client.get('/api/logistics/search?q=port&country=NL&limit=15')
+        self.assertEqual(r.status_code, 200)
+        hits = r.get_json()['hits']
+        for h in hits:
+            self.assertEqual(h['country'], 'Netherlands' if h['type'] == 'port' else 'NL')
+
     def test_07_plan_missing_coords_returns_400(self):
         r = self._post_with_csrf('/api/logistics/plan', {
             'origin': {'address': 'Somewhere'},  # bez lat/lon

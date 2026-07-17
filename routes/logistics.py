@@ -351,6 +351,102 @@ def _list_locations(items, id_key, name_key):
     return jsonify({"items": out[:limit], "total": len(out)})
 
 
+# ==========================================================
+#  OBJEDINJENA PRETRAGA (luke + aerodromi + fuzzy scoring)
+#  Frontend autocomplete koristi ovaj endpoint. Vraća "hits" listu
+#  sortiranu po scoring-u, sa istim shape-om za sve tipove (port/airport).
+# ==========================================================
+
+def _score_match(q, name, code, municipality):
+    """Rangira koliko dobro entry odgovara upitu. Veće = bolje."""
+    if not q: return 0
+    q = q.lower().strip()
+    name = (name or '').lower()
+    code = (code or '').lower()
+    muni = (municipality or '').lower()
+    score = 0
+    if code == q: score += 100
+    if code.startswith(q): score += 50
+    if q in code: score += 25
+    if name == q: score += 80
+    if name.startswith(q): score += 40
+    if q in name: score += 20
+    if muni == q: score += 30
+    if muni.startswith(q): score += 15
+    if q in muni: score += 10
+    return score
+
+
+def _do_search(payload):
+    q = (payload.get('q') or '').strip()
+    limit = min(int(payload.get('limit') or 12), 25)
+    types = payload.get('types') or ['port', 'airport']
+    country = (payload.get('country') or '').strip().upper()
+
+    if len(q) < 1:
+        return []
+
+    hits = []
+    if 'port' in types:
+        for p in _load_ports():
+            if country and (p.get('country') or '').upper() != country:
+                continue
+            s = _score_match(q, p.get('name'), p.get('unlocode'), p.get('city'))
+            if s > 0:
+                hits.append({
+                    'type': 'port',
+                    'code': p.get('unlocode', ''),
+                    'name': p.get('name', ''),
+                    'label': f"{p.get('name','')} ({p.get('unlocode','')})",
+                    'municipality': p.get('city') or p.get('name', ''),
+                    'country': p.get('country', ''),
+                    'lat': p['lat'], 'lon': p['lon'],
+                    'score': s,
+                })
+    if 'airport' in types:
+        for a in _load_airports():
+            if country and (a.get('country') or '').upper() != country:
+                continue
+            code_pref = a.get('iata') or a.get('icao') or ''
+            s = _score_match(q, a.get('name'), code_pref, a.get('municipality'))
+            if s > 0:
+                hits.append({
+                    'type': 'airport',
+                    'code': code_pref,
+                    'name': a.get('name', ''),
+                    'label': f"{a.get('name','')} ({code_pref})",
+                    'municipality': a.get('municipality') or a.get('name', ''),
+                    'country': a.get('country', ''),
+                    'lat': a['lat'], 'lon': a['lon'],
+                    'score': s,
+                })
+    hits.sort(key=lambda x: (-x['score'], x['name']))
+    return hits[:limit]
+
+
+@logistics_bp.route('/api/logistics/search', methods=['GET'])
+@login_required
+def search_locations():
+    payload = {
+        'q': request.args.get('q', ''),
+        'limit': request.args.get('limit'),
+        'types': (request.args.get('types') or 'port,airport').split(','),
+        'country': request.args.get('country', ''),
+    }
+    return jsonify({'hits': _do_search(payload)})
+
+
+@logistics_bp.route('/api/portal/logistics/search', methods=['GET'])
+def portal_search_locations():
+    payload = {
+        'q': request.args.get('q', ''),
+        'limit': request.args.get('limit'),
+        'types': (request.args.get('types') or 'port,airport').split(','),
+        'country': request.args.get('country', ''),
+    }
+    return jsonify({'hits': _do_search(payload)})
+
+
 @logistics_bp.route('/api/logistics/disruptions', methods=['GET'])
 @login_required
 def get_disruptions():
