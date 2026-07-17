@@ -6,13 +6,30 @@ function renderCashFlowView() {
     main.innerHTML = '';
     const header = Utils.createViewHeader(Utils.t('cashflow.title'), '', null);
     
+    const srLang = Utils.getLang() === 'sr';
+    const tt = (sr, en) => srLang ? sr : en;
     header.querySelector('h2').parentNode.insertAdjacentHTML('beforeend', `
         <div class="flex items-center gap-2 flex-wrap mt-2 sm:mt-0">
-            <button id="manage-accounts-btn" class="btn bg-[var(--panel)] border border-[var(--border)] text-main hover:bg-[var(--hover-bg)] shadow-sm">${Utils.t('cashflow.manageAccounts')}</button>
-            <button id="manage-recurring-btn" class="btn bg-purple-600 text-white shadow-sm hover:bg-purple-700">${Utils.t('cashflow.recurringExpenses')}</button>
-            <button id="add-transfer-btn" class="btn bg-warning text-black shadow-sm hover:bg-yellow-500">${Utils.t('cashflow.addTransfer')}</button>
-            <button id="add-expense-btn" class="btn bg-danger text-white shadow-sm hover:bg-red-700">${Utils.t('cashflow.addExpense')}</button>
-            <button id="add-income-btn" class="btn bg-success text-white shadow-sm hover:bg-green-700">${Utils.t('cashflow.addIncome')}</button>
+            <button id="manage-accounts-btn" class="btn bg-[var(--panel)] border border-[var(--border)] text-main hover:bg-[var(--hover-bg)] shadow-sm"
+                    data-tooltip="${tt('Upravljaj računima, valutama i početnim stanjima', 'Manage bank accounts, currencies and opening balances')}">
+                ${Utils.t('cashflow.manageAccounts')}
+            </button>
+            <button id="manage-recurring-btn" class="btn bg-purple-600 text-white shadow-sm hover:bg-purple-700"
+                    data-tooltip="${tt('Periodični troškovi (mesečni/godišnji) — automatski se knjiže', 'Recurring expenses (monthly/annual) posted automatically on schedule')}">
+                ${Utils.t('cashflow.recurringExpenses')}
+            </button>
+            <button id="add-transfer-btn" class="btn bg-warning text-black shadow-sm hover:bg-yellow-500"
+                    data-tooltip="${tt('Prenos novca između vaših računa (bez uticaja na P&L)', 'Money transfer between your own accounts (no P&L impact)')}">
+                ${Utils.t('cashflow.addTransfer')}
+            </button>
+            <button id="add-expense-btn" class="btn bg-danger text-white shadow-sm hover:bg-red-700"
+                    data-tooltip="${tt('Novi trošak (odliv sa računa)', 'New expense (money leaving an account)')}">
+                ${Utils.t('cashflow.addExpense')}
+            </button>
+            <button id="add-income-btn" class="btn bg-success text-white shadow-sm hover:bg-green-700"
+                    data-tooltip="${tt('Novi prihod (priliv na račun)', 'New income (money coming into an account)')}">
+                ${Utils.t('cashflow.addIncome')}
+            </button>
         </div>`);
     main.appendChild(header); 
     main.appendChild(renderCashFlowDashboard());

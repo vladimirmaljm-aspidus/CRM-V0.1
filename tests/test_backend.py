@@ -622,6 +622,60 @@ class T12BankSync(BaseCase):
         self.assertEqual(v['bankAccounts'][1]['currency'], 'USD')
 
 
+class T13bPdfMetadata(BaseCase):
+    """PDF metadata (title, author, subject, keywords, creator, producer) mora
+    biti native ubačen — Windows Explorer i macOS Preview ih pokazuju u
+    Properties dialog-u."""
+
+    def test_01_metadata_embedded_in_pdf_bytes(self):
+        from pdf_generator import build_offer_pdf
+        company = {'name': 'Aspidus Global Traders', 'address': 'HQ St 1',
+                   'taxId': '111222', 'brandColor': '#1a56db'}
+        offer = {'id': 'offer-meta-01', 'offerNo': 'META-0001', 'customerId': None,
+                 'items': [{'quantity': 5, 'price': 100, 'unit': 'MT'}],
+                 'currency': 'USD', 'date': '2026-07-17'}
+        pdf_bytes = build_offer_pdf(offer, company=company, settings={'lang': 'en'})
+        # PDF metadata polja se pojavljuju u info dict-u.
+        # ReportLab ih upisuje kao PDF strings u catalogu. Nisu kompresovani —
+        # samo hex-encoded ili literalni. Dovoljno je da pretražimo bytes.
+        head = pdf_bytes[:8192]
+        self.assertIn(b'%PDF', head)
+        # Neki reader-i info koriste iz PDF trailer info dict; potvrđujemo
+        # da su title/author/subject/creator/producer bytes prisutni.
+        # ReportLab može enkodovati kao FEFF-BE UTF-16, pa proveravamo obe forme.
+        tail = pdf_bytes[-4096:]
+        # Sledeći test kroz pikepdf/PyPDF2 nije dostupan (nema u requirements-u),
+        # pa umesto toga verifikujemo prisustvo tag-ova
+        combined = pdf_bytes
+        self.assertTrue(b'/Title' in combined, msg='PDF missing /Title metadata tag')
+        self.assertTrue(b'/Author' in combined, msg='PDF missing /Author metadata tag')
+        self.assertTrue(b'/Subject' in combined, msg='PDF missing /Subject metadata tag')
+        self.assertTrue(b'/Keywords' in combined, msg='PDF missing /Keywords metadata tag')
+        self.assertTrue(b'/Creator' in combined, msg='PDF missing /Creator metadata tag')
+        self.assertTrue(b'/Producer' in combined, msg='PDF missing /Producer metadata tag')
+        # Producer se postavlja preko canvas._doc.info.producer — verifikacija
+        # da nije default "ReportLab" već naš brend
+        self.assertIn(b'Aspidus CRM PDF Engine', combined,
+                      msg='Producer field should be branded Aspidus CRM engine')
+
+    def test_02_no_crash_on_string_address(self):
+        """Regresija: PDF ne sme da padne kad je partner.address STRING (legacy)."""
+        from pdf_generator import build_offer_pdf, _normalize_address, _normalize_contact
+        # Direktan test helper-a
+        p = {'name': 'Legacy Co', 'address': 'Old Street 42', 'city': 'Belgrade', 'country': 'RS'}
+        s, geo = _normalize_address(p)
+        self.assertEqual(s, 'Old Street 42')
+        self.assertEqual(geo, 'Belgrade RS')
+        # Sa dict-om
+        p2 = {'name': 'New Co', 'address': {'street': 'New Str 1', 'city': 'NS', 'country': 'RS'}}
+        s2, geo2 = _normalize_address(p2)
+        self.assertEqual(s2, 'New Str 1')
+        self.assertEqual(geo2, 'NS RS')
+        # Contact varijante
+        email, phone, person = _normalize_contact({'contact': 'not a dict', 'email': 'a@b.c', 'phone': '123'})
+        self.assertEqual(email, 'a@b.c'); self.assertEqual(phone, '123')
+
+
 class T14LogisticsPlanner(BaseCase):
     """Multimodalni planer — /api/logistics/{ports,airports,plan,disruptions}."""
 
