@@ -129,33 +129,60 @@ function showProductForm(id = null) {
       </div>
 
       <!-- TAB 1: GENERAL INFO -->
-      <div id="tab-general" class="prod-pane block space-y-6">
-          <div class="bg-slate-50 p-6 rounded-xl border border-slate-200 shadow-sm">
-              <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-                  <div class="md:col-span-2"><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${Utils.t('fields.productName')} <span class="text-red-500">*</span></label><input name="name" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm" value="${Utils.escapeHtml(item.name || '')}" required /></div>
-                  <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${tLang('Slika (URL)', 'Image URL')}</label><input name="imageUrl" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-medium text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm" value="${Utils.escapeHtml(item.imageUrl || '')}" placeholder="https://..." /></div>
-              </div>
-              
-              <div class="grid grid-cols-2 md:grid-cols-4 gap-6 mb-6 border-t border-slate-200 pt-6">
-                  <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${Utils.t('fields.category')}</label><select name="category" class="w-full bg-white border border-slate-300 rounded-lg px-3 py-3 text-sm font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm cursor-pointer">${categoriesOptions}</select></div>
-                  <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${Utils.t('fields.hsCode')}</label><input name="hsCode" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-mono text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm" value="${Utils.escapeHtml(item.hsCode || '')}" placeholder="Npr. 18010000" /></div>
-                  <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">SKU / Article No.</label><input name="sku" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-mono text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm" value="${Utils.escapeHtml(item.sku || '')}" placeholder="Npr. CCO-001" /></div>
-                  <div><label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">${tLang('Brend / Proizvođač', 'Brand / Mfgr')}</label><input name="brand" class="w-full bg-white border border-slate-300 rounded-lg px-4 py-3 text-sm font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm" value="${Utils.escapeHtml(item.brand || '')}" placeholder="Npr. Cargill" /></div>
-              </div>
-
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-slate-200 pt-6">
-                  <div class="bg-blue-50 p-5 rounded-xl border border-blue-200 shadow-inner">
-                      <label class="block text-[10px] font-black text-blue-700 uppercase tracking-widest mb-2 flex items-center gap-2">🎯 ${tLang('Ciljana Nabavna Cena (Deal Radar)', 'Target Purchase Price')}</label>
-                      <p class="text-[10px] text-blue-600 mb-3">${tLang('Cena koju ciljamo. Ponude ispod ove cene biće markirane zeleno.', 'Price target. Offers below this will be highlighted green.')}</p>
-                      <div class="flex gap-2">
-                          <input name="targetPrice" type="number" step="0.01" class="w-full bg-white border border-blue-300 rounded-lg px-4 py-3 text-lg font-black text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm" value="${item.targetPrice || ''}" placeholder="0.00">
-                          <select name="targetCurrency" class="w-32 bg-white border border-blue-300 rounded-lg px-3 py-3 text-sm font-black text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none shadow-sm cursor-pointer">${CURRENCIES.map(c => `<option value="${c}" ${(item.targetCurrency || 'USD') === c ? 'selected' : ''}>${c}</option>`).join('')}</select>
+      <div id="tab-general" class="prod-pane block">
+          <div class="crm-form-panel">
+              <div class="crm-form-section">
+                  <h4 class="crm-form-section-title">${tLang('📋 Osnovni podaci proizvoda','📋 Basic product information')}</h4>
+                  <p class="crm-form-section-desc">${tLang('Koje ime, šifru i kategoriju roba nosi. Ovaj deo je vidljiv u katalogu i svim izveštajima.','Product name, code and category. This block is what buyers see on the catalog and every report.')}</p>
+                  <div class="crm-form-grid crm-form-grid-3">
+                      <div class="crm-field crm-field-span-2">
+                          <label class="crm-label crm-label-required">${Utils.t('fields.productName')}</label>
+                          <input name="name" class="crm-input crm-input-bold" value="${Utils.escapeHtml(item.name || '')}" required placeholder="${tLang('Npr. Refined White Sugar ICUMSA 45','e.g. Refined White Sugar ICUMSA 45')}"/>
+                          <p class="crm-help">${tLang('Puno komercijalno ime robe. Dodaj kvalitet ili grade ako je bitan.','Full commercial name. Include grade / quality if relevant.')}</p>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('Slika (URL)', 'Image URL')}</label>
+                          <input name="imageUrl" class="crm-input" value="${Utils.escapeHtml(item.imageUrl || '')}" placeholder="https://…"/>
+                          <p class="crm-help">${tLang('Opciono. Direktan link na sliku (jpg/png/webp).','Optional. Direct URL to jpg/png/webp image.')}</p>
                       </div>
                   </div>
-                  <div>
-                      <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">🏷️ ${tLang('Oznake / Tagovi Proizvoda', 'Product Tags')}</label>
-                      <div class="flex flex-wrap gap-2 p-4 bg-white rounded-xl border border-slate-200 shadow-sm min-h-[105px] content-start">
-                          ${tagsHtml}
+                  <div class="crm-form-grid crm-form-grid-4">
+                      <div class="crm-field">
+                          <label class="crm-label">${Utils.t('fields.category')}</label>
+                          <select name="category" class="crm-input">${categoriesOptions}</select>
+                          <p class="crm-help">${tLang('Grupa za lakšu pretragu i grupisanje.','Group for search & reporting.')}</p>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${Utils.t('fields.hsCode')}</label>
+                          <input name="hsCode" class="crm-input crm-input-mono" value="${Utils.escapeHtml(item.hsCode || '')}" placeholder="Npr. 18010000" pattern="[0-9]{4,10}"/>
+                          <p class="crm-help">${tLang('Harmonizovana carinska šifra (6–10 cifara).','Harmonized customs code (6-10 digits).')}</p>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">SKU / Article No.</label>
+                          <input name="sku" class="crm-input crm-input-mono" value="${Utils.escapeHtml(item.sku || '')}" placeholder="Npr. CCO-001"/>
+                          <p class="crm-help">${tLang('Interni kod za skladišnu evidenciju.','Internal code for stock tracking.')}</p>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('Brend / Proizvođač', 'Brand / Manufacturer')}</label>
+                          <input name="brand" class="crm-input" value="${Utils.escapeHtml(item.brand || '')}" placeholder="Npr. Cargill"/>
+                          <p class="crm-help">${tLang('Prazno ako je generic / bez brenda.','Leave empty if unbranded / generic.')}</p>
+                      </div>
+                  </div>
+              </div>
+              <div class="crm-form-section crm-form-section-highlighted">
+                  <div class="crm-form-grid crm-form-grid-2">
+                      <div class="crm-field">
+                          <label class="crm-label crm-label-emphasis">🎯 ${tLang('Ciljana nabavna cena (Deal Radar)', 'Target purchase price (Deal Radar)')}</label>
+                          <p class="crm-help">${tLang('Cena koju ciljamo. Ponude ispod ove cene biće markirane zeleno.', 'Target price. Supplier offers below this price get a green flag.')}</p>
+                          <div class="crm-input-pair">
+                              <input name="targetPrice" type="number" step="0.01" min="0" class="crm-input crm-input-price" value="${item.targetPrice || ''}" placeholder="0.00"/>
+                              <select name="targetCurrency" class="crm-input crm-input-suffix">${CURRENCIES.map(c => `<option value="${c}" ${(item.targetCurrency || 'USD') === c ? 'selected' : ''}>${c}</option>`).join('')}</select>
+                          </div>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">🏷️ ${tLang('Oznake / Tagovi', 'Tags')}</label>
+                          <p class="crm-help">${tLang('Označi robu tagovima za brzu pretragu.','Tag products for quick filtering.')}</p>
+                          <div class="crm-tag-wrap">${tagsHtml}</div>
                       </div>
                   </div>
               </div>
@@ -163,86 +190,157 @@ function showProductForm(id = null) {
       </div>
 
       <!-- TAB 2: SUPPLIER OFFERS -->
-      <div id="tab-commercial" class="prod-pane hidden space-y-6">
-          <div class="bg-slate-50 p-6 rounded-xl border border-slate-200 shadow-sm">
-              <div class="flex justify-between items-center mb-6">
-                  <h4 class="font-black text-slate-800 uppercase tracking-widest text-sm flex items-center gap-2">🤝 ${Utils.t('fields.supplier_offers') || 'Aktuelne Ponude Dobavljača'}</h4>
+      <div id="tab-commercial" class="prod-pane hidden">
+          <div class="crm-form-panel">
+              <div class="crm-form-section">
+                  <h4 class="crm-form-section-title">🤝 ${Utils.t('fields.supplier_offers') || tLang('Aktuelne ponude dobavljača','Current supplier offers')}</h4>
+                  <p class="crm-form-section-desc">${tLang('Sve ponude iste robe od raznih dobavljača/porekala. Deal Radar ističe najbolju varijantu zeleno.','All supplier variants for this product. Deal Radar highlights the best deal green.')}</p>
+                  <div id="offers-list" class="crm-list-scrollable">${renderOffersList() || `<div class="crm-empty">${Utils.t('product_search.noResults') || tLang('Još nema ponuda.','No offers yet.')}</div>`}</div>
               </div>
-              <div id="offers-list" class="space-y-4 mb-8 max-h-[400px] overflow-y-auto custom-scrollbar pr-2">${renderOffersList() || `<div class="text-slate-500 text-sm italic border-dashed border-2 border-slate-300 p-10 text-center rounded-xl font-bold">${Utils.t('product_search.noResults') || 'Nema ponuda.'}</div>`}</div>
-              
-              <div id="offer-edit-box" class="p-6 border border-slate-300 bg-white rounded-xl shadow-lg space-y-4 transition-all relative">
-                  <h5 class="font-black text-blue-600 uppercase tracking-widest text-xs flex items-center gap-2 mb-2 pb-3 border-b border-slate-200" id="offer-box-title">➕ ${Utils.t('actions.add_new_offer') || 'Dodaj Novu Ponudu'}</h5>
-                  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">${Utils.t('actions.select_supplier')}</label><select id="offer-supplier" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-blue-500 cursor-pointer"><option value="">-- Izaberite Dobavljača --</option>${supplierOptions}</select></div>
-                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">${tLang('Poreklo / Država', 'Country of Origin')}</label><div class="autocomplete-container"><input id="offer-country" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-blue-500" placeholder="Npr. Indonesia" autocomplete="off" /></div></div>
-                  </div>
-                  <div class="grid grid-cols-3 md:grid-cols-6 gap-4 border-t border-slate-200 pt-4">
-                      <div class="col-span-2 md:col-span-1"><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Količina (Qty)</label><input id="offer-qty" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-black text-slate-900 outline-none focus:border-blue-500" placeholder="0.00" type="number" step="0.01" /></div>
-                      <div class="col-span-1 md:col-span-1"><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Jedinica</label><select id="offer-unit" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-blue-500 cursor-pointer">${UNITS.map(u => `<option value="${u}">${u}</option>`).join('')}</select></div>
-                      <div class="col-span-1 md:col-span-1"><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Min (MOQ)</label><input id="offer-moq" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-blue-500" placeholder="0.00" type="number" step="0.01" /></div>
-                      <div class="col-span-2 md:col-span-2"><label class="block text-[9px] font-black text-blue-600 uppercase tracking-widest mb-1.5">Nabavna Cena</label><input id="offer-price" class="w-full bg-blue-50 border border-blue-300 rounded-md px-3 py-2 text-base font-black text-blue-800 outline-none focus:ring-2 focus:ring-blue-500 shadow-inner" placeholder="0.00" type="number" step="0.01" /></div>
-                      <div class="col-span-1 md:col-span-1"><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Valuta</label><select id="offer-currency" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-blue-500 cursor-pointer">${CURRENCIES.map(c => `<option value="${c}">${c}</option>`).join('')}</select></div>
-                  </div>
-                  <div class="grid grid-cols-2 gap-4 border-t border-slate-200 pt-4">
-                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">${Utils.t('fields.incoterm')}</label><select id="offer-incoterm" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-bold text-slate-800 outline-none focus:border-blue-500 cursor-pointer"><option value="">-- Paritet --</option>${INCOTERMS.map(i => `<option value="${i}">${i}</option>`).join('')}</select></div>
-                      <div><label class="block text-[9px] font-black text-red-500 uppercase tracking-widest mb-1.5">Važi do (Valid Until)</label><input id="offer-validUntil" type="date" class="w-full bg-red-50 border border-red-200 text-red-800 rounded-md px-3 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-red-500 shadow-inner" /></div>
-                  </div>
-                  <div class="pt-4 border-t border-slate-200">
-                      <label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2">${Utils.t('fields.certificates')}</label>
-                      <div id="offer-certs-wrapper" class="flex flex-wrap gap-2 p-3 bg-slate-50 rounded-lg border border-slate-200 shadow-inner">
-                          ${(typeof CERTIFICATES !== 'undefined' ? CERTIFICATES : []).map(c => `<label class="inline-flex items-center text-xs bg-white px-3 py-1.5 rounded-full cursor-pointer hover:bg-blue-50 border border-slate-200 text-slate-700 font-bold transition-colors shadow-sm"><input type="checkbox" name="offer_cert" value="${c}" class="mr-2 w-4 h-4 text-blue-600 focus:ring-blue-500 rounded-sm border-slate-300"> ${c}</label>`).join('')}
+
+              <div id="offer-edit-box" class="crm-form-section crm-form-section-highlighted">
+                  <h4 class="crm-form-section-title" id="offer-box-title">➕ ${Utils.t('actions.add_new_offer') || tLang('Dodaj novu ponudu dobavljača','Add new supplier offer')}</h4>
+                  <p class="crm-form-section-desc">${tLang('Unesi jednu ponudu jednog dobavljača za ovu robu, sa svim specifičnostima porekla.','Enter one supplier offer for this product, with all origin-specific fields.')}</p>
+                  <div class="crm-form-grid crm-form-grid-2">
+                      <div class="crm-field">
+                          <label class="crm-label crm-label-required">${Utils.t('actions.select_supplier')}</label>
+                          <select id="offer-supplier" class="crm-input"><option value="">${tLang('— Izaberite dobavljača —','— Select supplier —')}</option>${supplierOptions}</select>
+                          <p class="crm-help">${tLang('Partner tipa Supplier iz Partners modula.','Partner tagged as Supplier in Partners module.')}</p>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('Poreklo / Zemlja', 'Country of origin')}</label>
+                          <div class="autocomplete-container">
+                              <input id="offer-country" class="crm-input" placeholder="Npr. Indonesia" autocomplete="off"/>
+                          </div>
+                          <p class="crm-help">${tLang('Zemlja proizvodnje/gajenja robe kod ovog dobavljača.','Country where the goods are produced/grown.')}</p>
                       </div>
                   </div>
-                  <!-- VARIJANTA PO DOBAVLJAČU/ZEMLJI: svaki supply offer može imati sopstvenu spec,
-                       pakovanje i mini-COA, jer ista roba iz različitih zemalja često ima potpuno
-                       drugačije parametre kvaliteta i pakovanja. -->
-                  <div class="pt-4 border-t border-slate-200 bg-blue-50/30 -mx-6 -mb-4 px-6 pb-4 rounded-b-xl">
-                      <p class="text-[10px] font-black text-blue-800 uppercase tracking-widest mb-3">${tLang('Karakteristike za OVOG dobavljača/porekla', 'Variant-specific characteristics')}</p>
-                      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
-                          <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">${tLang('Pakovanje', 'Packaging')}</label><input id="offer-packaging" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-sm outline-none" placeholder="npr. 50kg PP" /></div>
-                          <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">${tLang('Težina paketa (kg)', 'Package weight (kg)')}</label><input id="offer-package-weight" type="number" step="0.01" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-sm outline-none font-mono" /></div>
-                          <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">${tLang('Lead time', 'Lead time')}</label><input id="offer-leadtime" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-sm outline-none" placeholder="npr. 15-20 dana" /></div>
+                  <div class="crm-form-grid crm-form-grid-4">
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('Zalihe kod dobavljača (Qty)','Supplier stock (Qty)')}</label>
+                          <input id="offer-qty" class="crm-input crm-input-mono" placeholder="0.00" type="number" step="0.01" min="0"/>
+                          <p class="crm-help">${tLang('Koliko dobavljač ima trenutno na stanju.','How much the supplier currently has in stock.')}</p>
                       </div>
-                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1">${tLang('Specifikacija ove varijante', 'Variant specification')}</label><textarea id="offer-spec" rows="2" class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-sm outline-none" placeholder="${tLang('npr. Polarizacija ≥99.7%, boja ICUMSA 45, vlaga ≤0.04%', 'e.g. Polarization ≥99.7%, ICUMSA 45, moisture ≤0.04%')}"></textarea></div>
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('Jedinica','Unit')}</label>
+                          <select id="offer-unit" class="crm-input">${UNITS.map(u => `<option value="${u}">${u}</option>`).join('')}</select>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">MOQ ${tLang('(min. porudžbina)','(min order)')}</label>
+                          <input id="offer-moq" class="crm-input crm-input-mono" placeholder="0.00" type="number" step="0.01" min="0"/>
+                          <p class="crm-help">${tLang('Najmanja količina koju dobavljač prihvata.','Smallest quantity supplier accepts.')}</p>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${Utils.t('fields.incoterm')}</label>
+                          <select id="offer-incoterm" class="crm-input"><option value="">${tLang('— Paritet —','— Term —')}</option>${INCOTERMS.map(i => `<option value="${i}">${i}</option>`).join('')}</select>
+                      </div>
                   </div>
-                  <div class="flex justify-end mt-4 gap-3 pt-4 border-t border-slate-200">
-                      <button type="button" id="cancel-offer-edit" class="bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 font-bold px-6 py-2 rounded-lg text-xs shadow-sm transition-colors hidden">${tLang('Odustani', 'Cancel')}</button>
-                      <button type="button" id="add-offer" class="bg-blue-600 hover:bg-blue-700 text-white font-black px-8 py-2 rounded-lg text-xs shadow-md tracking-wider uppercase transition-transform transform hover:-translate-y-0.5">💾 ${Utils.t('actions.save')}</button>
+                  <div class="crm-form-grid crm-form-grid-3">
+                      <div class="crm-field crm-field-span-2">
+                          <label class="crm-label crm-label-emphasis">${tLang('Nabavna cena','Purchase price')}</label>
+                          <div class="crm-input-pair">
+                              <input id="offer-price" class="crm-input crm-input-price" placeholder="0.00" type="number" step="0.01" min="0"/>
+                              <select id="offer-currency" class="crm-input crm-input-suffix">${CURRENCIES.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
+                          </div>
+                          <p class="crm-help">${tLang('Cena po jedinici. Ako je ispod target cene, obeležava se zeleno.','Price per unit. Below your target price → green flag.')}</p>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label crm-label-warning">${tLang('Ponuda važi do','Valid until')}</label>
+                          <input id="offer-validUntil" type="date" class="crm-input crm-input-warning"/>
+                          <p class="crm-help">${tLang('Datum kad ponuda ističe.','Date the offer expires.')}</p>
+                      </div>
+                  </div>
+                  <div class="crm-field">
+                      <label class="crm-label">${Utils.t('fields.certificates')}</label>
+                      <div id="offer-certs-wrapper" class="crm-chip-wrap">
+                          ${(typeof CERTIFICATES !== 'undefined' ? CERTIFICATES : []).map(c => `<label class="crm-chip"><input type="checkbox" name="offer_cert" value="${c}"/>${c}</label>`).join('')}
+                      </div>
+                      <p class="crm-help">${tLang('Sertifikati koje ovaj dobavljač poseduje (ISO, HACCP, Halal…).','Certifications this supplier holds (ISO, HACCP, Halal, …).')}</p>
+                  </div>
+                  <div class="crm-form-subsection">
+                      <h5 class="crm-form-subsection-title">${tLang('Karakteristike za OVOG dobavljača / porekla', 'Variant-specific characteristics')}</h5>
+                      <p class="crm-form-section-desc">${tLang('Ista roba iz različitih zemalja često ima potpuno drugačiju spec, pakovanje i lead time.','Same product from different origins often has completely different specs, packaging and lead time.')}</p>
+                      <div class="crm-form-grid crm-form-grid-3">
+                          <div class="crm-field">
+                              <label class="crm-label">${tLang('Pakovanje', 'Packaging')}</label>
+                              <input id="offer-packaging" class="crm-input" placeholder="${tLang('npr. 50kg PP vreća','e.g. 50kg PP bag')}"/>
+                          </div>
+                          <div class="crm-field">
+                              <label class="crm-label">${tLang('Težina paketa (kg)', 'Package weight (kg)')}</label>
+                              <input id="offer-package-weight" type="number" step="0.01" min="0" class="crm-input crm-input-mono" placeholder="0.00"/>
+                          </div>
+                          <div class="crm-field">
+                              <label class="crm-label">${tLang('Lead time', 'Lead time')}</label>
+                              <input id="offer-leadtime" class="crm-input" placeholder="${tLang('npr. 15-20 dana','e.g. 15-20 days')}"/>
+                          </div>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('Specifikacija ove varijante', 'Variant specification')}</label>
+                          <textarea id="offer-spec" rows="3" class="crm-input" placeholder="${tLang('npr. Polarizacija ≥99.7%, boja ICUMSA 45, vlaga ≤0.04%', 'e.g. Polarization ≥99.7%, ICUMSA 45, moisture ≤0.04%')}"></textarea>
+                      </div>
+                  </div>
+                  <div class="crm-form-actions">
+                      <button type="button" id="cancel-offer-edit" class="crm-btn crm-btn-ghost hidden">${tLang('Odustani', 'Cancel')}</button>
+                      <button type="button" id="add-offer" class="crm-btn crm-btn-primary">💾 ${Utils.t('actions.save')}</button>
                   </div>
               </div>
           </div>
       </div>
 
       <!-- TAB 3: INVENTORY -->
-      <div id="tab-inventory" class="prod-pane hidden space-y-6">
-          <div class="bg-emerald-50/50 p-6 rounded-xl border border-emerald-200 shadow-sm">
-              <h4 class="font-black mb-6 text-emerald-800 uppercase tracking-widest text-sm flex items-center gap-2">📦 ${tLang('Sopstveni Magacin / Lager', 'Own Inventory & Stock')}</h4>
-              
-              <div id="inventory-list" class="space-y-3 mb-8 max-h-[300px] overflow-y-auto custom-scrollbar pr-2">${renderInventoryList()}</div>
-              
-              <div class="p-6 border border-emerald-300 bg-white rounded-xl shadow-lg space-y-4">
-                  <h5 class="font-black text-emerald-700 uppercase tracking-widest text-xs flex items-center gap-2 border-b border-slate-200 pb-3 mb-2">➕ ${tLang('Dodaj robu na stanje', 'Receive Inventory')}</h5>
-                  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">${tLang('Fizička Lokacija (Skladište)', 'Physical Location')}</label><input id="inv-loc" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-bold text-slate-900 outline-none focus:border-emerald-500" placeholder="${tLang('Npr. Jebel Ali, Dubai', 'e.g. Jebel Ali')}" /></div>
-                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Batch / LOT No.</label><input id="inv-batch" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-mono text-slate-900 outline-none focus:border-emerald-500" placeholder="Npr. LOT-2026-05A" /></div>
+      <div id="tab-inventory" class="prod-pane hidden">
+          <div class="crm-form-panel">
+              <div class="crm-form-section">
+                  <h4 class="crm-form-section-title">📦 ${tLang('Sopstveni magacin / Lager', 'Own inventory & stock')}</h4>
+                  <p class="crm-form-section-desc">${tLang('Vlastite zalihe robe koje se već drže u magacinu — spremne za prodaju bez čekanja na dobavljača.','Stock already sitting in your warehouse — ready for sale without waiting on a supplier.')}</p>
+                  <div id="inventory-list" class="crm-list-scrollable">${renderInventoryList()}</div>
+              </div>
+
+              <div class="crm-form-section crm-form-section-highlighted-green">
+                  <h4 class="crm-form-section-title">➕ ${tLang('Dodaj partiju na stanje', 'Receive stock batch')}</h4>
+                  <p class="crm-form-section-desc">${tLang('Prijem robe u magacin — po lokaciji, batch broju i statusu.','Book a batch into the warehouse — with location, batch code and status.')}</p>
+                  <div class="crm-form-grid crm-form-grid-2">
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('Fizička lokacija (skladište)', 'Physical location')}</label>
+                          <input id="inv-loc" class="crm-input" placeholder="${tLang('Npr. Jebel Ali, Dubai', 'e.g. Jebel Ali, Dubai')}"/>
+                          <p class="crm-help">${tLang('Ime skladišta / bonded warehouse.','Warehouse or bonded facility name.')}</p>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">Batch / LOT No.</label>
+                          <input id="inv-batch" class="crm-input crm-input-mono" placeholder="Npr. LOT-2026-05A"/>
+                          <p class="crm-help">${tLang('Interni broj partije za traceability.','Internal batch number for traceability.')}</p>
+                      </div>
                   </div>
-                  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 border-t border-slate-200 pt-4">
-                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Količina (Qty)</label><input id="inv-qty" class="w-full bg-emerald-50 border border-emerald-300 text-emerald-900 rounded-md px-3 py-2 text-lg font-black outline-none focus:ring-2 focus:ring-emerald-500 shadow-inner" placeholder="0.00" type="number" step="0.01" /></div>
-                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Nabavna Cena</label><input id="inv-price" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-bold text-slate-900 outline-none focus:border-emerald-500" placeholder="0.00" type="number" step="0.01" /></div>
-                      <div><label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Valuta</label><select id="inv-currency" class="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-sm font-bold text-slate-900 outline-none cursor-pointer focus:border-emerald-500">${CURRENCIES.map(c => `<option value="${c}">${c}</option>`).join('')}</select></div>
-                      <div><label class="block text-[9px] font-black text-red-500 uppercase tracking-widest mb-1.5">Rok trajanja (Expiry)</label><input id="inv-expiry" type="date" class="w-full bg-red-50 border border-red-200 text-red-800 rounded-md px-3 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-red-500 shadow-inner" /></div>
+                  <div class="crm-form-grid crm-form-grid-4">
+                      <div class="crm-field">
+                          <label class="crm-label crm-label-emphasis">${tLang('Količina (Qty)','Quantity')}</label>
+                          <input id="inv-qty" class="crm-input crm-input-price crm-input-green" placeholder="0.00" type="number" step="0.01" min="0"/>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('Nabavna cena','Purchase price')}</label>
+                          <input id="inv-price" class="crm-input crm-input-mono" placeholder="0.00" type="number" step="0.01" min="0"/>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('Valuta','Currency')}</label>
+                          <select id="inv-currency" class="crm-input">${CURRENCIES.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
+                      </div>
+                      <div class="crm-field">
+                          <label class="crm-label crm-label-warning">${tLang('Rok trajanja','Expiry date')}</label>
+                          <input id="inv-expiry" type="date" class="crm-input crm-input-warning"/>
+                      </div>
                   </div>
-                  <div class="border-t border-slate-200 pt-4">
-                      <label class="block text-[9px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Trenutni Status Robe</label>
-                      <select id="inv-status" class="w-full bg-white border border-slate-300 rounded-md px-4 py-3 text-sm font-black text-slate-800 outline-none cursor-pointer focus:border-emerald-500 shadow-sm">
-                          <option value="available" class="text-emerald-700">🟢 ${tLang('Slobodno za prodaju', 'Available for Sale')}</option>
-                          <option value="in_transit" class="text-blue-700">🔵 ${tLang('U tranzitu (Na putu)', 'In Transit')}</option>
-                          <option value="customs" class="text-orange-700">🟠 ${tLang('Na carini / Inspekciji', 'Customs / Inspection')}</option>
-                          <option value="reserved" class="text-slate-700">⚫ ${tLang('Rezervisano za kupca', 'Reserved for Buyer')}</option>
+                  <div class="crm-field">
+                      <label class="crm-label">${tLang('Trenutni status robe','Current stock status')}</label>
+                      <select id="inv-status" class="crm-input">
+                          <option value="available">🟢 ${tLang('Slobodno za prodaju', 'Available for sale')}</option>
+                          <option value="in_transit">🔵 ${tLang('U tranzitu (na putu)', 'In transit')}</option>
+                          <option value="customs">🟠 ${tLang('Na carini / Inspekciji', 'Customs / Inspection')}</option>
+                          <option value="reserved">⚫ ${tLang('Rezervisano za kupca', 'Reserved for buyer')}</option>
                       </select>
+                      <p class="crm-help">${tLang('Samo "Slobodno za prodaju" ulazi u kalkulaciju slobodnih zaliha.','Only "Available for sale" enters the free-stock calculation.')}</p>
                   </div>
-                  <div class="flex justify-end mt-4 pt-4 border-t border-slate-200">
-                      <button type="button" id="add-inv-btn" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-8 py-2.5 rounded-lg text-xs shadow-md tracking-wider uppercase transition-transform transform hover:-translate-y-0.5">💾 ${Utils.t('actions.save') || 'Sačuvaj na Lager'}</button>
+                  <div class="crm-form-actions">
+                      <button type="button" id="add-inv-btn" class="crm-btn crm-btn-success">💾 ${Utils.t('actions.save') || tLang('Sačuvaj na lager','Save to inventory')}</button>
                   </div>
               </div>
           </div>
