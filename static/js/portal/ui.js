@@ -1233,6 +1233,39 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // BIC/SWIFT live validation on KYC bank field.
+    // Cross-check protiv IBAN country code kad je IBAN validan — potrebno je da
+    // BIC country prefix odgovara IBAN prefix-u da nema greške u wire transfer-u.
+    const swiftInp = document.getElementById('kyc-bank-swift');
+    const swiftStatus = document.getElementById('kyc-bank-swift-status');
+    if (swiftInp && swiftStatus && typeof BIC !== 'undefined') {
+        const checkBic = () => {
+            const raw = (swiftInp.value || '').trim();
+            if (!raw) { swiftStatus.textContent = ''; return; }
+            // Ako je IBAN validan, izvuci country za cross-check
+            let expected = null;
+            const ibanRaw = (document.getElementById('kyc-bank-iban')?.value || '').replace(/\s/g, '');
+            if (ibanRaw.length >= 4 && /^[A-Z]{2}/.test(ibanRaw)) expected = ibanRaw.slice(0, 2);
+            const r = BIC.validate(raw, expected);
+            if (r.valid) {
+                swiftInp.value = r.formatted;
+                swiftStatus.textContent = `✓ Valid BIC — ${r.country_code} bank ${r.bank_code}${r.is_hq ? ' (HQ)' : ` branch ${r.branch_code}`}${r.is_test ? ' [TEST]' : ''}`;
+                swiftStatus.style.color = '#059669';
+            } else {
+                swiftStatus.textContent = `✗ ${r.message}`;
+                swiftStatus.style.color = '#dc2626';
+            }
+        };
+        swiftInp.addEventListener('blur', checkBic);
+        swiftInp.addEventListener('input', () => {
+            const raw = (swiftInp.value || '').replace(/\s/g, '');
+            if (raw.length === 8 || raw.length === 11) checkBic();
+            else if (swiftStatus.textContent && !swiftStatus.textContent.startsWith('✓')) {
+                swiftStatus.textContent = '';
+            }
+        });
+    }
+
     // Auto-fill dial code when country changes on KYC.
     // Uses bundled ISO_COUNTRIES for instant offline; then hits REST Countries
     // proxy for confirmation (updates flag/capital hint if UI has them).
