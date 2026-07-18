@@ -524,7 +524,38 @@ function normalizeUnit(unit) {
 // Faktori konverzije tezinskih jedinica u kilograme. Samo prave tezinske
 // jedinice se mogu konvertovati - pcs/L/CBM/box/ctr itd. nemaju fiksan odnos
 // prema kilogramu pa se za njih konverzija ne radi (vraca se null).
-const WEIGHT_UNITS_TO_KG = { 'kg': 1, 'mt': 1000, 'g': 0.001, 'lb': 0.45359237, 'oz': 0.0283495231 };
+// Osnovni set za brzu lookup; puni set je u UNIT_CANONICAL (constants.js).
+const WEIGHT_UNITS_TO_KG = { 'kg': 1, 'mt': 1000, 't': 1000, 'g': 0.001, 'mg': 0.000001,
+    'lb': 0.45359237, 'lbs': 0.45359237, 'oz': 0.028349523125,
+    'st': 6.35029318, 'stone': 6.35029318,
+    'cwt': 45.359237, 'cwt_us': 45.359237, 'cwt_uk': 50.80234544,
+    'short_ton': 907.18474, 'sh_tn': 907.18474,
+    'long_ton': 1016.0469088, 'l_tn': 1016.0469088,
+    'grain': 0.00006479891,
+};
+
+// Generički konverter — koristi UNIT_CANONICAL kao source of truth za sve
+// vrste jedinica (mass/volume/area/length/count). Vraća null ako jedinice
+// nisu istog kind-a (npr. mass ↔ volume bez density-ja).
+function convertAny(qty, fromUnit, toUnit) {
+    if (qty === null || qty === undefined) return null;
+    const q = parseFloat(qty);
+    if (isNaN(q)) return null;
+    if (typeof UNIT_CANONICAL === 'undefined') return null;
+    const from = normalizeUnit(fromUnit);
+    const to = normalizeUnit(toUnit);
+    if (from === to) return q;
+    const fSpec = UNIT_CANONICAL[from];
+    const tSpec = UNIT_CANONICAL[to];
+    if (!fSpec || !tSpec) return null;
+    if (fSpec.kind !== tSpec.kind) return null;
+    // Pivot ključ zavisi od kind-a
+    if (fSpec.kind === 'mass'   && fSpec.toKg   && tSpec.toKg)   return q * fSpec.toKg   / tSpec.toKg;
+    if (fSpec.kind === 'volume' && fSpec.toL    && tSpec.toL)    return q * fSpec.toL    / tSpec.toL;
+    if (fSpec.kind === 'area'   && fSpec.toSqm  && tSpec.toSqm)  return q * fSpec.toSqm  / tSpec.toSqm;
+    if (fSpec.kind === 'length' && fSpec.toM    && tSpec.toM)    return q * fSpec.toM    / tSpec.toM;
+    return null;  // count → count = ne konvertuje se numerički
+}
 
 function isWeightUnit(unit) {
     return Object.prototype.hasOwnProperty.call(WEIGHT_UNITS_TO_KG, normalizeUnit(unit));
@@ -675,6 +706,7 @@ window.Utils = {
     convertWeight,
     toMetricTons,
     toKilograms,
+    convertAny,
     convertPricePerUnit,
     totalPriceQty,
     uploadFileToServer,
