@@ -897,15 +897,35 @@ function renderOffersView() {
                     }
                 }
 
-                // Razlog odbijanja/potpisa klijenta ispod glavnog reda (ako postoji clientNote).
+                // Razlog odbijanja/potpisa klijenta ispod glavnog reda (ako postoji clientNote ili clientSignature).
                 let clientNoteRow = '';
-                if (offer.clientNote && (offer.clientStatus === 'declined' || offer.clientStatus === 'accepted')) {
+                const hasSig = offer.clientSignature && offer.clientSignature.dataUrl;
+                if ((offer.clientNote || hasSig) && (offer.clientStatus === 'declined' || offer.clientStatus === 'accepted')) {
                     const isDecl = offer.clientStatus === 'declined';
                     const cls = isDecl ? 'bg-red-50 border-red-200 text-red-900' : 'bg-emerald-50 border-emerald-200 text-emerald-900';
                     const label = isDecl ? (Utils.t('offers.declineReason') || 'Client decline reason') : (Utils.t('offers.acceptNote') || 'Client accept note');
                     const markSeenBtn = (offer.adminReviewedByClient === false)
                         ? `<button class="ml-2 text-[10px] font-bold uppercase text-blue-700 hover:underline" onclick="event.stopPropagation(); (async () => { await fetch('/api/portal/admin/offers/mark_seen/${offer.id}', {method:'POST'}); if (typeof showToast==='function') showToast('Marked as seen.', 'success'); if (typeof renderOffersView==='function') renderOffersView(); })()">Mark seen</button>`
                         : '';
+                    // Render signature block ako je klijent potpisao ponudu
+                    let sigBlock = '';
+                    if (hasSig) {
+                        const s = offer.clientSignature;
+                        sigBlock = `
+                        <div class="mt-2 pt-2 border-t border-emerald-300/50">
+                          <div class="text-[10px] font-bold uppercase tracking-wider text-emerald-800 mb-1">
+                            🖋️ Legally binding e-signature
+                          </div>
+                          <div class="flex items-center gap-3">
+                            <img src="${Utils.escapeHtml(s.dataUrl)}" alt="Client signature" style="max-height:48px;max-width:200px;background:#fff;padding:2px;border:1px solid #d4d4d8;border-radius:4px;" />
+                            <div class="text-[11px] text-emerald-900 leading-tight">
+                              <div><strong>${Utils.escapeHtml(s.signerName || '')}</strong></div>
+                              <div class="opacity-80">Signed ${s.signedAt ? new Date(s.signedAt).toLocaleString(currentLang) : ''}</div>
+                              ${s.ipAddress ? `<div class="opacity-70">IP ${Utils.escapeHtml(s.ipAddress)}</div>` : ''}
+                            </div>
+                          </div>
+                        </div>`;
+                    }
                     clientNoteRow = `
                     <tr class="border-t-0">
                       <td colspan="6" class="px-5 pb-3 pt-0">
@@ -913,8 +933,9 @@ function renderOffersView() {
                           <span class="text-lg">${isDecl ? '❌' : '✅'}</span>
                           <div class="flex-1">
                             <strong class="text-xs font-bold uppercase tracking-wider block mb-0.5">${label}</strong>
-                            <span class="italic">"${Utils.escapeHtml(offer.clientNote)}"</span>
+                            ${offer.clientNote ? `<span class="italic">"${Utils.escapeHtml(offer.clientNote)}"</span>` : ''}
                             ${offer.clientDeclinedAt || offer.clientAcceptedAt ? `<span class="block text-[10px] mt-1 opacity-75">${new Date(offer.clientDeclinedAt || offer.clientAcceptedAt).toLocaleString(currentLang)}${markSeenBtn}</span>` : markSeenBtn}
+                            ${sigBlock}
                           </div>
                         </div>
                       </td>
