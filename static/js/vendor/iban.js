@@ -166,10 +166,70 @@
 
     const IBAN = { isValid, validate, format, supportedCountries };
 
+    // ==========================================================
+    // BIC / SWIFT validator (ISO 9362)
+    // ==========================================================
+    // Structure: BBBBCCLL[XXX]
+    //   BBBB — 4 letters, bank code
+    //   CC   — 2 letters, ISO 3166-1 alpha-2 country code
+    //   LL   — 2 alnum, location code (letter1: city; letter2: connection type)
+    //   XXX  — optional 3 alnum branch code (HQ = XXX; primary branch omitted)
+    // Second char of location must NOT be '0' or '1' for reserved codes.
+    // Valid lengths: 8 (no branch) or 11 (with branch).
+    const _BIC_RE = /^([A-Z]{4})([A-Z]{2})([A-Z0-9]{2})([A-Z0-9]{3})?$/;
+
+    function bicClean(bic) {
+        return String(bic || '').replace(/\s|-/g, '').toUpperCase();
+    }
+
+    function bicIsValid(bic) {
+        const s = bicClean(bic);
+        return _BIC_RE.test(s);
+    }
+
+    function bicValidate(bic, expectedCountry) {
+        const s = bicClean(bic);
+        if (!s) return {valid: false, reason: 'empty', message: 'BIC/SWIFT is empty'};
+        const m = _BIC_RE.exec(s);
+        if (!m) {
+            const len = s.length;
+            if (len !== 8 && len !== 11) return {valid: false, reason: 'wrong_length', message: `BIC must be 8 or 11 chars (got ${len})`};
+            return {valid: false, reason: 'bad_format', message: 'BIC pattern is: 4 bank letters + 2 country + 2 location [+3 branch]'};
+        }
+        const [_, bank, country, loc, branch] = m;
+        // Ako je pozvano sa expectedCountry (npr. IBAN CC), proveri poklapanje
+        if (expectedCountry && country !== String(expectedCountry).toUpperCase()) {
+            return {valid: false, reason: 'country_mismatch',
+                    country, expected: String(expectedCountry).toUpperCase(),
+                    message: `BIC country (${country}) does not match IBAN country (${expectedCountry})`};
+        }
+        // Rezervni location codes '00' i '01' su neispravni
+        if (loc.startsWith('0')) {
+            return {valid: false, reason: 'reserved_location',
+                    message: 'Location code cannot start with 0 (reserved)'};
+        }
+        // Test-only kod: drugi char lokacije '0' označava test okruženje
+        const isTest = loc[1] === '0';
+        return {
+            valid: true,
+            bank_code: bank,
+            country_code: country,
+            location_code: loc,
+            branch_code: branch || 'XXX',
+            length: s.length,
+            is_test: isTest,
+            is_hq: !branch,
+            formatted: s.length === 11 ? `${bank} ${country} ${loc} ${branch}` : `${bank} ${country} ${loc}`,
+        };
+    }
+
+    const BIC = { isValid: bicIsValid, validate: bicValidate, clean: bicClean };
+
     if (typeof window !== 'undefined') {
         window.IBAN = IBAN;
+        window.BIC = BIC;
     }
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = IBAN;
+        module.exports = {IBAN, BIC};
     }
 })();
