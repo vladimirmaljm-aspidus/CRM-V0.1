@@ -517,6 +517,7 @@
                                 <label class="label required" id="lbl-bank-iban">IBAN / Account No.</label>
                                 <input type="text" id="kyc-bank-iban" class="input font-mono" required>
                                 <p class="field-help">International Bank Account Number or local account number</p>
+                                <div id="kyc-bank-iban-status" class="mt-1 text-xs font-semibold" style="min-height:1.1em;"></div>
                             </div>
                             <div>
                                 <label class="label required" id="lbl-bank-swift">SWIFT / BIC</label>
@@ -693,8 +694,8 @@
                             <label class="block text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">Target price</label>
                             <div class="flex gap-2">
                                 <input type="number" step="0.01" id="quote-target-price" placeholder="Optional" class="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none"/>
-                                <select id="quote-currency" class="px-2 py-2 border border-slate-300 rounded-lg text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none">
-                                    <option value="USD">USD</option><option value="EUR">EUR</option><option value="AED">AED</option><option value="GBP">GBP</option>
+                                <select id="quote-currency" data-populate="currencies" class="px-2 py-2 border border-slate-300 rounded-lg text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none">
+                                    <option value="USD">USD</option>
                                 </select>
                             </div>
                         </div>
@@ -1023,8 +1024,8 @@
                                 </div>
                                 <div>
                                     <label class="label">Currency</label>
-                                    <select id="form-product-currency" class="input">
-                                        <option value="USD">USD — US Dollar</option><option value="EUR">EUR — Euro</option><option value="AED">AED — UAE Dirham</option><option value="RSD">RSD — Serbian Dinar</option>
+                                    <select id="form-product-currency" data-populate="currencies" class="input">
+                                        <option value="USD">USD — US Dollar</option>
                                     </select>
                                 </div>
                                 <div>
@@ -1041,18 +1042,8 @@
                                 </div>
                                 <div>
                                     <label class="label">Incoterm</label>
-                                    <select id="form-product-incoterm" class="input">
+                                    <select id="form-product-incoterm" data-populate="incoterms" data-placeholder="— Select —" class="input">
                                         <option value="">— Select —</option>
-                                        <option value="EXW">EXW — Ex Works</option>
-                                        <option value="FCA">FCA — Free Carrier</option>
-                                        <option value="FOB">FOB — Free On Board</option>
-                                        <option value="CFR">CFR — Cost & Freight</option>
-                                        <option value="CIF">CIF — Cost, Insurance & Freight</option>
-                                        <option value="CPT">CPT — Carriage Paid To</option>
-                                        <option value="CIP">CIP — Carriage & Insurance Paid</option>
-                                        <option value="DAP">DAP — Delivered At Place</option>
-                                        <option value="DPU">DPU — Delivered At Place Unloaded</option>
-                                        <option value="DDP">DDP — Delivered Duty Paid</option>
                                     </select>
                                     <p class="field-help">Standard delivery terms (Incoterms 2020).</p>
                                 </div>
@@ -1174,6 +1165,31 @@
         let otpRequested = false;
         let uploadedCertUrls = [];
         let activeCOAParams = [];
+    </script>
+    <datalist id="shared-countries-datalist"></datalist>
+    <script src="/static/js/config/shared_constants.js"></script>
+    <script src="/static/js/config/iso_countries.js"></script>
+    <script src="/static/js/config/hs_codes.js"></script>
+    <script src="/static/js/vendor/iban.js"></script>
+    <script src="/static/js/vendor/signature_pad.js"></script>
+    <script>
+        // Populate country datalist and bind to all text inputs whose id contains 'country'.
+        (function() {
+            function bindCountries() {
+                const dl = document.getElementById('shared-countries-datalist');
+                if (dl && window.COUNTRIES && !dl.children.length) {
+                    dl.innerHTML = window.COUNTRIES.map(c => `<option value="${c}">`).join('');
+                }
+                document.querySelectorAll('input[type=text][id*="country" i]').forEach(inp => {
+                    if (!inp.getAttribute('list')) inp.setAttribute('list', 'shared-countries-datalist');
+                });
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', bindCountries);
+            } else {
+                bindCountries();
+            }
+        })();
     </script>
     <script src="/static/js/portal/i18n.js"></script>
     <script src="/static/js/portal/ui.js"></script>
