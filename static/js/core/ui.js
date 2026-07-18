@@ -278,6 +278,18 @@ function showProfileModal() {
             </div>
         </div>
       </div>
+
+      <div class="pt-5 border-t border-[var(--border)]" id="twofa-section">
+        <label class="block text-xs font-semibold text-[var(--muted)] uppercase tracking-wide mb-1.5">🔐 ${srLang ? 'Dvofaktorska autentifikacija (2FA)' : 'Two-Factor Authentication (2FA)'}</label>
+        <p class="text-xs text-[var(--muted)] mb-3">${srLang ? 'Dodaj drugi sloj zaštite koristeći Google Authenticator, Authy, 1Password ili sličan TOTP klijent.' : 'Add a second layer of protection using Google Authenticator, Authy, 1Password or any RFC 6238 TOTP client.'}</p>
+        <div id="twofa-status" class="text-sm mb-3">
+            <span class="text-[var(--muted)]">⏳ ${srLang ? 'Učitavanje…' : 'Loading…'}</span>
+        </div>
+        <div class="flex gap-2">
+            <button type="button" id="twofa-enable-btn" class="btn btn-primary small hidden">${srLang ? 'Uključi 2FA' : 'Enable 2FA'}</button>
+            <button type="button" id="twofa-disable-btn" class="btn btn-ghost small hidden">${srLang ? 'Isključi 2FA' : 'Disable 2FA'}</button>
+        </div>
+      </div>
     </div>`;
 
     openModal(t('misc.myProfile'), html, async (fd) => {
@@ -319,6 +331,109 @@ function showProfileModal() {
     });
     const rmBtn = document.getElementById('sig-remove');
     if (rmBtn) rmBtn.addEventListener('click', () => saveSignature(''));
+
+    // ==========================================================
+    // 2FA / TOTP setup UI
+    // ==========================================================
+    const twofaStatus = document.getElementById('twofa-status');
+    const twofaEnable = document.getElementById('twofa-enable-btn');
+    const twofaDisable = document.getElementById('twofa-disable-btn');
+
+    async function refreshTwofaStatus() {
+        try {
+            const r = await fetch('/api/auth/totp/status');
+            if (!r.ok) throw new Error('status');
+            const j = await r.json();
+            if (j.enabled) {
+                twofaStatus.innerHTML = `<span class="text-green-600 font-bold">✓ 2FA ${srLang ? 'aktivno' : 'active'}</span> · <span class="text-xs text-[var(--muted)]">${j.recovery_codes_remaining} ${srLang ? 'recovery kodova preostalo' : 'recovery codes remaining'}</span>`;
+                twofaEnable.classList.add('hidden');
+                twofaDisable.classList.remove('hidden');
+            } else {
+                twofaStatus.innerHTML = `<span class="text-amber-600 font-bold">⚠ 2FA ${srLang ? 'isključeno' : 'disabled'}</span> · <span class="text-xs text-[var(--muted)]">${srLang ? 'Preporučujemo uključivanje.' : 'Recommended for account security.'}</span>`;
+                twofaEnable.classList.remove('hidden');
+                twofaDisable.classList.add('hidden');
+            }
+        } catch (e) {
+            twofaStatus.innerHTML = `<span class="text-red-600">2FA status unavailable</span>`;
+        }
+    }
+    refreshTwofaStatus();
+
+    if (twofaEnable) twofaEnable.addEventListener('click', async () => {
+        try {
+            const r = await fetch('/api/auth/totp/setup_start', {method: 'POST'});
+            const j = await r.json();
+            if (!r.ok) { alert(j.message || 'Failed to start 2FA setup'); return; }
+            // Show QR + code entry modal
+            const qrUri = encodeURIComponent(j.provisioning_uri);
+            const setupHtml = `
+                <div class="space-y-4">
+                    <p class="text-sm">${srLang ? 'Skenirajte ovaj QR kod svojim Authenticator app-om (Google Authenticator, Authy, 1Password itd.).' : 'Scan this QR code with your Authenticator app (Google Authenticator, Authy, 1Password, etc.).'}</p>
+                    <div class="flex justify-center bg-white p-4 rounded-lg border border-slate-200">
+                        <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${qrUri}" alt="TOTP QR" style="width:200px;height:200px;">
+                    </div>
+                    <div class="text-xs text-[var(--muted)] text-center">
+                        ${srLang ? 'Ili unesite ručno:' : 'Or enter manually:'}<br>
+                        <code class="font-mono bg-slate-100 px-2 py-1 rounded text-[10px]">${escapeHtml(j.secret)}</code>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold uppercase text-slate-600 mb-1">${srLang ? '6-cifreni kod iz app-a' : '6-digit code from your app'}</label>
+                        <input type="text" id="totp-confirm-code" class="form-input font-mono text-center text-2xl tracking-widest" maxlength="6" pattern="[0-9]{6}" autocomplete="off" placeholder="000000">
+                    </div>
+                    <div id="totp-confirm-error" class="text-red-600 text-xs hidden"></div>
+                </div>`;
+            openModal(srLang ? 'Uključi 2FA' : 'Enable 2FA', setupHtml, async (fd) => {
+                const code = document.getElementById('totp-confirm-code').value.trim();
+                if (!/^\d{6}$/.test(code)) {
+                    document.getElementById('totp-confirm-error').textContent = 'Enter a 6-digit code';
+                    document.getElementById('totp-confirm-error').classList.remove('hidden');
+                    return false;   // keep modal open
+                }
+                const cr = await fetch('/api/auth/totp/setup_confirm', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({secret: j.secret, code}),
+                });
+                const cj = await cr.json();
+                if (!cr.ok) {
+                    document.getElementById('totp-confirm-error').textContent = cj.message || 'Invalid code';
+                    document.getElementById('totp-confirm-error').classList.remove('hidden');
+                    return false;
+                }
+                // Show recovery codes screen
+                closeModal();
+                const codesList = cj.recovery_codes.map(c => `<div class="font-mono font-bold text-lg text-center py-1 bg-white rounded border border-slate-200">${c}</div>`).join('');
+                openModal(srLang ? '✓ 2FA je aktivirano — sačuvajte recovery kodove' : '✓ 2FA activated — save your recovery codes', `
+                    <div class="space-y-3">
+                        <div class="bg-amber-50 border border-amber-300 text-amber-900 rounded-lg p-3 text-sm">
+                            <strong>⚠️ ${srLang ? 'Ovi kodovi se NIKAD više neće prikazati.' : 'These codes will NEVER be shown again.'}</strong><br>
+                            ${srLang ? 'Sačuvajte ih na sigurnom mestu (menadžer lozinki, štampan papir u sefu). Svaki radi jednom u slučaju gubitka telefona.' : 'Save them somewhere safe (password manager, printed and locked away). Each works once if you lose your phone.'}
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">${codesList}</div>
+                        <button type="button" onclick="const t=this.parentNode.querySelectorAll('.font-mono'); navigator.clipboard.writeText(Array.from(t).map(e=>e.textContent).join('\\n')); this.textContent='✓ Copied';" class="btn btn-primary small w-full">📋 Copy all</button>
+                    </div>`, () => { refreshTwofaStatus(); });
+            });
+        } catch (e) { console.error(e); alert('2FA setup failed'); }
+    });
+
+    if (twofaDisable) twofaDisable.addEventListener('click', async () => {
+        const password = await askInput(srLang ? 'Isključi 2FA' : 'Disable 2FA', {
+            description: srLang ? 'Unesite trenutnu lozinku.' : 'Enter your current password.',
+            inputType: 'password', required: true,
+        });
+        if (!password) return;
+        const code = await askInput(srLang ? 'Kod iz Authenticator app-a' : 'Authenticator code', {
+            description: srLang ? '6-cifreni kod ili recovery kod.' : '6-digit code, or a recovery code.',
+            required: true,
+        });
+        if (!code) return;
+        const r = await fetch('/api/auth/totp/disable', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({password, code}),
+        });
+        const j = await r.json();
+        if (r.ok) { alert(srLang ? '2FA isključeno.' : '2FA disabled.'); refreshTwofaStatus(); }
+        else alert(j.message || 'Failed to disable 2FA');
+    });
 }
 
 // ==========================================================
