@@ -9,7 +9,7 @@ const UNITS = ['kg - Kilogram', 'MT - Metric Ton', 'g - Gram', 'lb - Pound', 'oz
 // mapira se u kanonski oblik (kg / t / L / mL / pcs / box / ...).
 // Sve konverzije mase se rade kroz KILOGRAM kao pivot.
 const UNIT_CANONICAL = {
-    // Masa
+    // === MASA (canonical = kg) ===
     'kg': { canonical: 'kg', kind: 'mass', toKg: 1 },
     'g':  { canonical: 'g',  kind: 'mass', toKg: 0.001 },
     'mg': { canonical: 'mg', kind: 'mass', toKg: 0.000001 },
@@ -19,17 +19,47 @@ const UNIT_CANONICAL = {
     'tona':{canonical: 't',  kind: 'mass', toKg: 1000 },
     'tonna':{canonical: 't', kind: 'mass', toKg: 1000 },
     'metric ton':{ canonical: 't', kind: 'mass', toKg: 1000 },
+    'tonne':{ canonical: 't', kind: 'mass', toKg: 1000 },
+    // Imperial masa (US customary + Avoirdupois)
     'lb': { canonical: 'lb', kind: 'mass', toKg: 0.45359237 },
     'lbs':{ canonical: 'lb', kind: 'mass', toKg: 0.45359237 },
-    'oz': { canonical: 'oz', kind: 'mass', toKg: 0.0283495 },
-    // Zapremina
-    'l':  { canonical: 'L',  kind: 'volume', toL: 1 },
-    'ml': { canonical: 'mL', kind: 'volume', toL: 0.001 },
-    'cbm':{ canonical: 'CBM',kind: 'volume', toL: 1000 },
-    'm3': { canonical: 'CBM',kind: 'volume', toL: 1000 },
-    'gal':{ canonical: 'gal',kind: 'volume', toL: 3.78541 },
-    'bbl':{ canonical: 'bbl',kind: 'volume', toL: 158.987 },
-    // Diskretni
+    'pound':{canonical:'lb', kind: 'mass', toKg: 0.45359237 },
+    'oz': { canonical: 'oz', kind: 'mass', toKg: 0.028349523125 },
+    'ounce':{canonical:'oz', kind: 'mass', toKg: 0.028349523125 },
+    'grain':{canonical:'gr', kind: 'mass', toKg: 0.00006479891 },
+    'stone':{canonical:'st', kind: 'mass', toKg: 6.35029318 },
+    'st':  { canonical: 'st',kind: 'mass', toKg: 6.35029318 },
+    // Cwt = hundredweight; US short = 100 lb, UK long = 112 lb
+    'cwt': { canonical: 'cwt_us', kind: 'mass', toKg: 45.359237 },       // default US short
+    'cwt_us':{canonical:'cwt_us', kind: 'mass', toKg: 45.359237 },
+    'cwt_uk':{canonical:'cwt_uk', kind: 'mass', toKg: 50.80234544 },
+    // Short ton (US) = 2000 lb; long ton (UK) = 2240 lb
+    'short_ton':{canonical:'sh_tn',kind:'mass', toKg: 907.18474 },
+    'sh_tn':{canonical:'sh_tn',kind:'mass', toKg: 907.18474 },
+    'long_ton': {canonical:'l_tn',kind:'mass', toKg: 1016.0469088 },
+    'l_tn':{canonical:'l_tn',kind:'mass', toKg: 1016.0469088 },
+
+    // === ZAPREMINA (canonical = L) ===
+    'l':   { canonical: 'L',  kind: 'volume', toL: 1 },
+    'ml':  { canonical: 'mL', kind: 'volume', toL: 0.001 },
+    'hl':  { canonical: 'hL', kind: 'volume', toL: 100 },
+    'cbm': { canonical: 'CBM',kind: 'volume', toL: 1000 },
+    'm3':  { canonical: 'CBM',kind: 'volume', toL: 1000 },
+    'gal': { canonical: 'gal_us', kind: 'volume', toL: 3.785411784 },  // default US
+    'gal_us':{canonical:'gal_us', kind: 'volume', toL: 3.785411784 },
+    'gal_uk':{canonical:'gal_uk', kind: 'volume', toL: 4.54609 },
+    'imp_gal':{canonical:'gal_uk', kind:'volume', toL: 4.54609 },
+    'qt':  { canonical: 'qt', kind: 'volume', toL: 0.946352946 },       // US quart
+    'pt':  { canonical: 'pt', kind: 'volume', toL: 0.473176473 },       // US pint
+    'fl_oz':{canonical:'fl_oz',kind: 'volume', toL: 0.0295735295625 },  // US fluid oz
+    'floz':{canonical:'fl_oz',kind: 'volume', toL: 0.0295735295625 },
+    'bbl': { canonical: 'bbl',kind: 'volume', toL: 158.987294928 },     // petroleum barrel
+    'bbl_dry':{canonical:'bbl_dry',kind:'volume', toL: 115.6271236 },
+    'ft3': { canonical: 'ft3',kind: 'volume', toL: 28.316846592 },
+    'cft': { canonical: 'ft3',kind: 'volume', toL: 28.316846592 },
+    'in3': { canonical: 'in3',kind: 'volume', toL: 0.016387064 },
+
+    // === DISKRETNI (count) ===
     'pcs':{ canonical: 'pcs',kind: 'count' },
     'pc': { canonical: 'pcs',kind: 'count' },
     'kom':{ canonical: 'pcs',kind: 'count' },
@@ -42,9 +72,33 @@ const UNIT_CANONICAL = {
     'paleta':{canonical:'plt',kind:'count' },
     'ctr':{ canonical: 'ctr',kind: 'count' },
     'fcl':{ canonical: 'fcl',kind: 'count' },
-    // Površina / dužina
+    'drum':{canonical: 'drum',kind:'count' },
+    'roll':{canonical: 'roll',kind:'count' },
+
+    // === POVRŠINA (canonical = sqm) ===
     'sqm':{ canonical: 'sqm',kind: 'area', toSqm: 1 },
+    'm2': { canonical: 'sqm',kind: 'area', toSqm: 1 },
+    'sqft':{canonical:'sqft',kind: 'area', toSqm: 0.09290304 },
+    'ft2':{ canonical: 'sqft',kind: 'area', toSqm: 0.09290304 },
+    'sqyd':{canonical:'sqyd',kind: 'area', toSqm: 0.83612736 },
+    'sqin':{canonical:'sqin',kind: 'area', toSqm: 0.00064516 },
+    'ha': { canonical: 'ha', kind: 'area', toSqm: 10000 },
+    'acre':{canonical:'acre',kind: 'area', toSqm: 4046.8564224 },
+
+    // === DUŽINA (canonical = m) ===
     'm':  { canonical: 'm',  kind: 'length', toM: 1 },
+    'mm': { canonical: 'mm', kind: 'length', toM: 0.001 },
+    'cm': { canonical: 'cm', kind: 'length', toM: 0.01 },
+    'km': { canonical: 'km', kind: 'length', toM: 1000 },
+    'in': { canonical: 'in', kind: 'length', toM: 0.0254 },
+    'inch':{canonical: 'in',kind: 'length', toM: 0.0254 },
+    'ft': { canonical: 'ft', kind: 'length', toM: 0.3048 },
+    'foot':{canonical: 'ft',kind: 'length', toM: 0.3048 },
+    'yd': { canonical: 'yd', kind: 'length', toM: 0.9144 },
+    'yard':{canonical: 'yd',kind: 'length', toM: 0.9144 },
+    'mile':{canonical:'mi', kind: 'length', toM: 1609.344 },
+    'mi': { canonical: 'mi', kind: 'length', toM: 1609.344 },
+    'nmi':{ canonical: 'nmi',kind: 'length', toM: 1852 },   // nautical mile
 };
 
 function _normalizeUnitKey(raw) {

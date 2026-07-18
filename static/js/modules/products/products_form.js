@@ -152,11 +152,63 @@ function showProductForm(id = null) {
                           <select name="category" class="crm-input">${categoriesOptions}</select>
                           <p class="crm-help">${tLang('Grupa za lakšu pretragu i grupisanje.','Group for search & reporting.')}</p>
                       </div>
-                      <div class="crm-field">
+                      <div class="crm-field" style="position:relative;">
                           <label class="crm-label">${Utils.t('fields.hsCode')}</label>
-                          <input name="hsCode" class="crm-input crm-input-mono" value="${Utils.escapeHtml(item.hsCode || '')}" placeholder="Npr. 18010000" pattern="[0-9]{4,10}"/>
-                          <p class="crm-help">${tLang('Harmonizovana carinska šifra (6–10 cifara).','Harmonized customs code (6-10 digits).')}</p>
+                          <input name="hsCode" id="prod-hs-input" autocomplete="off" class="crm-input crm-input-mono" value="${Utils.escapeHtml(item.hsCode || '')}" placeholder="${tLang('Npr. 1806 ili kucaj: chocolate, iron pipe, sunflower oil…','e.g. 1806 or type: chocolate, iron pipe, sunflower oil…')}" pattern="[0-9]{2,10}"/>
+                          <div id="prod-hs-dd" class="hs-dd" style="position:absolute;top:100%;left:0;right:0;z-index:20;background:#fff;border:1px solid #cbd5e1;border-radius:6px;max-height:280px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.12);display:none;"></div>
+                          <p class="crm-help" id="prod-hs-desc">${tLang('Harmonizovana carinska šifra (6–10 cifara). Pretraga po nazivu ili kodu.','Harmonized customs code (6-10 digits). Search by name or code.')}</p>
                       </div>
+                      <script>
+                      (function(){
+                          setTimeout(function(){
+                              var inp = document.getElementById('prod-hs-input');
+                              var dd = document.getElementById('prod-hs-dd');
+                              var desc = document.getElementById('prod-hs-desc');
+                              if (!inp || !dd || typeof HS === 'undefined') return;
+                              function paint(hits) {
+                                  if (!hits || !hits.length) { dd.style.display = 'none'; return; }
+                                  dd.innerHTML = hits.map(function(h){
+                                      return '<div data-code="'+h.code+'" style="padding:8px 10px;cursor:pointer;border-bottom:1px solid #f1f5f9;font-size:12px;">' +
+                                             '<span style="font-family:monospace;font-weight:800;color:#1e40af;">' + h.code + '</span>' +
+                                             ' <span style="color:#374151;">' + h.label + '</span>' +
+                                             '</div>';
+                                  }).join('');
+                                  dd.style.display = 'block';
+                                  dd.querySelectorAll('[data-code]').forEach(function(el){
+                                      el.addEventListener('click', function(){
+                                          inp.value = el.dataset.code;
+                                          dd.style.display = 'none';
+                                          var name = HS.headingName(el.dataset.code) || HS.chapterName(el.dataset.code);
+                                          if (desc && name) desc.textContent = '→ ' + name;
+                                      });
+                                  });
+                              }
+                              function showResolved() {
+                                  var v = inp.value.trim();
+                                  if (v.length >= 2 && desc) {
+                                      var n = HS.headingName(v) || HS.chapterName(v);
+                                      if (n) desc.textContent = '→ ' + n;
+                                  }
+                              }
+                              inp.addEventListener('input', function(){
+                                  var q = inp.value.trim();
+                                  if (q.length < 1) { dd.style.display = 'none'; return; }
+                                  paint(HS.lookup(q, 15));
+                              });
+                              inp.addEventListener('focus', function(){
+                                  var q = inp.value.trim();
+                                  if (q.length >= 1) paint(HS.lookup(q, 15));
+                              });
+                              inp.addEventListener('blur', function(){
+                                  setTimeout(function(){ dd.style.display = 'none'; showResolved(); }, 150);
+                              });
+                              document.addEventListener('click', function(e){
+                                  if (e.target !== inp && !dd.contains(e.target)) dd.style.display = 'none';
+                              });
+                              showResolved();
+                          }, 50);
+                      })();
+                      </script>
                       <div class="crm-field">
                           <label class="crm-label">SKU / Article No.</label>
                           <input name="sku" class="crm-input crm-input-mono" value="${Utils.escapeHtml(item.sku || '')}" placeholder="Npr. CCO-001"/>
