@@ -61,7 +61,8 @@ function renderDealsListView() {
         
         const confirmMsg = Utils.t('deals.confirmCascadeDelete').replace('{0}', deal.contractId);
         
-        if(confirm(confirmMsg)) {
+        const _ok = await window.askConfirm('Brisanje posla?', confirmMsg, { danger: true, confirmText: 'Obriši' });
+        if (_ok) {
             // FIX: Bezbedno brisanje transakcija čak i ako nema učitanih
             const allTxs = state.data.transactions || [];
             const txsToDelete = allTxs.filter(t => t.invoiceNumber === deal.contractId || (t.reference && t.reference.includes(deal.contractId)));

@@ -466,8 +466,13 @@ function showProductForm(id = null) {
     };
     
     const attachInvListeners = () => {
-        document.querySelectorAll('.remove-inv').forEach(b => b.addEventListener('click', e => {
-            if(confirm(tLang('Obriši stavku sa lagera?', 'Delete from inventory?'))) { item.inventory.splice(parseInt(e.currentTarget.dataset.index, 10), 1); refreshInv(); }
+        document.querySelectorAll('.remove-inv').forEach(b => b.addEventListener('click', async e => {
+            const _ok = await window.askConfirm(
+                tLang('Obriši stavku?','Delete item?'),
+                tLang('Obriši stavku sa lagera?', 'Delete from inventory?'),
+                { danger: true }
+            );
+            if(_ok) { item.inventory.splice(parseInt(e.currentTarget.dataset.index, 10), 1); refreshInv(); }
         }));
     };
 
@@ -494,8 +499,13 @@ function showProductForm(id = null) {
     });
     
     const attachOfferListeners = () => {
-        document.querySelectorAll('.remove-offer').forEach(b => b.addEventListener('click', (e) => { 
-            if(confirm(tLang('Da li ste sigurni?', 'Are you sure?'))) { item.supplyOffers.splice(parseInt(e.currentTarget.dataset.index, 10), 1); refreshOffers(); }
+        document.querySelectorAll('.remove-offer').forEach(b => b.addEventListener('click', async (e) => {
+            const _ok = await window.askConfirm(
+                tLang('Obriši ponudu?','Delete offer?'),
+                tLang('Da li ste sigurni?', 'Are you sure?'),
+                { danger: true }
+            );
+            if(_ok) { item.supplyOffers.splice(parseInt(e.currentTarget.dataset.index, 10), 1); refreshOffers(); }
         }));
         document.querySelectorAll('.edit-offer').forEach(b => b.addEventListener('click', (e) => { 
             currentEditOfferIndex = parseInt(e.currentTarget.dataset.index, 10);

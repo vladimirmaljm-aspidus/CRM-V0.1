@@ -152,7 +152,12 @@ function renderAuditLogView() {
         container.querySelectorAll('.block-ip-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
                 const ip = e.currentTarget.dataset.ip;
-                if(confirm(`Da li ste potpuno sigurni da želite da trajno blokirate IP adresu: ${ip}?`)) {
+                const _ok = await window.askConfirm(
+                    'Blokirati IP adresu?',
+                    `Da li ste potpuno sigurni da želite da trajno blokirate IP adresu: ${ip}?`,
+                    { danger: true, confirmText: 'Blokiraj' }
+                );
+                if(_ok) {
                     try {
                         const fwConfigRes = await fetch('/api/firewall/status');
                         if(fwConfigRes.ok) {
