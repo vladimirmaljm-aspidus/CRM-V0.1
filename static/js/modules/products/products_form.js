@@ -219,8 +219,64 @@ function showProductForm(id = null) {
                           <input name="brand" class="crm-input" value="${Utils.escapeHtml(item.brand || '')}" placeholder="Npr. Cargill"/>
                           <p class="crm-help">${tLang('Prazno ako je generic / bez brenda.','Leave empty if unbranded / generic.')}</p>
                       </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('CAS # (hemijski registar)','CAS # (chemical registry)')}</label>
+                          <div class="flex gap-2">
+                              <input name="casNumber" id="prod-cas-input" class="crm-input crm-input-mono flex-1" value="${Utils.escapeHtml(item.casNumber || '')}" placeholder="e.g. 56-81-5" pattern="[0-9]{2,7}-[0-9]{2}-[0-9]"/>
+                              <button type="button" id="prod-cas-lookup" class="btn small bg-blue-500 text-white" style="white-space:nowrap;">🔬 ${tLang('PubChem lookup','PubChem lookup')}</button>
+                          </div>
+                          <div id="prod-cas-result" class="text-xs mt-1" style="min-height:1.1em;color:#374151;"></div>
+                          <p class="crm-help">${tLang('Za hemijske sirovine — dovoljan CAS broj, PubChem sam popuni ostalo.','For chemical raw materials — enter CAS #, PubChem auto-fills the rest.')}</p>
+                      </div>
                   </div>
               </div>
+              <script>
+              (function(){
+                  setTimeout(function(){
+                      var btn = document.getElementById('prod-cas-lookup');
+                      var inp = document.getElementById('prod-cas-input');
+                      var out = document.getElementById('prod-cas-result');
+                      if (!btn || !inp || !out) return;
+                      btn.addEventListener('click', async function(){
+                          var cas = (inp.value || '').trim();
+                          if (!cas) { out.textContent = 'Enter a CAS number first.'; out.style.color = '#dc2626'; return; }
+                          btn.disabled = true;
+                          out.textContent = '⏳ Querying PubChem…';
+                          out.style.color = '#6b7280';
+                          try {
+                              var r = await fetch('/api/geo/chem/cas/' + encodeURIComponent(cas));
+                              if (!r.ok) {
+                                  out.textContent = '✗ CAS ' + cas + ' not found in PubChem';
+                                  out.style.color = '#dc2626';
+                              } else {
+                                  var j = await r.json();
+                                  out.innerHTML = '✓ <strong>' + (j.name || j.iupac_name || '?') + '</strong> · ' +
+                                                  (j.formula || '') + ' · MW ' + (j.molecular_weight || '?') +
+                                                  ' · <a href="' + j.pubchem_url + '" target="_blank" style="color:#2563eb;">PubChem CID ' + j.cid + '</a>';
+                                  out.style.color = '#059669';
+                                  // Auto-fill product name if empty
+                                  var nameInp = document.querySelector('input[name="name"]');
+                                  if (nameInp && !nameInp.value && j.name) {
+                                      nameInp.value = j.name;
+                                  }
+                                  // Auto-fill notes with formula + MW
+                                  var descArea = document.querySelector('textarea[name="description"], textarea[name="notes"]');
+                                  if (descArea && !descArea.value) {
+                                      descArea.value = 'Chemical formula: ' + (j.formula || '') +
+                                                       '\\nMolecular weight: ' + (j.molecular_weight || '') +
+                                                       (j.iupac_name ? '\\nIUPAC: ' + j.iupac_name : '') +
+                                                       (j.inchi_key ? '\\nInChI Key: ' + j.inchi_key : '');
+                                  }
+                              }
+                          } catch(e) {
+                              out.textContent = '✗ Network error: ' + (e && e.message || e);
+                              out.style.color = '#dc2626';
+                          }
+                          btn.disabled = false;
+                      });
+                  }, 50);
+              })();
+              </script>
               <div class="crm-form-section crm-form-section-highlighted">
                   <div class="crm-form-grid crm-form-grid-2">
                       <div class="crm-field">
@@ -457,9 +513,10 @@ function showProductForm(id = null) {
              name: fd.get('name'), 
              imageUrl: fd.get('imageUrl'),
              category: fd.get('category'), 
-             hsCode: fd.get('hsCode'), 
+             hsCode: fd.get('hsCode'),
              sku: fd.get('sku'),
              brand: fd.get('brand'),
+             casNumber: fd.get('casNumber'),
              shelfLife: fd.get('shelfLife'),
              detailedSpec: fd.get('detailedSpec'), 
              targetPrice: parseFloat(fd.get('targetPrice')) || 0,
