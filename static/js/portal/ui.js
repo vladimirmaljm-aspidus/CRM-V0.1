@@ -1232,6 +1232,38 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    // Auto-fill dial code when country changes on KYC.
+    // Uses bundled ISO_COUNTRIES for instant offline; then hits REST Countries
+    // proxy for confirmation (updates flag/capital hint if UI has them).
+    const kycCountry = document.getElementById('kyc-country');
+    const kycPhone = document.getElementById('kyc-phone');
+    if (kycCountry) {
+        kycCountry.addEventListener('change', async () => {
+            const name = (kycCountry.value || '').trim();
+            if (!name || typeof ISO_COUNTRIES === 'undefined') return;
+            const c = ISO_COUNTRIES.byName(name);
+            if (!c) return;
+            // Predloži dial code samo ako telefon nije već popunjen
+            if (kycPhone && !kycPhone.value && c.dial) {
+                kycPhone.placeholder = `${c.dial} 123 456 789`;
+                kycPhone.value = c.dial + ' ';
+                kycPhone.focus();
+                kycPhone.setSelectionRange(kycPhone.value.length, kycPhone.value.length);
+            }
+            // Best-effort REST Countries confirmation (network); ne blokira UX
+            try {
+                const res = await fetch(`/api/geo/portal/country/${c.alpha2}`);
+                if (res.ok) {
+                    const rc = await res.json();
+                    // Ako ISO_COUNTRIES nema currency ili dial, dopuni iz live-a
+                    if (rc && rc.dial_code && kycPhone && !kycPhone.value.trim().replace(/\+/g,'').match(/\d/)) {
+                        kycPhone.value = rc.dial_code + ' ';
+                    }
+                }
+            } catch(_) { /* offline OK */ }
+        });
+    }
 });
 
 // ==========================================================
