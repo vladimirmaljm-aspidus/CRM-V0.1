@@ -430,21 +430,65 @@
         }
 
         function animatePlan(plan) {
-            let stageIdx = 0, pointIdx = 0;
+            // POSPORENA I ULEPŠANA ANIMACIJA:
+            // - Tempira se prema stvarnom broju tacaka po ETAP-u tako da svaki mode
+            //   putuje kroz svoju polyline za CILJ_MS ms (default 6s po ETAP-u).
+            // - Koristi requestAnimationFrame + interpoliranu tacku za glatko kretanje
+            //   nezavisno od gustine tacaka polyline (gde nekad ima 5, nekad 300).
+            // - Dodaje "trail" segment koji prati vozilo — vidljiv trag pređene rute.
+            const TARGET_MS_PER_LEG = 6500;  // ~6.5s po ETAP-u — dovoljno da se vidi lepo
+            const MIN_TOTAL_MS = 8000;       // minimalno 8s celokupna animacija ne dozvoli suvise brzo
+
             const first = plan.legs[0];
             const moving = L.marker([first.polyline[0][0], first.polyline[0][1]], { icon: iconFor(first.kind) }).addTo(map);
             mapLayers.push(moving);
-            function step() {
+
+            const totalLegs = plan.legs.length;
+            const perLeg = Math.max(TARGET_MS_PER_LEG, Math.floor(MIN_TOTAL_MS / totalLegs));
+
+            let stageIdx = 0;
+            let legStart = null;
+            let trail = null;
+
+            function interp(pts, t) {
+                // t ∈ [0,1] — vrati tacku duz polyline proporcionalno pređenoj razdaljini.
+                // Za jednostavnost koristi ravnomerno mapiranje kroz indekse tacaka
+                // (ne prava linearna udaljenost — dovoljno glatko za vizuelni utisak).
+                if (pts.length < 2) return pts[0];
+                const idxF = t * (pts.length - 1);
+                const i = Math.floor(idxF);
+                const frac = idxF - i;
+                if (i >= pts.length - 1) return pts[pts.length - 1];
+                const a = pts[i], b = pts[i + 1];
+                return [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
+            }
+
+            function step(now) {
                 const leg = plan.legs[stageIdx];
                 if (!leg) return;
-                const pts = leg.polyline;
-                if (pointIdx < pts.length) {
-                    moving.setLatLng(pts[pointIdx]);
-                    pointIdx += (leg.kind === 'sea' ? 1 : (leg.kind === 'air' ? 1 : 2));
+                if (legStart === null) {
+                    legStart = now;
+                    // Kreiraj svetleci trail za trenutni leg
+                    if (trail) { try { map.removeLayer(trail); } catch (_) {} }
+                    trail = L.polyline([], {
+                        color: leg.kind === 'sea' ? '#10b981' : (leg.kind === 'air' ? '#f59e0b' : '#3b82f6'),
+                        weight: 6, opacity: 0.55
+                    }).addTo(map);
+                    mapLayers.push(trail);
+                }
+                const elapsed = now - legStart;
+                const t = Math.min(1, elapsed / perLeg);
+                const p = interp(leg.polyline, t);
+                moving.setLatLng(p);
+                // Extend trail from start of leg do trenutne tačke
+                const idxUpTo = Math.max(1, Math.floor(t * (leg.polyline.length - 1)) + 1);
+                trail.setLatLngs(leg.polyline.slice(0, idxUpTo).concat([p]));
+
+                if (t < 1) {
                     animRequest = requestAnimationFrame(step);
                 } else {
                     stageIdx++;
-                    pointIdx = 0;
+                    legStart = null;
                     if (stageIdx < plan.legs.length) {
                         moving.setIcon(iconFor(plan.legs[stageIdx].kind));
                         animRequest = requestAnimationFrame(step);
@@ -453,7 +497,7 @@
                     }
                 }
             }
-            step();
+            animRequest = requestAnimationFrame(step);
         }
 
         // -------- PODNI DEO: RENDER REZULTATA --------

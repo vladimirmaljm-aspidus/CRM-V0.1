@@ -308,11 +308,25 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
         list.innerHTML = currentItems.map((item, idx) => {
             const p = state.data.products.find(x => x.id === item.productId);
             const source = item.isInventory ? p?.inventory[item.invIndex] : p?.supplyOffers[item.offerIndex];
-            const baseCost = source ? (source.price || source.purchasePrice || 0) : 0;
-            
-            // Kalkulacija marže
+            const rawBaseCost = source ? (source.price || source.purchasePrice || 0) : 0;
+            const sourceUnit = source ? (source.unit || source.priceUnit || item.unit) : item.unit;
+            // Konvertuj baseCost iz sourceUnit u item.unit da margin bude realna.
+            // Ako konverzija nije moguca (razlicit "kind" jedinica), koristi raw vrednost
+            // ali ne racunaj margin (izbegavamo laznu procentualnu vrednost).
+            let baseCost = rawBaseCost;
+            let baseCostConverted = true;
+            if (rawBaseCost > 0 && sourceUnit && sourceUnit !== item.unit) {
+                const conv = Utils.convertPricePerUnit(rawBaseCost, sourceUnit, item.unit);
+                if (conv !== null) {
+                    baseCost = conv;
+                } else {
+                    baseCostConverted = false;
+                }
+            }
+
+            // Kalkulacija marže — samo ako smo uspešno normalizovali cenu na item.unit.
             let marginHtml = '';
-            if (baseCost > 0) {
+            if (baseCost > 0 && baseCostConverted) {
                 const marginAbs = item.price - baseCost;
                 const marginPct = ((item.price - baseCost) / baseCost) * 100;
                 const badgeClass = marginPct > 0 ? 'bg-emerald-500 text-white' : (marginPct < 0 ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-500 text-white');
@@ -437,10 +451,16 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
             
             const itemTotal = item.price * item.quantity;
             baseTotal += itemTotal;
-            
-            // Logistika
-            if (p.logistics?.cap20) total20ft += (item.quantity / p.logistics.cap20);
-            if (p.logistics?.cap40) total40ft += (item.quantity / p.logistics.cap40);
+
+            // Logistika: cap20/cap40 su u tonama (MT). item.unit može biti bilo šta iz UNITS.
+            // Konvertujemo qty iz item.unit → MT preko canonical form kroz kg. Ako jedinica
+            // nije tezinska (npr. pcs, L, CBM), preskacemo container packing i logujemo warning
+            // umesto da izbacimo besmislen broj (npr. 500 pcs / 17 MT).
+            const qtyInMt = Utils.toMetricTons(item.quantity, item.unit);
+            if (qtyInMt !== null) {
+                if (p.logistics?.cap20) total20ft += (qtyInMt / p.logistics.cap20);
+                if (p.logistics?.cap40) total40ft += (qtyInMt / p.logistics.cap40);
+            }
             
             // Supstituti
             const source = item.isInventory ? p.inventory[item.invIndex] : p.supplyOffers[item.offerIndex];
@@ -1119,10 +1139,22 @@ function installOfferLogisticsDelegatedHandler() {
                                  .filter(Boolean).join(', ')) || '';
         const destLabel = partnerToLabel(buyer);
 
-        // Teret (t) — pokušavamo pretvoriti sve u tone
-        const qty = parseFloat(offer.quantity || (offer.items && offer.items[0] && offer.items[0].quantity) || 0) || 20;
-        const unit = String(offer.unit || (offer.items && offer.items[0] && offer.items[0].unit) || 'MT').toLowerCase();
-        const cargoTons = unit === 'kg' ? qty / 1000 : (unit === 't' || unit === 'mt' || unit === 'tona' ? qty : qty);
+        // Teret (t) — koristi Utils.toMetricTons za tacnu konverziju za sve tezinske jedinice
+        // (kg, g, mt, t, lb, oz). Ako korisnik ima vise items, zbrajaj tone svih items.
+        let cargoTons = 0;
+        if (offer.items && offer.items.length > 0) {
+            offer.items.forEach(it => {
+                const t = Utils.toMetricTons(parseFloat(it.quantity) || 0, it.unit);
+                if (t !== null) cargoTons += t;
+            });
+        }
+        if (!cargoTons) {
+            const qty = parseFloat(offer.quantity || 0);
+            const unit = offer.unit || 'MT';
+            const t = Utils.toMetricTons(qty, unit);
+            cargoTons = t !== null ? t : (qty || 20);
+        }
+        if (!cargoTons) cargoTons = 20;
 
         if (typeof window.openLogisticsPlanner !== 'function') {
             alert('Logistics planner module not loaded (please refresh)');
