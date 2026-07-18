@@ -147,6 +147,42 @@ window.reviewKYC = async function(partnerId) {
 
                 ${reviewNoteBlock}
                 ${historyBlock}
+                ${(() => {
+                    // Sanctions screening banner — samo ako je backend zabeležio screening rezultat
+                    const s = data._sanctionsScreening;
+                    if (!s) return '';
+                    const anyMatch = !!s.anyMatch;
+                    if (!anyMatch) {
+                        return `<div class="bg-emerald-50 border-l-4 border-emerald-500 p-3 rounded-r-lg mb-4 shadow-sm text-sm">
+                            <strong class="text-emerald-800 font-black text-[10px] uppercase tracking-widest">✓ OpenSanctions:</strong>
+                            <span class="text-emerald-900 ml-2">${tLangKY('Nema pogodaka na sankcionim listama.', 'No matches on sanctions lists.')}</span>
+                            <span class="text-emerald-700 text-[10px] ml-2 font-mono">${s.ranAt ? new Date(s.ranAt).toLocaleString(Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US') : ''}</span>
+                        </div>`;
+                    }
+                    const hitCards = (s.results || []).filter(r => (r.matches || []).length > 0).map(r => `
+                        <div class="mt-2 p-3 bg-white border border-red-300 rounded-lg">
+                            <div class="text-xs font-black text-red-800 uppercase tracking-widest">🎯 Match on: ${Utils.escapeHtml(r.name)}</div>
+                            ${r.matches.slice(0, 3).map(m => `
+                                <div class="mt-2 pl-3 border-l-2 border-red-300 text-xs text-slate-800">
+                                    <div><strong>${Utils.escapeHtml(m.caption || m.id)}</strong> · <span class="opacity-70">${Utils.escapeHtml(m.schema || '')}</span></div>
+                                    <div class="opacity-70 mt-1">Topics: ${(m.topics || []).map(t => Utils.escapeHtml(t)).join(', ') || '—'}</div>
+                                    <div class="opacity-70">Datasets: ${(m.datasets || []).slice(0,3).map(d => Utils.escapeHtml(d)).join(', ')}</div>
+                                    <a href="${Utils.escapeHtml(m.opensanctions_url)}" target="_blank" class="text-blue-600 hover:underline font-bold text-[10px]">→ view on OpenSanctions</a>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `).join('');
+                    return `<div class="bg-red-50 border-l-4 border-red-600 p-4 rounded-r-lg mb-5 shadow-sm">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="text-2xl">🚨</span>
+                            <div>
+                                <p class="text-[10px] font-black text-red-800 uppercase tracking-widest">${tLangKY('OpenSanctions upozorenje', 'OpenSanctions warning')}</p>
+                                <p class="text-sm text-red-900 leading-tight">${tLangKY('Automatska provera je pronašla moguća poklapanja na globalnim sankcionim listama. Pregledajte pre odobrenja.', 'Automated screening found possible matches on global sanctions lists. Review before approval.')}</p>
+                            </div>
+                        </div>
+                        ${hitCards}
+                    </div>`;
+                })()}
 
                 <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm mb-6">
                     <h4 class="font-black text-slate-800 uppercase text-[10px] tracking-widest mb-5 pb-3 border-b border-slate-100 flex items-center gap-2">🏢 ${Utils.t('kyc.corpData')}</h4>

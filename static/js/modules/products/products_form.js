@@ -152,11 +152,63 @@ function showProductForm(id = null) {
                           <select name="category" class="crm-input">${categoriesOptions}</select>
                           <p class="crm-help">${tLang('Grupa za lakšu pretragu i grupisanje.','Group for search & reporting.')}</p>
                       </div>
-                      <div class="crm-field">
+                      <div class="crm-field" style="position:relative;">
                           <label class="crm-label">${Utils.t('fields.hsCode')}</label>
-                          <input name="hsCode" class="crm-input crm-input-mono" value="${Utils.escapeHtml(item.hsCode || '')}" placeholder="Npr. 18010000" pattern="[0-9]{4,10}"/>
-                          <p class="crm-help">${tLang('Harmonizovana carinska šifra (6–10 cifara).','Harmonized customs code (6-10 digits).')}</p>
+                          <input name="hsCode" id="prod-hs-input" autocomplete="off" class="crm-input crm-input-mono" value="${Utils.escapeHtml(item.hsCode || '')}" placeholder="${tLang('Npr. 1806 ili kucaj: chocolate, iron pipe, sunflower oil…','e.g. 1806 or type: chocolate, iron pipe, sunflower oil…')}" pattern="[0-9]{2,10}"/>
+                          <div id="prod-hs-dd" class="hs-dd" style="position:absolute;top:100%;left:0;right:0;z-index:20;background:#fff;border:1px solid #cbd5e1;border-radius:6px;max-height:280px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.12);display:none;"></div>
+                          <p class="crm-help" id="prod-hs-desc">${tLang('Harmonizovana carinska šifra (6–10 cifara). Pretraga po nazivu ili kodu.','Harmonized customs code (6-10 digits). Search by name or code.')}</p>
                       </div>
+                      <script>
+                      (function(){
+                          setTimeout(function(){
+                              var inp = document.getElementById('prod-hs-input');
+                              var dd = document.getElementById('prod-hs-dd');
+                              var desc = document.getElementById('prod-hs-desc');
+                              if (!inp || !dd || typeof HS === 'undefined') return;
+                              function paint(hits) {
+                                  if (!hits || !hits.length) { dd.style.display = 'none'; return; }
+                                  dd.innerHTML = hits.map(function(h){
+                                      return '<div data-code="'+h.code+'" style="padding:8px 10px;cursor:pointer;border-bottom:1px solid #f1f5f9;font-size:12px;">' +
+                                             '<span style="font-family:monospace;font-weight:800;color:#1e40af;">' + h.code + '</span>' +
+                                             ' <span style="color:#374151;">' + h.label + '</span>' +
+                                             '</div>';
+                                  }).join('');
+                                  dd.style.display = 'block';
+                                  dd.querySelectorAll('[data-code]').forEach(function(el){
+                                      el.addEventListener('click', function(){
+                                          inp.value = el.dataset.code;
+                                          dd.style.display = 'none';
+                                          var name = HS.headingName(el.dataset.code) || HS.chapterName(el.dataset.code);
+                                          if (desc && name) desc.textContent = '→ ' + name;
+                                      });
+                                  });
+                              }
+                              function showResolved() {
+                                  var v = inp.value.trim();
+                                  if (v.length >= 2 && desc) {
+                                      var n = HS.headingName(v) || HS.chapterName(v);
+                                      if (n) desc.textContent = '→ ' + n;
+                                  }
+                              }
+                              inp.addEventListener('input', function(){
+                                  var q = inp.value.trim();
+                                  if (q.length < 1) { dd.style.display = 'none'; return; }
+                                  paint(HS.lookup(q, 15));
+                              });
+                              inp.addEventListener('focus', function(){
+                                  var q = inp.value.trim();
+                                  if (q.length >= 1) paint(HS.lookup(q, 15));
+                              });
+                              inp.addEventListener('blur', function(){
+                                  setTimeout(function(){ dd.style.display = 'none'; showResolved(); }, 150);
+                              });
+                              document.addEventListener('click', function(e){
+                                  if (e.target !== inp && !dd.contains(e.target)) dd.style.display = 'none';
+                              });
+                              showResolved();
+                          }, 50);
+                      })();
+                      </script>
                       <div class="crm-field">
                           <label class="crm-label">SKU / Article No.</label>
                           <input name="sku" class="crm-input crm-input-mono" value="${Utils.escapeHtml(item.sku || '')}" placeholder="Npr. CCO-001"/>
@@ -167,8 +219,64 @@ function showProductForm(id = null) {
                           <input name="brand" class="crm-input" value="${Utils.escapeHtml(item.brand || '')}" placeholder="Npr. Cargill"/>
                           <p class="crm-help">${tLang('Prazno ako je generic / bez brenda.','Leave empty if unbranded / generic.')}</p>
                       </div>
+                      <div class="crm-field">
+                          <label class="crm-label">${tLang('CAS # (hemijski registar)','CAS # (chemical registry)')}</label>
+                          <div class="flex gap-2">
+                              <input name="casNumber" id="prod-cas-input" class="crm-input crm-input-mono flex-1" value="${Utils.escapeHtml(item.casNumber || '')}" placeholder="e.g. 56-81-5" pattern="[0-9]{2,7}-[0-9]{2}-[0-9]"/>
+                              <button type="button" id="prod-cas-lookup" class="btn small bg-blue-500 text-white" style="white-space:nowrap;">🔬 ${tLang('PubChem lookup','PubChem lookup')}</button>
+                          </div>
+                          <div id="prod-cas-result" class="text-xs mt-1" style="min-height:1.1em;color:#374151;"></div>
+                          <p class="crm-help">${tLang('Za hemijske sirovine — dovoljan CAS broj, PubChem sam popuni ostalo.','For chemical raw materials — enter CAS #, PubChem auto-fills the rest.')}</p>
+                      </div>
                   </div>
               </div>
+              <script>
+              (function(){
+                  setTimeout(function(){
+                      var btn = document.getElementById('prod-cas-lookup');
+                      var inp = document.getElementById('prod-cas-input');
+                      var out = document.getElementById('prod-cas-result');
+                      if (!btn || !inp || !out) return;
+                      btn.addEventListener('click', async function(){
+                          var cas = (inp.value || '').trim();
+                          if (!cas) { out.textContent = 'Enter a CAS number first.'; out.style.color = '#dc2626'; return; }
+                          btn.disabled = true;
+                          out.textContent = '⏳ Querying PubChem…';
+                          out.style.color = '#6b7280';
+                          try {
+                              var r = await fetch('/api/geo/chem/cas/' + encodeURIComponent(cas));
+                              if (!r.ok) {
+                                  out.textContent = '✗ CAS ' + cas + ' not found in PubChem';
+                                  out.style.color = '#dc2626';
+                              } else {
+                                  var j = await r.json();
+                                  out.innerHTML = '✓ <strong>' + (j.name || j.iupac_name || '?') + '</strong> · ' +
+                                                  (j.formula || '') + ' · MW ' + (j.molecular_weight || '?') +
+                                                  ' · <a href="' + j.pubchem_url + '" target="_blank" style="color:#2563eb;">PubChem CID ' + j.cid + '</a>';
+                                  out.style.color = '#059669';
+                                  // Auto-fill product name if empty
+                                  var nameInp = document.querySelector('input[name="name"]');
+                                  if (nameInp && !nameInp.value && j.name) {
+                                      nameInp.value = j.name;
+                                  }
+                                  // Auto-fill notes with formula + MW
+                                  var descArea = document.querySelector('textarea[name="description"], textarea[name="notes"]');
+                                  if (descArea && !descArea.value) {
+                                      descArea.value = 'Chemical formula: ' + (j.formula || '') +
+                                                       '\\nMolecular weight: ' + (j.molecular_weight || '') +
+                                                       (j.iupac_name ? '\\nIUPAC: ' + j.iupac_name : '') +
+                                                       (j.inchi_key ? '\\nInChI Key: ' + j.inchi_key : '');
+                                  }
+                              }
+                          } catch(e) {
+                              out.textContent = '✗ Network error: ' + (e && e.message || e);
+                              out.style.color = '#dc2626';
+                          }
+                          btn.disabled = false;
+                      });
+                  }, 50);
+              })();
+              </script>
               <div class="crm-form-section crm-form-section-highlighted">
                   <div class="crm-form-grid crm-form-grid-2">
                       <div class="crm-field">
@@ -405,9 +513,10 @@ function showProductForm(id = null) {
              name: fd.get('name'), 
              imageUrl: fd.get('imageUrl'),
              category: fd.get('category'), 
-             hsCode: fd.get('hsCode'), 
+             hsCode: fd.get('hsCode'),
              sku: fd.get('sku'),
              brand: fd.get('brand'),
+             casNumber: fd.get('casNumber'),
              shelfLife: fd.get('shelfLife'),
              detailedSpec: fd.get('detailedSpec'), 
              targetPrice: parseFloat(fd.get('targetPrice')) || 0,
@@ -466,8 +575,13 @@ function showProductForm(id = null) {
     };
     
     const attachInvListeners = () => {
-        document.querySelectorAll('.remove-inv').forEach(b => b.addEventListener('click', e => {
-            if(confirm(tLang('Obriši stavku sa lagera?', 'Delete from inventory?'))) { item.inventory.splice(parseInt(e.currentTarget.dataset.index, 10), 1); refreshInv(); }
+        document.querySelectorAll('.remove-inv').forEach(b => b.addEventListener('click', async e => {
+            const _ok = await window.askConfirm(
+                tLang('Obriši stavku?','Delete item?'),
+                tLang('Obriši stavku sa lagera?', 'Delete from inventory?'),
+                { danger: true }
+            );
+            if(_ok) { item.inventory.splice(parseInt(e.currentTarget.dataset.index, 10), 1); refreshInv(); }
         }));
     };
 
@@ -494,8 +608,13 @@ function showProductForm(id = null) {
     });
     
     const attachOfferListeners = () => {
-        document.querySelectorAll('.remove-offer').forEach(b => b.addEventListener('click', (e) => { 
-            if(confirm(tLang('Da li ste sigurni?', 'Are you sure?'))) { item.supplyOffers.splice(parseInt(e.currentTarget.dataset.index, 10), 1); refreshOffers(); }
+        document.querySelectorAll('.remove-offer').forEach(b => b.addEventListener('click', async (e) => {
+            const _ok = await window.askConfirm(
+                tLang('Obriši ponudu?','Delete offer?'),
+                tLang('Da li ste sigurni?', 'Are you sure?'),
+                { danger: true }
+            );
+            if(_ok) { item.supplyOffers.splice(parseInt(e.currentTarget.dataset.index, 10), 1); refreshOffers(); }
         }));
         document.querySelectorAll('.edit-offer').forEach(b => b.addEventListener('click', (e) => { 
             currentEditOfferIndex = parseInt(e.currentTarget.dataset.index, 10);

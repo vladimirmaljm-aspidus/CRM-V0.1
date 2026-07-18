@@ -932,13 +932,40 @@ def submit_kyc(token):
     if not clean_data['consent']:
         return jsonify({"error": "Explicit consent is legally required."}), 400
     
+    # AUTOMATSKO OPENSANCTIONS SCREENING pri submit-u KYC-a. Screening ne blokira
+    # već samo obeležava sve moguce match-eve iz OFAC/UN/EU sankcionih lista.
+    # Admin dobija upozorenje u KYC review UI ako postoji ijedan match.
+    sanctions_results = None
+    try:
+        names_to_check = [clean_data.get('companyName')]
+        for d in (clean_data.get('directors') or []):
+            n = d.get('name') if isinstance(d, dict) else str(d)
+            if n: names_to_check.append(n)
+        for u in (clean_data.get('ubos') or []):
+            n = u.get('name') if isinstance(u, dict) else str(u)
+            if n: names_to_check.append(n)
+        sanctions_results = sanctions_screen_batch([n for n in names_to_check if n])
+        # Ubaci u clean_data ispod dedikovanog ključa (enkripcija štiti sadržaj)
+        clean_data['_sanctionsScreening'] = {
+            'ranAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'anyMatch': any(len(r.get('matches') or []) > 0 for r in (sanctions_results or [])),
+            'results': sanctions_results,
+        }
+    except Exception:
+        # Best effort — ne blokiramo submit ako screening padne
+        pass
+
     conn = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     c = conn.cursor()
-    c.execute('''INSERT INTO kyc_submissions (id, partner_id, token, data, submitted_at) VALUES (?, ?, ?, ?, ?)''', 
+    c.execute('''INSERT INTO kyc_submissions (id, partner_id, token, data, submitted_at) VALUES (?, ?, ?, ?, ?)''',
               (str(uuid.uuid4()), partner_id, token, encrypt_data(clean_data), datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')))
     conn.commit()
     conn.close()
     log_audit('EDIT', 'portal', f"Partner {clean_data.get('companyName')} payload securely encrypted inside air-gapped vault", is_suspicious=False)
+    if sanctions_results and any(len(r.get('matches') or []) > 0 for r in sanctions_results):
+        log_audit('WARNING', 'sanctions',
+                  f"KYC submission for {clean_data.get('companyName')} produced sanctions matches — REQUIRES ADMIN REVIEW",
+                  is_suspicious=True)
     log_portal_activity(partner_id, 'KYC_SUBMIT', f'KYC submission by {clean_data.get("companyName")}')
     return jsonify({"status": "success", "message": "KYC Data securely submitted to Vault."})
 
@@ -1529,10 +1556,27 @@ def portal_accept_offer(token, offer_id):
     payload = request.get_json(silent=True) or {}
     action = str(payload.get('action', 'accept')).lower()
     note = str(payload.get('note', '')).strip()[:1000]
+    signature = payload.get('signature')  # {dataUrl, signerName, signedAt, userAgent} on accept
 
     if action == 'decline' and len(note) < 3:
         return jsonify({"error": "DECLINE_REASON_REQUIRED",
                         "message": "Please provide a short reason for declining."}), 400
+
+    # Sanitize signature: mora biti data:image/png;base64,... i max ~200KB base64.
+    # PNG 640×180 crno-belo je oko 3-8KB, pa je 200KB velikodušan gornji limit.
+    signature_ok = None
+    if action == 'accept' and isinstance(signature, dict):
+        du = signature.get('dataUrl') or ''
+        sn = str(signature.get('signerName', '')).strip()[:200]
+        if (isinstance(du, str) and du.startswith('data:image/png;base64,')
+                and len(du) <= 200_000 and sn):
+            signature_ok = {
+                'dataUrl': du,
+                'signerName': sn,
+                'signedAt': str(signature.get('signedAt', ''))[:64],
+                'userAgent': str(signature.get('userAgent', ''))[:500],
+                'ipAddress': (request.headers.get('X-Forwarded-For') or request.remote_addr or '').split(',')[0].strip()[:64],
+            }
 
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
     try:
@@ -1555,6 +1599,10 @@ def portal_accept_offer(token, offer_id):
             offer['clientStatus'] = 'accepted'
             offer['clientAcceptedAt'] = now_iso
             offer['clientNote'] = note
+            if signature_ok:
+                # Cuvamo signature kao deo offer-a. clientSignature.dataUrl je
+                # embeddovan base64 PNG spreman za PDF regen na strani CRM-a.
+                offer['clientSignature'] = signature_ok
             log_action = 'APPROVE'
         elif action == 'decline':
             offer['clientStatus'] = 'declined'
@@ -1577,7 +1625,9 @@ def portal_accept_offer(token, offer_id):
 
     log_audit(log_action, 'portal',
               f"Client '{partner.get('companyName')}' {action}ed offer {offer.get('offerNo', offer_id)}"
-              + (f" — Reason: {note[:200]}" if action == 'decline' else ''),
+              + (f" — Reason: {note[:200]}" if action == 'decline' else '')
+              + (f" — Signed by {signature_ok['signerName']} @ {signature_ok['signedAt']} from IP {signature_ok['ipAddress']}"
+                 if signature_ok else ''),
               is_suspicious=False)
     log_portal_activity(partner_id, f'OFFER_{action.upper()}',
                         f"Offer {offer.get('offerNo', offer_id)}"

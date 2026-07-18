@@ -68,6 +68,48 @@ const DealsCalculations = {
                 }
             });
         }
+
+        // AUTO-FILL: kada se izabere kupac (buyer), popuni deliveryLocation iz kupčeve
+        // adrese ako polje nije već ručno popunjeno. Format "city, country" (bez street-a
+        // jer je delivery location obično luka/terminal a ne konkretna ulica).
+        const buyerSelect = formEl.querySelector('[name="buyerId"]');
+        if (buyerSelect) {
+            buyerSelect.addEventListener('change', (e) => {
+                const buyer = (state.data.partners||[]).find(p => p.id === e.target.value);
+                const locField = formEl.querySelector('[name="deliveryLocation"]');
+                if (buyer && buyer.address && locField && !locField.value) {
+                    const parts = [buyer.address.city, buyer.address.country].filter(Boolean);
+                    if (parts.length) locField.value = parts.join(', ');
+                }
+            });
+        }
+
+        // AUTO-FILL: kada se izabere product, ako user nije ručno odabrao unit/purchasePrice,
+        // predloži iz prve supplyOffers stavke istog dobavljača.
+        const productSelect = formEl.querySelector('[name="productId"]');
+        if (productSelect) {
+            productSelect.addEventListener('change', (e) => {
+                const prod = (state.data.products||[]).find(p => p.id === e.target.value);
+                if (!prod) return;
+                const supplierId = formEl.querySelector('[name="supplierId"]')?.value;
+                let src = null;
+                if (supplierId && Array.isArray(prod.supplyOffers)) {
+                    src = prod.supplyOffers.find(o => o.supplierId === supplierId);
+                }
+                if (!src && Array.isArray(prod.supplyOffers) && prod.supplyOffers.length > 0) {
+                    src = prod.supplyOffers[0];
+                }
+                if (!src) return;
+                const unitInp = formEl.querySelector('[name="unit"]');
+                const purchasePrice = formEl.querySelector('[name="purchasePrice"]');
+                const purchaseCurrency = formEl.querySelector('[name="purchaseCurrency"]');
+                const incotermInp = formEl.querySelector('[name="incoterm"]');
+                if (unitInp && !unitInp.value && src.unit) unitInp.value = src.unit;
+                if (purchasePrice && !purchasePrice.value && src.price) purchasePrice.value = src.price;
+                if (purchaseCurrency && src.currency) purchaseCurrency.value = src.currency;
+                if (incotermInp && !incotermInp.value && src.incoterm) incotermInp.value = src.incoterm;
+            });
+        }
         const updateExRateUI = () => {
             if(!pCur || !sCur || !exCont) return;
             if(pCur.value !== sCur.value) { 
