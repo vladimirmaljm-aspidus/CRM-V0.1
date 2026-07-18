@@ -148,6 +148,58 @@ window.askConfirm = (title, description, opts) => askModal(Object.assign({ title
 window.askChoice = (title, options, opts) => askModal(Object.assign({ title, options, required: true }, opts || {}));
 
 // ==========================================================
+//  NATIVE alert() / confirm() / prompt() SHIM
+// ==========================================================
+// Prepiši native browser dijaloge — svi legacy alert()/confirm()/prompt()
+// pozivi (103 u kodu) sada automatski koriste stilizovani modalni prozor.
+// Očuvamo reference u __native* za slučaj da neki tok mora natrag.
+window.__nativeAlert = window.alert.bind(window);
+window.__nativeConfirm = window.confirm.bind(window);
+window.__nativePrompt = window.prompt.bind(window);
+
+// Detekcija: da li se poruka odnosi na grešku, upozorenje ili info?
+// Bazira se na ključnim rečima u tekstu — koristi se za automatsko biranje
+// naslova i boje.
+function _detectMessageKind(msg) {
+    const s = String(msg || '').toLowerCase();
+    if (/(greška|error|failed|fail|denied|neuspešn|nije uspe|invalid|blocked|refused|forbidden|zabranj)/i.test(s)) return 'error';
+    if (/(upozorenj|warning|pažnj|paznj|attention|manjak|caution)/i.test(s)) return 'warning';
+    if (/(uspešn|success|ok|sačuvano|saved|obrisano|deleted|created)/i.test(s)) return 'success';
+    return 'info';
+}
+
+// Sinhroni alert je nemoguć u browseru, ali je nekritičan pošto native
+// alert() je već blokirajući. Simuliramo modal — poziv će vratiti odmah,
+// ali korisnik će videti stilizovan overlay dok ne klikne OK.
+window.alert = function styledAlert(msg) {
+    const kind = _detectMessageKind(msg);
+    const title = kind === 'error' ? '⚠️ Greška'
+               : kind === 'warning' ? '⚠️ Upozorenje'
+               : kind === 'success' ? '✅ Uspešno'
+               : 'ℹ️ Informacija';
+    // Poziv askModal je async — ne čekamo, ali korisnik vidi overlay dok
+    // ne klikne OK. Za flow-ove koji se oslanjaju na blokirajući alert
+    // (retko), fallback na native je zadržan kroz window.__nativeAlert.
+    if (typeof window.askModal === 'function') {
+        askModal({
+            title,
+            description: String(msg || ''),
+            mode: 'confirm',
+            confirmText: 'OK',
+        }).catch(() => {});
+    } else {
+        window.__nativeAlert(msg);
+    }
+};
+
+// NAPOMENA: `window.confirm` i `window.prompt` NE prepisujemo globalno jer
+// JavaScript nema pravi sinhroni modal (browser API ograničenje) —
+// `if (confirm(...))` sintaksa bi break-ovala ako bismo vratili Promise.
+// Umesto toga, sve nove pozive treba pisati kao `await askConfirm(...)`
+// ili `await askInput(...)` koji vraćaju stilizovan modal. Legacy
+// `confirm()`/`prompt()` pozivi se konvertuju eksplicitno kroz kod.
+
+// ==========================================================
 //  PROFESIONALNI LOADER — full-screen overlay + inline spinner
 // ==========================================================
 // Cilj: korisnik uvek zna da aplikacija radi u pozadini.
@@ -497,6 +549,49 @@ function toMetricTons(qty, unit) { return convertWeight(qty, unit, 'mt'); }
 // Vraca kolicinu izrazenu u kilogramima, ili null ako jedinica nije tezinska.
 function toKilograms(qty, unit) { return convertWeight(qty, unit, 'kg'); }
 
+// ==========================================================
+//  UNIT-AWARE PRICE MATH
+// ==========================================================
+// convertPricePerUnit(price, fromUnit, toUnit) — pretvara cenu izraženu
+// PO fromUnit u cenu PO toUnit. Kritično za PDF-ove i izveštaje: ako
+// ponuda kaže "1.5 USD po kg" a analitika radi po toni, mora se pomnožiti
+// sa 1000. Vraća null ako jedinice nisu istovrsne (npr. price/kg → price/pcs).
+function convertPricePerUnit(price, fromUnit, toUnit) {
+    if (price === null || price === undefined || price === '') return null;
+    const p = parseFloat(price);
+    if (isNaN(p)) return null;
+    const from = normalizeUnit(fromUnit);
+    const to = normalizeUnit(toUnit);
+    if (from === to) return p;
+    // Ako oba tipa mase → koristimo relaciju kg-a
+    if (WEIGHT_UNITS_TO_KG[from] && WEIGHT_UNITS_TO_KG[to]) {
+        // 1 unit(from) = WEIGHT_UNITS_TO_KG[from] kg. Ako cena je P/from,
+        // onda P/from = P / WEIGHT_UNITS_TO_KG[from] po kg. Pa u toUnit:
+        // po toUnit = po kg * WEIGHT_UNITS_TO_KG[to].
+        return p / WEIGHT_UNITS_TO_KG[from] * WEIGHT_UNITS_TO_KG[to];
+    }
+    // Ako se ne poklapaju (npr. price/kg → price/pcs) — ne možemo bez težine paketa.
+    return null;
+}
+
+// Ukupna cena robe: quantity * price, sve u istoj jedinici.
+// Vraća { total, canonicalUnit, wasConverted }.
+function totalPriceQty(quantity, priceUnit, quantityUnit, pricePerUnit) {
+    const qty = parseFloat(quantity) || 0;
+    const price = parseFloat(pricePerUnit) || 0;
+    // Ako su jedinice iste — trivial.
+    const pu = normalizeUnit(priceUnit);
+    const qu = normalizeUnit(quantityUnit);
+    if (pu === qu) return { total: qty * price, unit: pu, wasConverted: false };
+    // Pokušaj konverziju
+    const priceInQu = convertPricePerUnit(price, priceUnit, quantityUnit);
+    if (priceInQu !== null) {
+        return { total: qty * priceInQu, unit: qu, wasConverted: true };
+    }
+    // Ne može se konvertovati — vrati raw multiply sa warning
+    return { total: qty * price, unit: qu, wasConverted: false, warning: 'unit_mismatch' };
+}
+
 async function uploadFileToServer(file) {
     const formData = new FormData();
     formData.append('file', file);
@@ -580,6 +675,8 @@ window.Utils = {
     convertWeight,
     toMetricTons,
     toKilograms,
+    convertPricePerUnit,
+    totalPriceQty,
     uploadFileToServer,
     formatBytes,
     initAutocomplete,

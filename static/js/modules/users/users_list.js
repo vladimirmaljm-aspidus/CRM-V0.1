@@ -101,7 +101,13 @@ function renderUsersView() {
         }));
         
         container.querySelectorAll('.del-user').forEach(b => b.addEventListener('click', async e => {
-            if(confirm(tLang('Da li ste sigurni da želite da trajno obrišete nalog ovog radnika?', 'Are you sure you want to permanently delete this worker?'))) {
+            const _ok = await window.askConfirm(
+                tLang('Obrisati nalog?','Delete account?'),
+                tLang('Da li ste sigurni da želite da trajno obrišete nalog ovog radnika?',
+                      'Are you sure you want to permanently delete this worker?'),
+                { danger: true, confirmText: tLang('Obriši','Delete') }
+            );
+            if(_ok) {
                 const userId = e.currentTarget.dataset.id;
                 try {
                     const res = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
