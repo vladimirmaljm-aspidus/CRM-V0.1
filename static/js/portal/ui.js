@@ -840,8 +840,27 @@ async function respondToOffer(offerId, action) {
     }
 
     let note = '';
+    let signature = null;
     if (action === 'accept') {
-        if (typeof askConfirm === 'function') {
+        // E-signature capture — replace old plain confirm with signed acceptance.
+        // Falls back to askConfirm if SignaturePad module didn't load (offline
+        // fallback za slucaj da signature_pad.js nije stigao do klijenta).
+        if (typeof SignaturePad !== 'undefined') {
+            const partnerName = (portalData?.partner?.contactPerson || portalData?.partner?.companyName || '').trim();
+            const sig = await SignaturePad.open({
+                title: 'Sign to accept offer',
+                signerName: partnerName,
+                description: 'By signing below you accept the terms of this offer. Your signature will be embedded into the acceptance record, together with a timestamp and audit trail.',
+                confirmText: 'Sign & Accept offer',
+            });
+            if (!sig || !sig.signed) return;
+            signature = {
+                dataUrl: sig.dataUrl,
+                signerName: sig.signerName,
+                signedAt: sig.signedAt,
+                userAgent: sig.userAgent,
+            };
+        } else if (typeof askConfirm === 'function') {
             const yes = await askConfirm(
                 'Accept this offer',
                 'By accepting, your account manager will contact you shortly to finalize the deal. Continue?',
@@ -876,7 +895,7 @@ async function respondToOffer(offerId, action) {
         const res = await fetch(`/api/portal/offers/accept/${TOKEN}/${offerId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
-            body: JSON.stringify({ action, note })
+            body: JSON.stringify({ action, note, signature })
         });
         if (typeof hideLoader === 'function') hideLoader();
         if (res.ok) {
