@@ -101,8 +101,11 @@ function showAccountForm() {
         }
     }));
     
-    document.querySelectorAll('.delete-account-btn').forEach(btn => btn.addEventListener('click', (e) => { 
-        if(confirm(Utils.t('misc.confirmDelete'))) { Utils.handleDelete('accounts', e.currentTarget.dataset.id); Utils.closeModal(); showAccountForm(); } 
+    document.querySelectorAll('.delete-account-btn').forEach(btn => btn.addEventListener('click', async (e) => {
+        const _ok = await window.askConfirm(Utils.t('misc.confirmDeleteTitle') || 'Obrisati?',
+                                            Utils.t('misc.confirmDelete'),
+                                            { danger: true });
+        if(_ok) { Utils.handleDelete('accounts', e.currentTarget.dataset.id); Utils.closeModal(); showAccountForm(); }
     }));
 }
   
@@ -355,8 +358,9 @@ function showRecurringExpensesModal() {
         }
     }));
 
-    document.querySelectorAll('.delete-re-btn').forEach(btn => btn.addEventListener('click', (e) => {
-        if(confirm(Utils.t('misc.confirmDelete'))) {
+    document.querySelectorAll('.delete-re-btn').forEach(btn => btn.addEventListener('click', async (e) => {
+        const _ok = await window.askConfirm('Obrisati stavku?', Utils.t('misc.confirmDelete'), { danger: true });
+        if(_ok) {
             Utils.handleDelete('recurringExpenses', e.currentTarget.dataset.id);
             Utils.closeModal(); showRecurringExpensesModal();
         }
