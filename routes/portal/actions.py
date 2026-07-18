@@ -1529,10 +1529,27 @@ def portal_accept_offer(token, offer_id):
     payload = request.get_json(silent=True) or {}
     action = str(payload.get('action', 'accept')).lower()
     note = str(payload.get('note', '')).strip()[:1000]
+    signature = payload.get('signature')  # {dataUrl, signerName, signedAt, userAgent} on accept
 
     if action == 'decline' and len(note) < 3:
         return jsonify({"error": "DECLINE_REASON_REQUIRED",
                         "message": "Please provide a short reason for declining."}), 400
+
+    # Sanitize signature: mora biti data:image/png;base64,... i max ~200KB base64.
+    # PNG 640×180 crno-belo je oko 3-8KB, pa je 200KB velikodušan gornji limit.
+    signature_ok = None
+    if action == 'accept' and isinstance(signature, dict):
+        du = signature.get('dataUrl') or ''
+        sn = str(signature.get('signerName', '')).strip()[:200]
+        if (isinstance(du, str) and du.startswith('data:image/png;base64,')
+                and len(du) <= 200_000 and sn):
+            signature_ok = {
+                'dataUrl': du,
+                'signerName': sn,
+                'signedAt': str(signature.get('signedAt', ''))[:64],
+                'userAgent': str(signature.get('userAgent', ''))[:500],
+                'ipAddress': (request.headers.get('X-Forwarded-For') or request.remote_addr or '').split(',')[0].strip()[:64],
+            }
 
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
     try:
@@ -1555,6 +1572,10 @@ def portal_accept_offer(token, offer_id):
             offer['clientStatus'] = 'accepted'
             offer['clientAcceptedAt'] = now_iso
             offer['clientNote'] = note
+            if signature_ok:
+                # Cuvamo signature kao deo offer-a. clientSignature.dataUrl je
+                # embeddovan base64 PNG spreman za PDF regen na strani CRM-a.
+                offer['clientSignature'] = signature_ok
             log_action = 'APPROVE'
         elif action == 'decline':
             offer['clientStatus'] = 'declined'
@@ -1577,7 +1598,9 @@ def portal_accept_offer(token, offer_id):
 
     log_audit(log_action, 'portal',
               f"Client '{partner.get('companyName')}' {action}ed offer {offer.get('offerNo', offer_id)}"
-              + (f" — Reason: {note[:200]}" if action == 'decline' else ''),
+              + (f" — Reason: {note[:200]}" if action == 'decline' else '')
+              + (f" — Signed by {signature_ok['signerName']} @ {signature_ok['signedAt']} from IP {signature_ok['ipAddress']}"
+                 if signature_ok else ''),
               is_suspicious=False)
     log_portal_activity(partner_id, f'OFFER_{action.upper()}',
                         f"Offer {offer.get('offerNo', offer_id)}"
