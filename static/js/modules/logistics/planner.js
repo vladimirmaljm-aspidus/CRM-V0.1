@@ -623,44 +623,110 @@
                 return `<span style="display:inline-block;padding:1px 6px;border-radius:999px;background:${c}20;color:${c};font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;margin-left:6px;">${T(tier.replace('_',' '), tier.replace('_',' '))}</span>`;
             };
 
+            // Helper — render kompaktan cost-item breakdown ispod nekog stavka.
+            const money = v => '$' + Number(v || 0).toLocaleString('en-US', {maximumFractionDigits: 0});
+            const renderCostItems = (title, items, totalUsd) => {
+                if (!items || !items.length) return '';
+                const rows = items.map(it => `
+                    <tr>
+                      <td style="padding:2px 6px 2px 0;color:#4b5563;font-size:11px;">${escapeHtml(it.label)}</td>
+                      <td style="padding:2px 6px;color:#9ca3af;font-size:10px;">${it.hours ? Number(it.hours).toFixed(1)+' h' : ''}</td>
+                      <td style="padding:2px 0;text-align:right;color:#111827;font-size:11px;font-weight:600;">${money(it.cost_usd)}</td>
+                    </tr>`).join('');
+                return `
+                <details style="margin-top:6px;padding:6px 8px;background:#f9fafb;border-left:3px solid #cbd5e1;border-radius:4px;">
+                  <summary style="cursor:pointer;font-size:11px;font-weight:700;color:#374151;">
+                    ${title} <span style="float:right;color:#059669;">${money(totalUsd)}</span>
+                  </summary>
+                  <table style="width:100%;margin-top:6px;border-collapse:collapse;">
+                    <tbody>${rows}</tbody>
+                    <tfoot>
+                      <tr style="border-top:1px solid #e5e7eb;">
+                        <td colspan="2" style="padding-top:4px;font-size:11px;font-weight:800;color:#111827;">${T('Ukupno','Subtotal')}</td>
+                        <td style="padding-top:4px;text-align:right;font-size:11px;font-weight:800;color:#059669;">${money(totalUsd)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </details>`;
+            };
+
             const items = plan.legs.map((leg, i) => {
                 const color = leg.kind === 'sea' ? '#10b981' : (leg.kind === 'air' ? '#f59e0b' : '#3b82f6');
                 const icon = leg.kind === 'sea' ? 'fa-ship' : (leg.kind === 'air' ? 'fa-plane' : 'fa-truck');
 
                 let extras = '';
-                // Truck etapa: prikaži broj kamiona, border-crossing
+                // ---------- ROAD etapa ----------
                 if (leg.kind === 'road') {
-                    if (leg.trucks_needed && leg.trucks_needed > 1) {
-                        extras += `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">🚛 ${leg.trucks_needed}× ${T('kamiona (24t FTL)','trucks (24t FTL)')}</div>`;
+                    if (leg.trailer_type) {
+                        extras += `<div style="font-size:11px;color:#4b5563;margin-top:4px;padding:4px 8px;background:#eff6ff;border-radius:6px;border-left:3px solid #3b82f6;">
+                            🚛 <b>${escapeHtml(leg.trailer_type.display_name)}</b> · ${leg.trailer_type.capacity_tons} t cap.
+                            ${leg.trucks_needed && leg.trucks_needed > 1 ? `<span style="color:#dc2626;font-weight:700;"> × ${leg.trucks_needed}</span>` : ''}
+                            <div style="margin-top:2px;color:#9ca3af;font-size:10px;font-style:italic;">${escapeHtml(leg.trailer_type.notes || '')}</div>
+                        </div>`;
                     }
                     if (leg.border_crossing_hours) {
                         extras += `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">🛂 + ${leg.border_crossing_hours}h ${T('carina/granica','border crossing')}</div>`;
                     }
+                    if (leg.cost_breakdown_items) {
+                        extras += renderCostItems(
+                            `<i class="fa-solid fa-truck-fast"></i> ${T('Detalji drumskih troškova','Road cost detail')}`,
+                            leg.cost_breakdown_items, leg.cost_breakdown_total);
+                    }
                 }
-                // Sea etapa: raspored dwell-a po luci
+                // ---------- SEA etapa ----------
                 if (leg.kind === 'sea') {
                     if (leg.origin_port) {
-                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f9fafb;border-radius:6px;">
-                            <b>${escapeHtml(leg.origin_port.name)}</b> (${escapeHtml(leg.origin_port.unlocode || '')})${tierBadge(leg.origin_port.tier)}
-                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${leg.origin_port.dwell_hours}h ${T('utovar + carina','loading + customs')}</div>
-                            ${leg.origin_port.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(leg.origin_port.notes)}</div>` : ''}
+                        const op = leg.origin_port;
+                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f0fdf4;border-radius:6px;border-left:3px solid #10b981;">
+                            🚢 <b>${escapeHtml(op.name)}</b> (${escapeHtml(op.unlocode || '')})${tierBadge(op.tier)}
+                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${op.dwell_hours}h · 💵 ${money(op.charges_usd)} ${T('port fees','port fees')}</div>
+                            ${op.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(op.notes)}</div>` : ''}
+                            ${renderCostItems(`${T('Detalji naknada u polaznoj luci','Origin port fee detail')}`, op.charges_breakdown, op.charges_usd)}
                         </div>`;
+                    }
+                    // Canal passages
+                    if (leg.canal_passages && leg.canal_passages.length) {
+                        const cRows = leg.canal_passages.map(cp => `
+                          <div style="padding:6px 8px;margin-top:4px;background:#fef9c3;border-left:3px solid #eab308;border-radius:6px;">
+                            <div style="font-size:11px;color:#713f12;font-weight:800;">
+                              ⚓ ${escapeHtml(cp.display_name)} (${escapeHtml(cp.country)})
+                              <span style="float:right;color:#059669;">${money(cp.fee_usd)}</span>
+                            </div>
+                            <div style="font-size:10px;color:#78350f;margin-top:2px;">
+                              🕒 ${cp.transit_hours}h ${T('tranzit','transit')} + ${cp.wait_hours}h ${T('čekanje konvoja','convoy wait')}
+                            </div>
+                            <div style="font-size:10px;color:#a16207;margin-top:2px;font-style:italic;">${escapeHtml(cp.notes || '')}</div>
+                          </div>`).join('');
+                        extras += `<div style="margin-top:4px;">
+                            <div style="font-size:11px;font-weight:800;color:#713f12;">${T('Kanali i tesnaci na ruti','Canals & straits on route')}</div>
+                            ${cRows}
+                          </div>`;
                     }
                     if (leg.destination_port) {
-                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f9fafb;border-radius:6px;">
-                            <b>${escapeHtml(leg.destination_port.name)}</b> (${escapeHtml(leg.destination_port.unlocode || '')})${tierBadge(leg.destination_port.tier)}
-                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${leg.destination_port.dwell_hours}h ${T('istovar + carina','discharge + customs')}</div>
-                            ${leg.destination_port.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(leg.destination_port.notes)}</div>` : ''}
+                        const dp = leg.destination_port;
+                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f0fdf4;border-radius:6px;border-left:3px solid #10b981;">
+                            🚢 <b>${escapeHtml(dp.name)}</b> (${escapeHtml(dp.unlocode || '')})${tierBadge(dp.tier)}
+                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${dp.dwell_hours}h · 💵 ${money(dp.charges_usd)} ${T('port fees','port fees')}</div>
+                            ${dp.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(dp.notes)}</div>` : ''}
+                            ${renderCostItems(`${T('Detalji naknada u odredišnoj luci','Destination port fee detail')}`, dp.charges_breakdown, dp.charges_usd)}
                         </div>`;
                     }
-                    if (leg.via_waypoints && leg.via_waypoints.length) {
-                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:3px;">${T('Preko','Via')}: ${leg.via_waypoints.map(w => escapeHtml(w)).join(' → ')}</div>`;
-                    }
                 }
-                // Air etapa
+                // ---------- AIR etapa ----------
                 if (leg.kind === 'air') {
+                    if (leg.aircraft_type) {
+                        extras += `<div style="font-size:11px;color:#4b5563;margin-top:4px;padding:4px 8px;background:#fff7ed;border-radius:6px;border-left:3px solid #f59e0b;">
+                            ✈️ <b>${escapeHtml(leg.aircraft_type.display_name)}</b> · ${leg.aircraft_type.capacity_tons} t cap.
+                            <div style="margin-top:2px;color:#9ca3af;font-size:10px;font-style:italic;">${escapeHtml(leg.aircraft_type.notes || '')}</div>
+                        </div>`;
+                    }
                     if (leg.airport_dwell_hours) {
                         extras += `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">⏱ + ${leg.airport_dwell_hours}h ${T('cutoff/handling/carina','cutoff/handling/customs')}</div>`;
+                    }
+                    if (leg.cost_breakdown_items) {
+                        extras += renderCostItems(
+                            `<i class="fa-solid fa-plane-departure"></i> ${T('Detalji vazdušnih troškova','Air cost detail')}`,
+                            leg.cost_breakdown_items, leg.cost_breakdown_total);
                     }
                 }
 
@@ -672,6 +738,28 @@
                   ${extras}
                 </div>`;
             }).join('');
+
+            // Total cost breakdown block (summary of all cost buckets)
+            let costTotalsBlock = '';
+            if (plan.cost_breakdown_usd && Object.keys(plan.cost_breakdown_usd).length) {
+                const cbRows = Object.entries(plan.cost_breakdown_usd).map(([k,v]) => `
+                    <tr>
+                      <td style="padding:3px 8px 3px 0;color:#4b5563;font-size:12px;">${escapeHtml(k.replace(/_/g,' ').replace(/\\b(usd|Usd)$/,'').trim())}</td>
+                      <td style="padding:3px 0;text-align:right;color:#111827;font-size:12px;font-weight:700;">${money(v)}</td>
+                    </tr>`).join('');
+                costTotalsBlock = `
+                <div style="margin:16px 0 8px 0;padding:10px 12px;background:linear-gradient(135deg,#ecfdf5 0%,#d1fae5 100%);border:1px solid #6ee7b7;border-radius:10px;">
+                  <div style="font-size:11px;font-weight:800;color:#065f46;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;">
+                    <i class="fa-solid fa-receipt"></i> ${T('Ukupni troškovi po kategoriji','Total cost by category')}
+                  </div>
+                  <table style="width:100%;border-collapse:collapse;"><tbody>${cbRows}</tbody>
+                    <tfoot><tr style="border-top:2px solid #059669;">
+                      <td style="padding-top:6px;font-size:13px;font-weight:900;color:#065f46;">${T('SVE UKUPNO','GRAND TOTAL')}</td>
+                      <td style="padding-top:6px;text-align:right;font-size:14px;font-weight:900;color:#065f46;">${money(plan.estimated_cost_usd)}</td>
+                    </tr></tfoot>
+                  </table>
+                </div>`;
+            }
             // Vessel recommendations — samo za sea mod plan
             const seaLeg = plan.legs.find(l => l.kind === 'sea');
             const vessels = (plan.vessel_recommendations || []);
@@ -710,11 +798,27 @@
             }
 
             el.innerHTML = `
-              <h3 style="font-size:13px;font-weight:700;color:#111827;margin:0 0 12px 0;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #e5e7eb;padding-bottom:8px;">
-                <i class="fa-solid fa-timeline"></i> ${T('Etape transporta','Transport timeline')}
-              </h3>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 12px 0;border-bottom:1px solid #e5e7eb;padding-bottom:8px;">
+                <h3 style="font-size:13px;font-weight:700;color:#111827;text-transform:uppercase;letter-spacing:.06em;margin:0;">
+                  <i class="fa-solid fa-timeline"></i> ${T('Etape transporta','Transport timeline')}
+                </h3>
+                <button id="logi-replay" type="button" title="${T('Ponovi animaciju','Replay animation')}"
+                  style="background:#3b82f6;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;display:flex;align-items:center;gap:5px;">
+                  <i class="fa-solid fa-rotate-right"></i> ${T('Ponovi animaciju','Replay')}
+                </button>
+              </div>
               ${items}
+              ${costTotalsBlock}
               ${vesselsBlock}`;
+            const replayBtn = el.querySelector('#logi-replay');
+            if (replayBtn) {
+                replayBtn.addEventListener('click', () => {
+                    if (animRequest) cancelAnimationFrame(animRequest);
+                    // Ukloni prethodni "moving marker" i trail iz map-e — svaka
+                    // replay iteracija kreira sveže
+                    drawPlan(plan);
+                });
+            }
         }
 
         // -------- AUTOCOMPLETE + AUTO-DETECT --------
