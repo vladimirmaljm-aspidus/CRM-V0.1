@@ -60,19 +60,22 @@ def rebuild_index() -> Dict:
     with _get_conn() as conn:
         conn.execute('DELETE FROM search_index')
 
-        # Podaci žive u data_store (jedna master tabela sa JSON payload-om
-        # po key-u); učitajmo sve odjednom i parsiraj.
-        rows = conn.execute("SELECT key, value FROM data_store WHERE key IN ('partners','products','deals','offers')").fetchall()
+        # Podaci žive u pojedinačnim tabelama (partners, products, deals, offers)
+        # gde je svaki red (id TEXT PRIMARY KEY, data TEXT) — JSON payload u data.
         data = {}
-        for k, v in rows:
+        for table in ('partners', 'products', 'deals', 'offers'):
+            data[table] = []
             try:
-                if v is None:
-                    data[k] = []
-                else:
-                    # value je JSON string (data_store čuva Utils.saveToStorage payload)
-                    data[k] = json.loads(v) if isinstance(v, str) else v
-            except Exception:
-                data[k] = []
+                rows = conn.execute(f'SELECT data FROM {table}').fetchall()
+                for (raw,) in rows:
+                    if not raw: continue
+                    try:
+                        data[table].append(json.loads(raw))
+                    except Exception:
+                        continue
+            except sqlite3.OperationalError:
+                # tabela ne postoji u ovoj instanci
+                pass
 
         for p in (data.get('partners') or []):
             pid = p.get('id')
