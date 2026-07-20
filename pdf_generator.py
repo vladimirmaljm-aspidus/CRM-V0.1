@@ -668,8 +668,6 @@ def build_offer_pdf(offer, company=None, settings=None):
     bank_details = offer.get('bankDetails') or _bank_details_string(company, offer.get('paymentBankIdx'))
     if bank_details:
         story.append(_para("<b>Bank Instructions</b>", styles['h2']))
-        # SEPA EPC069-12 QR: bank pripada firmi, iznos je total ponude u EUR
-        # (ako valuta nije EUR, QR ne generišemo — banka app ne podržava non-EUR).
         iban, bic = _extract_bank_iban_bic(company, offer.get('paymentBankIdx'))
         qr_drawing = None
         # Za offer/invoice: fetch total i currency
@@ -773,7 +771,22 @@ def build_offer_pdf(offer, company=None, settings=None):
         # sa svim ključnim podacima dokumenta i statusom "authentic" ili "modified".
         # Public host je izvučen iz company config (fallback default).
         try:
-            verify_host = (company.get('portalHost') or company.get('publicHost') or 'https://aspidus.io').rstrip('/')
+            # v22 P0 FIX: dinamički host detection
+            # Prioritet:
+            #   1. company.publicHost (admin ručno postavi)
+            #   2. Flask request.host_url ako postoji request context
+            #   3. company.portalHost (legacy)
+            #   4. 'https://aspidus.io' fallback (samo ako ništa drugo)
+            verify_host = str(company.get('publicHost') or '').rstrip('/')
+            if not verify_host:
+                try:
+                    from flask import request as _flask_req, has_request_context
+                    if has_request_context():
+                        verify_host = _flask_req.host_url.rstrip('/')
+                except Exception:
+                    pass
+            if not verify_host:
+                verify_host = str(company.get('portalHost') or 'https://aspidus.io').rstrip('/')
             verify_url = f'{verify_host}/verify/{ver_hash}'
             qr = QrCodeWidget(verify_url, barLevel='L')
             b = qr.getBounds()

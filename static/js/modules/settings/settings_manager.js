@@ -73,6 +73,9 @@ const SettingsManager = {
                     <button class="settings-tab-btn flex items-center gap-3 text-left px-4 py-3 rounded-lg text-sm font-bold text-slate-300 hover:text-white hover:bg-slate-800 transition-colors" data-target="tab-database">
                         <span class="opacity-70">💾</span> ${tLang('Baza Podataka', 'Data Management')}
                     </button>
+                    <button class="settings-tab-btn flex items-center gap-3 text-left px-4 py-3 rounded-lg text-sm font-bold text-slate-300 hover:text-white hover:bg-slate-800 transition-colors" data-target="tab-integrations">
+                        <span class="opacity-70">🔌</span> ${tLang('Integracije (API-ji)', 'Integrations (APIs)')}
+                    </button>
                     <div class="my-2 border-t border-slate-800 mx-4"></div>
                     <button class="settings-tab-btn flex items-center gap-3 text-left px-4 py-3 rounded-lg text-sm font-bold text-amber-500 hover:text-amber-400 hover:bg-slate-800 transition-colors" data-target="tab-diagnostics">
                         <span class="opacity-70">🛠️</span> ${tLang('Dijagnostika i Alati', 'Diagnostics & Tools')}
@@ -270,6 +273,185 @@ const SettingsManager = {
                             </div>
                         </div>
 
+                        <div id="tab-integrations" class="settings-pane hidden max-w-4xl mx-auto space-y-8">
+                            <h3 class="text-xl font-black text-slate-900 pb-2 border-b border-slate-200">${tLang('Eksterne Integracije', 'External Integrations')}</h3>
+                            <p class="text-xs text-slate-500 leading-relaxed">${tLang(
+                                'Sva podešavanja niže se skladište enkriptovano u bazu (Fernet AES-128). Ključevi API-ja se prikazuju maskirani nakon prvog snimanja — možete uneti novi ključ u istom polju kada zaželite da ga rotirate. Prazno polje ne briše postojeći ključ.',
+                                'All settings below are stored encrypted in the database (Fernet AES-128). API keys appear masked after the first save — enter a new key in the same field to rotate. Empty field will not delete the existing key.'
+                            )}</p>
+
+                            <!-- 1) OTP DELIVERY -->
+                            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                <h4 class="text-sm font-black text-slate-800 uppercase tracking-widest mb-2">📧 ${tLang('Dostava OTP kodova', 'OTP Delivery')}</h4>
+                                <p class="text-xs text-slate-500 mb-6 leading-relaxed">${tLang(
+                                    'Umesto SMTP-a (koji na deljenom hostingu često ide u spam ili je blokiran), preporučujemo API-first providera: Resend, SendGrid ili Postmark. Prvo se pokušava izabrani provider, pa tek onda SMTP kao fallback. Magic-link šalje jedan-klik URL uz OTP.',
+                                    'Instead of SMTP (which on shared hosting often lands in spam or is blocked), we recommend an API-first provider: Resend, SendGrid or Postmark. Selected provider is tried first, SMTP is used as fallback. Magic-link sends a one-click sign-in URL alongside the OTP.'
+                                )}</p>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">${tLang('Provider', 'Provider')}</label>
+                                        <select id="otpd-provider" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-bold outline-none">
+                                            <option value="smtp">SMTP (Comms tab)</option>
+                                            <option value="resend">Resend (api.resend.com)</option>
+                                            <option value="sendgrid">SendGrid</option>
+                                            <option value="postmark">Postmark</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">API Key <span id="otpd-key-mask" class="text-slate-400 font-mono normal-case tracking-normal"></span></label>
+                                        <input id="otpd-apikey" type="password" placeholder="re_xxx / SG.xxx / Postmark token" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">${tLang('Ime pošiljaoca', 'From name')}</label>
+                                        <input id="otpd-fromname" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm outline-none" placeholder="Aspidus">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">${tLang('Adresa pošiljaoca', 'From email')}</label>
+                                        <input id="otpd-fromemail" type="email" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm outline-none" placeholder="no-reply@yourdomain.com">
+                                    </div>
+                                    <div class="md:col-span-2 grid grid-cols-3 gap-4 items-end">
+                                        <label class="flex items-center gap-2 col-span-2 p-3 bg-slate-50 rounded-md border border-slate-200 cursor-pointer">
+                                            <input id="otpd-magic" type="checkbox" class="w-4 h-4 text-blue-600 rounded">
+                                            <span class="text-xs font-bold text-slate-800">${tLang('Uključi Magic Link (jedan-klik prijava)', 'Enable Magic Link (one-click sign-in)')}</span>
+                                        </label>
+                                        <div>
+                                            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">TTL (min)</label>
+                                            <input id="otpd-ttl" type="number" min="5" max="60" value="15" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="mt-4 flex flex-col md:flex-row gap-3">
+                                    <button type="button" id="otpd-save" class="bg-slate-800 hover:bg-slate-900 text-white font-bold px-6 py-2 rounded-md text-xs uppercase tracking-wider transition-colors">${tLang('Snimi OTP config', 'Save OTP config')}</button>
+                                    <div class="flex-1 flex gap-2">
+                                        <input id="otpd-test-to" type="email" placeholder="test@yourdomain.com" class="flex-1 bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm outline-none">
+                                        <button type="button" id="otpd-test" class="bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 font-bold px-4 py-2 rounded-md text-xs uppercase tracking-wider">${tLang('Test mejl', 'Send test')}</button>
+                                    </div>
+                                </div>
+                                <p id="otpd-status" class="text-xs font-bold text-center mt-3 hidden"></p>
+                            </div>
+
+                            <!-- 2) CHAT WEBHOOKS -->
+                            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                <h4 class="text-sm font-black text-slate-800 uppercase tracking-widest mb-2">💬 ${tLang('Chat Notifikacije', 'Chat Notifications')}</h4>
+                                <p class="text-xs text-slate-500 mb-6 leading-relaxed">${tLang(
+                                    'Real-time obaveštenja u Slack / Teams / Telegram / ntfy / WhatsApp kada klijent prihvati ponudu, kada je KYC podnet, kada se okine sankcijski flag, kad se potpiše dokument. Svako polje je opciono — možete koristiti samo jedan kanal.',
+                                    'Real-time notifications to Slack / Teams / Telegram / ntfy / WhatsApp when a client accepts an offer, submits KYC, triggers a sanctions flag, or signs a document. Each field is optional — you can use just one channel.'
+                                )}</p>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Slack Webhook URL</label>
+                                        <input id="cwh-slack" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none" placeholder="https://hooks.slack.com/services/…">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">MS Teams Webhook URL</label>
+                                        <input id="cwh-teams" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none" placeholder="https://outlook.office.com/webhook/…">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Telegram Bot Token</label>
+                                        <input id="cwh-tg-token" type="password" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none" placeholder="123456:AA…">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Telegram Chat ID</label>
+                                        <input id="cwh-tg-chat" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none" placeholder="-1001234567890">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">ntfy.sh URL</label>
+                                        <input id="cwh-ntfy" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none" placeholder="https://ntfy.sh/aspidus-alerts">
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">WhatsApp Phone ID</label>
+                                            <input id="cwh-wa-pid" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                        </div>
+                                        <div>
+                                            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">WhatsApp To (msisdn)</label>
+                                            <input id="cwh-wa-to" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none" placeholder="971501234567">
+                                        </div>
+                                    </div>
+                                    <div class="md:col-span-2">
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">WhatsApp Cloud API Token</label>
+                                        <input id="cwh-wa-token" type="password" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                    </div>
+                                </div>
+                                <div class="mt-4 flex gap-3">
+                                    <button type="button" id="cwh-save" class="bg-slate-800 hover:bg-slate-900 text-white font-bold px-6 py-2 rounded-md text-xs uppercase tracking-wider transition-colors">${tLang('Snimi webhooks', 'Save webhooks')}</button>
+                                    <button type="button" id="cwh-test" class="bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 font-bold px-4 py-2 rounded-md text-xs uppercase tracking-wider">${tLang('Test obaveštenje', 'Send test')}</button>
+                                </div>
+                                <p id="cwh-status" class="text-xs font-bold text-center mt-3 hidden"></p>
+                            </div>
+
+                            <!-- 3) hCAPTCHA -->
+                            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                <h4 class="text-sm font-black text-slate-800 uppercase tracking-widest mb-2">🛡️ ${tLang('hCaptcha (portal anti-bot)', 'hCaptcha (portal anti-bot)')}</h4>
+                                <p class="text-xs text-slate-500 mb-6 leading-relaxed">${tLang(
+                                    'Zaštita B2B portala od bot-ova. Otvorite hcaptcha.com, kreirajte site, unesite sitekey (public) i secret (private). Ako oba polja ostanu prazna, provera je isključena.',
+                                    'Protects the B2B portal from bots. Open hcaptcha.com, create a site, enter the sitekey (public) and secret (private). If both fields are empty, verification is disabled.'
+                                )}</p>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Site Key</label>
+                                        <input id="hcap-sitekey" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none" placeholder="10000000-ffff-ffff-ffff-000000000001">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Secret <span id="hcap-secret-mask" class="text-slate-400 font-mono normal-case tracking-normal"></span></label>
+                                        <input id="hcap-secret" type="password" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                    </div>
+                                </div>
+                                <div class="mt-4">
+                                    <button type="button" id="hcap-save" class="bg-slate-800 hover:bg-slate-900 text-white font-bold px-6 py-2 rounded-md text-xs uppercase tracking-wider transition-colors">${tLang('Snimi hCaptcha', 'Save hCaptcha')}</button>
+                                </div>
+                                <p id="hcap-status" class="text-xs font-bold text-center mt-3 hidden"></p>
+                            </div>
+
+                            <!-- 4) TRACKING APIs -->
+                            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                <h4 class="text-sm font-black text-slate-800 uppercase tracking-widest mb-2">📦 ${tLang('Praćenje pošiljki i registri', 'Shipment Tracking & Registers')}</h4>
+                                <p class="text-xs text-slate-500 mb-6 leading-relaxed">${tLang(
+                                    'Ključevi za praćenje kontejnera (17TRACK), brodova (MarineTraffic), letova (FlightAware) i pretragu registara pravnih lica (Companies House UK). Ako polje ostavite prazno, taj izvor podataka je nedostupan ali sistem radi normalno bez njega.',
+                                    'Keys for container tracking (17TRACK), vessels (MarineTraffic), flights (FlightAware) and legal-entity register lookup (Companies House UK). Leaving a field empty makes that data source unavailable, but the app works normally without it.'
+                                )}</p>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">17TRACK API key <span id="mask-track17ApiKey" class="text-slate-400 font-mono normal-case tracking-normal"></span></label>
+                                        <input id="key-track17ApiKey" type="password" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">MarineTraffic PS7 key <span id="mask-marineTrafficKey" class="text-slate-400 font-mono normal-case tracking-normal"></span></label>
+                                        <input id="key-marineTrafficKey" type="password" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">FlightAware AeroAPI <span id="mask-flightAwareKey" class="text-slate-400 font-mono normal-case tracking-normal"></span></label>
+                                        <input id="key-flightAwareKey" type="password" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Companies House UK <span id="mask-companiesHouseKey" class="text-slate-400 font-mono normal-case tracking-normal"></span></label>
+                                        <input id="key-companiesHouseKey" type="password" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                    </div>
+                                </div>
+                                <div class="mt-4">
+                                    <button type="button" id="tracking-save" class="bg-slate-800 hover:bg-slate-900 text-white font-bold px-6 py-2 rounded-md text-xs uppercase tracking-wider transition-colors">${tLang('Snimi tracking ključeve', 'Save tracking keys')}</button>
+                                </div>
+                                <p id="tracking-status" class="text-xs font-bold text-center mt-3 hidden"></p>
+                            </div>
+
+                            <!-- 5) MARKET DATA -->
+                            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                <h4 class="text-sm font-black text-slate-800 uppercase tracking-widest mb-2">💹 ${tLang('Tržišni podaci (Alpha Vantage)', 'Market Data (Alpha Vantage)')}</h4>
+                                <p class="text-xs text-slate-500 mb-6 leading-relaxed">${tLang(
+                                    'Alpha Vantage nudi besplatan API ključ (25 poziva/dan) za nafta / gas / bakar / aluminijum / pšenica / kafa spot cene. Kursevi valuta idu preko exchangerate.host i ne zahtevaju ključ.',
+                                    'Alpha Vantage offers a free API key (25 calls/day) for oil / gas / copper / aluminum / wheat / coffee spot prices. FX rates go through exchangerate.host and require no key.'
+                                )}</p>
+                                <div>
+                                    <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Alpha Vantage key <span id="mask-alphaVantageKey" class="text-slate-400 font-mono normal-case tracking-normal"></span></label>
+                                    <input id="key-alphaVantageKey" type="password" class="w-full bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-mono outline-none">
+                                </div>
+                                <div class="mt-4">
+                                    <button type="button" id="market-save" class="bg-slate-800 hover:bg-slate-900 text-white font-bold px-6 py-2 rounded-md text-xs uppercase tracking-wider transition-colors">${tLang('Snimi market key', 'Save market key')}</button>
+                                </div>
+                                <p id="market-status" class="text-xs font-bold text-center mt-3 hidden"></p>
+                            </div>
+                        </div>
+
                         <div id="tab-diagnostics" class="settings-pane hidden max-w-4xl mx-auto space-y-8">
                             <h3 class="text-xl font-black text-slate-900 pb-2 border-b border-slate-200">${tLang('Dijagnostika i Rešavanje Problema', 'Diagnostics & Troubleshooting')}</h3>
                             
@@ -427,6 +609,227 @@ const SettingsManager = {
             btn.disabled = false;
             btn.innerHTML = `<span>📡</span> ${tLang('Testiraj SMTP Konekciju', 'Test SMTP Connection')}`;
         });
+
+        // ==========================================================
+        //  INTEGRATIONS TAB — load + wire all sub-sections
+        // ==========================================================
+        const _integrationsStatus = (id, ok, msg) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = msg;
+            el.className = 'text-xs font-bold text-center mt-3 ' + (ok
+                ? 'text-emerald-700 bg-emerald-50 py-2 rounded border border-emerald-200'
+                : 'text-red-700 bg-red-50 py-2 rounded border border-red-200');
+            el.classList.remove('hidden');
+        };
+
+        // 1) OTP DELIVERY — load
+        (async () => {
+            try {
+                const r = await fetch('/api/system/otp_delivery');
+                if (!r.ok) return;
+                const d = await r.json();
+                const prov = document.getElementById('otpd-provider'); if (prov) prov.value = d.provider || 'smtp';
+                const fn = document.getElementById('otpd-fromname');  if (fn) fn.value = d.from_name || 'Aspidus';
+                const fe = document.getElementById('otpd-fromemail'); if (fe) fe.value = d.from_email || '';
+                const mg = document.getElementById('otpd-magic');     if (mg) mg.checked = !!d.magic_link_enabled;
+                const tt = document.getElementById('otpd-ttl');       if (tt) tt.value = d.magic_link_ttl_min || 15;
+                const mk = document.getElementById('otpd-key-mask');
+                if (mk) mk.textContent = d.has_api_key ? `(current: ${d.api_key_masked || '•••'} — leave blank to keep)` : '';
+            } catch (e) {}
+        })();
+
+        document.getElementById('otpd-save')?.addEventListener('click', async () => {
+            const btn = document.getElementById('otpd-save'); btn.disabled = true;
+            try {
+                const payload = {
+                    provider: document.getElementById('otpd-provider').value,
+                    api_key: document.getElementById('otpd-apikey').value.trim(),
+                    from_name: document.getElementById('otpd-fromname').value.trim(),
+                    from_email: document.getElementById('otpd-fromemail').value.trim(),
+                    magic_link_enabled: document.getElementById('otpd-magic').checked,
+                    magic_link_ttl_min: parseInt(document.getElementById('otpd-ttl').value || 15, 10),
+                };
+                const r = await fetch('/api/system/otp_delivery', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const d = await r.json();
+                if (r.ok && d.status === 'success') {
+                    _integrationsStatus('otpd-status', true, tLang(`✓ Snimljeno (provider: ${d.provider})`, `✓ Saved (provider: ${d.provider})`));
+                    document.getElementById('otpd-apikey').value = '';
+                } else {
+                    _integrationsStatus('otpd-status', false, `✗ ${d.message || d.error || 'Save failed'}`);
+                }
+            } catch (e) {
+                _integrationsStatus('otpd-status', false, `✗ ${e.message || e}`);
+            } finally { btn.disabled = false; }
+        });
+
+        document.getElementById('otpd-test')?.addEventListener('click', async () => {
+            const to = document.getElementById('otpd-test-to').value.trim();
+            if (!to || !to.includes('@')) { _integrationsStatus('otpd-status', false, tLang('Unesite validan email.', 'Enter a valid email.')); return; }
+            const btn = document.getElementById('otpd-test'); btn.disabled = true;
+            try {
+                const r = await fetch('/api/system/otp_delivery/test', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({to})
+                });
+                const d = await r.json();
+                _integrationsStatus('otpd-status', !!d.ok,
+                    (d.ok ? tLang(`✓ Test poslat na ${to}: `, `✓ Test dispatched to ${to}: `) : '✗ ') + (d.info || ''));
+            } catch (e) {
+                _integrationsStatus('otpd-status', false, `✗ ${e.message || e}`);
+            } finally { btn.disabled = false; }
+        });
+
+        // 2) CHAT WEBHOOKS — load
+        (async () => {
+            try {
+                const r = await fetch('/api/system/chat_webhooks');
+                if (!r.ok) return;
+                const d = await r.json();
+                const setV = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+                setV('cwh-slack', d.slack);
+                setV('cwh-teams', d.teams);
+                setV('cwh-tg-chat', d.telegram_chat_id);
+                setV('cwh-ntfy', d.ntfy_url);
+                setV('cwh-wa-pid', d.whatsapp_phone_id);
+                setV('cwh-wa-to', d.whatsapp_to);
+                // mask fields display current value as placeholder
+                const tg = document.getElementById('cwh-tg-token');
+                if (tg && d.telegram_bot_token) tg.placeholder = `current: ${d.telegram_bot_token} (leave blank to keep)`;
+                const wa = document.getElementById('cwh-wa-token');
+                if (wa && d.whatsapp_token) wa.placeholder = `current: ${d.whatsapp_token} (leave blank to keep)`;
+            } catch (e) {}
+        })();
+
+        document.getElementById('cwh-save')?.addEventListener('click', async () => {
+            const btn = document.getElementById('cwh-save'); btn.disabled = true;
+            try {
+                const payload = {
+                    slack: document.getElementById('cwh-slack').value.trim(),
+                    teams: document.getElementById('cwh-teams').value.trim(),
+                    telegram_bot_token: document.getElementById('cwh-tg-token').value.trim(),
+                    telegram_chat_id: document.getElementById('cwh-tg-chat').value.trim(),
+                    ntfy_url: document.getElementById('cwh-ntfy').value.trim(),
+                    whatsapp_phone_id: document.getElementById('cwh-wa-pid').value.trim(),
+                    whatsapp_token: document.getElementById('cwh-wa-token').value.trim(),
+                    whatsapp_to: document.getElementById('cwh-wa-to').value.trim(),
+                };
+                const r = await fetch('/api/system/chat_webhooks', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const d = await r.json();
+                if (r.ok && d.status === 'success') {
+                    _integrationsStatus('cwh-status', true, tLang('✓ Chat webhooks snimljeni.', '✓ Chat webhooks saved.'));
+                    document.getElementById('cwh-tg-token').value = '';
+                    document.getElementById('cwh-wa-token').value = '';
+                } else {
+                    _integrationsStatus('cwh-status', false, `✗ ${d.message || d.error || 'Save failed'}`);
+                }
+            } catch (e) {
+                _integrationsStatus('cwh-status', false, `✗ ${e.message || e}`);
+            } finally { btn.disabled = false; }
+        });
+
+        document.getElementById('cwh-test')?.addEventListener('click', async () => {
+            const btn = document.getElementById('cwh-test'); btn.disabled = true;
+            try {
+                const r = await fetch('/api/system/chat_webhooks/test', {method:'POST'});
+                const d = await r.json();
+                _integrationsStatus('cwh-status', r.ok, r.ok
+                    ? tLang('✓ Test poslat na sve konfigurisane kanale.', '✓ Test dispatched to all configured channels.')
+                    : `✗ ${d.message || d.error || 'Test failed'}`);
+            } catch (e) {
+                _integrationsStatus('cwh-status', false, `✗ ${e.message || e}`);
+            } finally { btn.disabled = false; }
+        });
+
+        // 3) hCAPTCHA — load
+        (async () => {
+            try {
+                const r = await fetch('/api/system/hcaptcha');
+                if (!r.ok) return;
+                const d = await r.json();
+                const sk = document.getElementById('hcap-sitekey'); if (sk) sk.value = d.sitekey || '';
+                const mk = document.getElementById('hcap-secret-mask');
+                if (mk) mk.textContent = d.has_secret ? `(current: ${d.secret_masked} — leave blank to keep)` : '';
+            } catch (e) {}
+        })();
+
+        document.getElementById('hcap-save')?.addEventListener('click', async () => {
+            const btn = document.getElementById('hcap-save'); btn.disabled = true;
+            try {
+                const payload = {
+                    sitekey: document.getElementById('hcap-sitekey').value.trim(),
+                    secret: document.getElementById('hcap-secret').value.trim(),
+                };
+                const r = await fetch('/api/system/hcaptcha', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const d = await r.json();
+                if (r.ok && d.status === 'success') {
+                    _integrationsStatus('hcap-status', true, d.enabled
+                        ? tLang('✓ hCaptcha aktivan.', '✓ hCaptcha enabled.')
+                        : tLang('✓ Snimljeno (nedostaje sitekey ili secret — provera je isključena).', '✓ Saved (sitekey or secret missing — verification disabled).'));
+                    document.getElementById('hcap-secret').value = '';
+                } else {
+                    _integrationsStatus('hcap-status', false, `✗ ${d.message || d.error || 'Save failed'}`);
+                }
+            } catch (e) {
+                _integrationsStatus('hcap-status', false, `✗ ${e.message || e}`);
+            } finally { btn.disabled = false; }
+        });
+
+        // 4) TRACKING APIs + 5) MARKET DATA — shared loader
+        (async () => {
+            try {
+                const r = await fetch('/api/system/api_keys');
+                if (!r.ok) return;
+                const d = await r.json();
+                Object.keys(d).forEach(k => {
+                    const m = document.getElementById(`mask-${k}`);
+                    if (m) m.textContent = d[k].has_value ? `(current: ${d[k].masked} — blank to keep)` : '';
+                });
+            } catch (e) {}
+        })();
+
+        const _saveKeys = async (keyIds, statusEl) => {
+            const payload = {};
+            let hasAny = false;
+            keyIds.forEach(k => {
+                const el = document.getElementById(`key-${k}`);
+                const v = el ? el.value.trim() : '';
+                if (v) { payload[k] = v; hasAny = true; }
+            });
+            if (!hasAny) {
+                _integrationsStatus(statusEl, false, tLang('Sva polja su prazna — ništa za snimanje.', 'All fields are empty — nothing to save.'));
+                return;
+            }
+            try {
+                const r = await fetch('/api/system/api_keys', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const d = await r.json();
+                if (r.ok && d.status === 'success') {
+                    _integrationsStatus(statusEl, true, tLang(`✓ Snimljeno: ${(d.updated||[]).join(', ')}`, `✓ Saved: ${(d.updated||[]).join(', ')}`));
+                    keyIds.forEach(k => { const el = document.getElementById(`key-${k}`); if (el) el.value = ''; });
+                } else {
+                    _integrationsStatus(statusEl, false, `✗ ${d.message || d.error || 'Save failed'}`);
+                }
+            } catch (e) {
+                _integrationsStatus(statusEl, false, `✗ ${e.message || e}`);
+            }
+        };
+
+        document.getElementById('tracking-save')?.addEventListener('click', () =>
+            _saveKeys(['track17ApiKey','marineTrafficKey','flightAwareKey','companiesHouseKey'], 'tracking-status'));
+        document.getElementById('market-save')?.addEventListener('click', () =>
+            _saveKeys(['alphaVantageKey'], 'market-status'));
 
         // TAB LOGIC
         document.querySelectorAll('.settings-tab-btn').forEach(btn => {
