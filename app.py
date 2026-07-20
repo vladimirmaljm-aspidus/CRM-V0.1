@@ -22,6 +22,9 @@ from routes.vault import vault_bp
 from routes.system import system_bp
 from routes.documents import documents_bp
 from routes.logistics import logistics_bp
+from routes.geo import geo_bp
+from routes.sanctions import sanctions_bp, screen_batch as sanctions_screen_batch
+from routes.verify_public import verify_bp
 from routes.documents_register import documents_register_bp
 
 # Konfiguracija sistemskog logovanja (sprečava ispisivanje osetljivih grešaka korisnicima)
@@ -80,6 +83,9 @@ app.register_blueprint(vault_bp)
 app.register_blueprint(system_bp)
 app.register_blueprint(documents_bp)
 app.register_blueprint(logistics_bp)
+app.register_blueprint(geo_bp)
+app.register_blueprint(sanctions_bp)
+app.register_blueprint(verify_bp)
 app.register_blueprint(documents_register_bp)
 
 @app.before_request

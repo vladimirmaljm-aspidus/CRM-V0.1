@@ -394,6 +394,63 @@ if (kycForm) {
                 }
             }
 
+            // HARD BLOCK: IBAN + BIC — nikad ne dozvoli submit sa pogrešnim
+            // bankarskim podacima. Bez ovoga bi klijentove KYC prijave dolazile
+            // sa netačnim IBAN/SWIFT-om koji forenzičar (admin firme) mora ručno da traži.
+            const _highlight = (id) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.scrollIntoView({behavior: 'smooth', block: 'center'});
+                    el.style.borderColor = '#dc2626';
+                    el.style.boxShadow = '0 0 0 3px rgba(220,38,38,.15)';
+                    setTimeout(() => { el.style.borderColor = ''; el.style.boxShadow = ''; }, 3500);
+                    el.focus();
+                }
+            };
+            const ibanRaw = (document.getElementById('kyc-bank-iban')?.value || '').trim();
+            const swiftRaw = (document.getElementById('kyc-bank-swift')?.value || '').trim();
+
+            // Ako izgleda kao IBAN (počinje sa 2 slova), MORA da prođe mod-97 proveru.
+            // Lokalni brojevi računa (npr. domaći) se propuštaju uz upozorenje na server
+            // strani; SWIFT/BIC MORA da bude validan uvek jer se koristi za wire.
+            if (/^[A-Za-z]{2}/.test(ibanRaw) && typeof IBAN !== 'undefined') {
+                const rIban = IBAN.validate(ibanRaw);
+                if (!rIban.valid) {
+                    if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
+                    _highlight('kyc-bank-iban');
+                    return showToast(`✗ IBAN: ${rIban.message}. Fix and submit again.`, 'error', 7000);
+                }
+            } else if (ibanRaw && !/^[A-Za-z]{2}/.test(ibanRaw)) {
+                // Lokalni broj računa — dozvolimo, ali obeležimo u polju status
+                const s = document.getElementById('kyc-bank-iban-status');
+                if (s) { s.textContent = '⚠ Local account (not IBAN) — SEPA/SWIFT wires may not work'; s.style.color = '#a16207'; }
+            }
+
+            if (swiftRaw) {
+                if (typeof BIC === 'undefined') {
+                    // Ne bi trebalo da se desi ako je vendor/iban.js učitan, ali fallback
+                    // struktura provera da ne šalje očigledno pogrešan BIC.
+                    if (!/^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(swiftRaw.toUpperCase().replace(/\s/g,''))) {
+                        if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
+                        _highlight('kyc-bank-swift');
+                        return showToast('✗ SWIFT/BIC format is invalid.', 'error', 6000);
+                    }
+                } else {
+                    // Cross-check protiv IBAN country code (ako IBAN validan)
+                    const expected = /^[A-Z]{2}/.test(ibanRaw.replace(/\s/g,'')) ? ibanRaw.replace(/\s/g,'').slice(0,2).toUpperCase() : null;
+                    const rBic = BIC.validate(swiftRaw, expected);
+                    if (!rBic.valid) {
+                        if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
+                        _highlight('kyc-bank-swift');
+                        return showToast(`✗ SWIFT/BIC: ${rBic.message}. Fix and submit again.`, 'error', 7000);
+                    }
+                }
+            } else {
+                if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
+                _highlight('kyc-bank-swift');
+                return showToast('✗ SWIFT/BIC is required.', 'error', 5000);
+            }
+
             const uploadedFiles = {};
             const fileInputs = [
                 { id: 'file-passport', key: 'passport' },
@@ -446,7 +503,21 @@ if (kycForm) {
                 loadPortalData();
             } else {
                 const d = await res.json().catch(() => ({}));
-                showToast(d.error || t('err_generic'), 'error');
+                // Server-side hard-block errors — highlight the offending field
+                if (d.error === 'IBAN_INVALID' || d.error === 'BIC_INVALID' || d.error === 'BIC_REQUIRED') {
+                    const targetId = d.error.startsWith('IBAN') ? 'kyc-bank-iban' : 'kyc-bank-swift';
+                    const el = document.getElementById(targetId);
+                    if (el) {
+                        el.scrollIntoView({behavior: 'smooth', block: 'center'});
+                        el.style.borderColor = '#dc2626';
+                        el.style.boxShadow = '0 0 0 3px rgba(220,38,38,.15)';
+                        setTimeout(() => { el.style.borderColor = ''; el.style.boxShadow = ''; }, 4000);
+                        el.focus();
+                    }
+                    showToast(`✗ ${d.message || d.error}`, 'error', 8000);
+                } else {
+                    showToast(d.message || d.error || t('err_generic'), 'error');
+                }
             }
         } catch (e) { showToast(t('err_network'), 'error'); }
         if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
@@ -606,4 +677,47 @@ window.portalLogout = function() {
 
 // Boot
 updateStaticText();
-loadPortalData();
+
+// Magic-link auto-consume: ako URL ima ?ml=<payload>, pokušaj instant sign-in
+// pre standardnog OTP flow-a. Uspeh → auth_key upisan, loadPortalData ide odmah.
+// Neuspeh → pada natrag na standardni OTP prompt bez korisničke intervencije.
+(async function tryMagicLink() {
+    const params = new URLSearchParams(window.location.search);
+    const ml = params.get('ml');
+    if (!ml || typeof TOKEN === 'undefined') { loadPortalData(); return; }
+    // GPS obavezan i za magic-link (isti standard kao OTP)
+    let loc;
+    try {
+        loc = await new Promise((resolve, reject) => {
+            if (!navigator.geolocation) return reject('no-geo');
+            navigator.geolocation.getCurrentPosition(
+                p => resolve(`${p.coords.latitude.toFixed(5)},${p.coords.longitude.toFixed(5)}`),
+                err => reject(err.code === err.PERMISSION_DENIED ? 'perm-denied' : 'geo-err'),
+                {enableHighAccuracy: true, timeout: 12000, maximumAge: 0}
+            );
+        });
+    } catch (e) {
+        // Bez GPS-a magic-link odbijamo; klijent ide na standardni OTP i tamo dobija poruku
+        loadPortalData();
+        return;
+    }
+    try {
+        const r = await fetch(`/api/portal/auth/consume_magic/${TOKEN}`, {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ml, location: loc}),
+        });
+        const j = await r.json();
+        if (r.ok && j.auth_key) {
+            authKey = j.auth_key;
+            sessionStorage.setItem(`portal_auth_${TOKEN}`, authKey);
+            // Očisti ?ml iz URL-a da se ne pojavi u share/screenshot-ovima
+            window.history.replaceState({}, '', window.location.pathname);
+            if (typeof showToast === 'function') showToast('✓ Signed in via secure link', 'success', 3000);
+        } else {
+            if (typeof showToast === 'function') showToast(j.message || 'Link cannot be used — please use the OTP code from your email.', 'warning', 6000);
+        }
+    } catch (_) {
+        // Silent fallback — user će videti OTP screen
+    }
+    loadPortalData();
+})();

@@ -147,6 +147,42 @@ window.reviewKYC = async function(partnerId) {
 
                 ${reviewNoteBlock}
                 ${historyBlock}
+                ${(() => {
+                    // Sanctions screening banner — samo ako je backend zabeležio screening rezultat
+                    const s = data._sanctionsScreening;
+                    if (!s) return '';
+                    const anyMatch = !!s.anyMatch;
+                    if (!anyMatch) {
+                        return `<div class="bg-emerald-50 border-l-4 border-emerald-500 p-3 rounded-r-lg mb-4 shadow-sm text-sm">
+                            <strong class="text-emerald-800 font-black text-[10px] uppercase tracking-widest">✓ OpenSanctions:</strong>
+                            <span class="text-emerald-900 ml-2">${tLangKY('Nema pogodaka na sankcionim listama.', 'No matches on sanctions lists.')}</span>
+                            <span class="text-emerald-700 text-[10px] ml-2 font-mono">${s.ranAt ? new Date(s.ranAt).toLocaleString(Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US') : ''}</span>
+                        </div>`;
+                    }
+                    const hitCards = (s.results || []).filter(r => (r.matches || []).length > 0).map(r => `
+                        <div class="mt-2 p-3 bg-white border border-red-300 rounded-lg">
+                            <div class="text-xs font-black text-red-800 uppercase tracking-widest">🎯 Match on: ${Utils.escapeHtml(r.name)}</div>
+                            ${r.matches.slice(0, 3).map(m => `
+                                <div class="mt-2 pl-3 border-l-2 border-red-300 text-xs text-slate-800">
+                                    <div><strong>${Utils.escapeHtml(m.caption || m.id)}</strong> · <span class="opacity-70">${Utils.escapeHtml(m.schema || '')}</span></div>
+                                    <div class="opacity-70 mt-1">Topics: ${(m.topics || []).map(t => Utils.escapeHtml(t)).join(', ') || '—'}</div>
+                                    <div class="opacity-70">Datasets: ${(m.datasets || []).slice(0,3).map(d => Utils.escapeHtml(d)).join(', ')}</div>
+                                    <a href="${Utils.escapeHtml(m.opensanctions_url)}" target="_blank" class="text-blue-600 hover:underline font-bold text-[10px]">→ view on OpenSanctions</a>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `).join('');
+                    return `<div class="bg-red-50 border-l-4 border-red-600 p-4 rounded-r-lg mb-5 shadow-sm">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="text-2xl">🚨</span>
+                            <div>
+                                <p class="text-[10px] font-black text-red-800 uppercase tracking-widest">${tLangKY('OpenSanctions upozorenje', 'OpenSanctions warning')}</p>
+                                <p class="text-sm text-red-900 leading-tight">${tLangKY('Automatska provera je pronašla moguća poklapanja na globalnim sankcionim listama. Pregledajte pre odobrenja.', 'Automated screening found possible matches on global sanctions lists. Review before approval.')}</p>
+                            </div>
+                        </div>
+                        ${hitCards}
+                    </div>`;
+                })()}
 
                 <div class="bg-white border border-slate-200 rounded-xl p-6 shadow-sm mb-6">
                     <h4 class="font-black text-slate-800 uppercase text-[10px] tracking-widest mb-5 pb-3 border-b border-slate-100 flex items-center gap-2">🏢 ${Utils.t('kyc.corpData')}</h4>
@@ -248,7 +284,18 @@ window.reviewKYC = async function(partnerId) {
                 </div>
 
                 <div class="p-5 border-t border-slate-200 bg-slate-50 flex flex-col gap-3">
-                    <button type="button" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3.5 rounded-xl shadow-md uppercase tracking-widest text-[11px] transition-transform transform hover:-translate-y-0.5" onclick="submitKycDecision('approved')">
+                    ${(data._sanctionsScreening && data._sanctionsScreening.anyMatch) ? `
+                    <div class="bg-red-100 border-2 border-red-500 rounded-lg p-3">
+                        <label class="flex items-start gap-2 cursor-pointer">
+                            <input type="checkbox" id="sanctions-ack-check" class="mt-1 w-5 h-5 accent-red-600">
+                            <div class="text-xs text-red-900 leading-snug">
+                                <strong class="block text-red-800 uppercase tracking-widest text-[10px] mb-1">🚨 ${tLangKY('Sankcije: potvrda odgovornosti', 'Sanctions: acknowledgment required')}</strong>
+                                <span>${tLangKY('Ovaj partner ima poklapanja na sankcionim listama. Potvrđujem da sam pregledao pogodke gore, da preuzimam odgovornost, i da imam osnov za odobrenje.', 'This partner has sanctions list matches. I confirm I have reviewed the hits above, accept responsibility, and have grounds for approval.')}</span>
+                                <textarea id="sanctions-ack-note" rows="2" class="w-full mt-2 bg-white border border-red-300 rounded px-2 py-1 text-xs" placeholder="${tLangKY('Kratko objašnjenje (obavezno)…','Short justification (required)…')}"></textarea>
+                            </div>
+                        </label>
+                    </div>` : ''}
+                    <button type="button" id="kyc-approve-btn" class="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-black py-3.5 rounded-xl shadow-md uppercase tracking-widest text-[11px] transition-transform transform hover:-translate-y-0.5" onclick="submitKycDecision('approved')" ${(data._sanctionsScreening && data._sanctionsScreening.anyMatch) ? 'disabled' : ''}>
                         ✅ ${Utils.t('kyc.approve')}
                     </button>
                     <button type="button" class="w-full bg-amber-500 hover:bg-amber-600 text-white font-black py-3.5 rounded-xl shadow-md uppercase tracking-widest text-[11px] transition-transform transform hover:-translate-y-0.5" onclick="submitKycDecision('update_requested')">
@@ -270,8 +317,25 @@ window.reviewKYC = async function(partnerId) {
         window.closeModal = function() {
             if(mBody) { mBody.classList.add('p-6'); mBody.classList.remove('p-0'); }
             oldClose();
-            window.closeModal = oldClose; 
+            window.closeModal = oldClose;
         };
+
+        // Sanctions acknowledgment gate — enable Approve tek kad checkbox + note popunjen
+        const ackCheck = document.getElementById('sanctions-ack-check');
+        const ackNote = document.getElementById('sanctions-ack-note');
+        const approveBtn = document.getElementById('kyc-approve-btn');
+        if (ackCheck && approveBtn) {
+            const refresh = () => {
+                const noteOk = ackNote && ackNote.value.trim().length >= 10;
+                approveBtn.disabled = !(ackCheck.checked && noteOk);
+                approveBtn.title = approveBtn.disabled
+                    ? 'Check the acknowledgment box and write at least 10 chars of justification.'
+                    : '';
+            };
+            ackCheck.addEventListener('change', refresh);
+            if (ackNote) ackNote.addEventListener('input', refresh);
+            refresh();
+        }
 
         window.submitKycDecision = async function(decisionStatus) {
             const form = document.getElementById('kyc-action-form');
@@ -294,15 +358,30 @@ window.reviewKYC = async function(partnerId) {
             const btn = document.activeElement;
             if (btn) { btn.disabled = true; btn.dataset.original = btn.innerHTML; btn.innerHTML = '⏳ ...'; }
 
+            // Sanctions acknowledgment — kad je banner aktivan, admin je morao
+            // da tikira checkbox + napiše note; server dodatno strogo tera 400 ako
+            // je _sanctionsScreening.anyMatch true bez ovih vrednosti.
+            const ackCheck = document.getElementById('sanctions-ack-check');
+            const ackNote = document.getElementById('sanctions-ack-note');
+            const sanctionsAck = ackCheck?.checked || false;
+            const sanctionsAckNote = ackNote?.value || '';
+
             try {
                 const res = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ riskLevel, notes })
+                    body: JSON.stringify({ riskLevel, notes, sanctionsAck, sanctionsAckNote })
                 });
                 const data = await res.json();
                 if (!res.ok) {
-                    alert('Error: ' + (data.error || 'Unknown'));
+                    if (data.error === 'SANCTIONS_ACK_REQUIRED') {
+                        alert('⚠ Sanctions acknowledgment required.\n\n' + (data.message || '') +
+                              `\n\nMatches on file: ${data.matches_count || '?'}. Tick the red checkbox and write your justification before approving.`);
+                        const ackBox = document.getElementById('sanctions-ack-check');
+                        if (ackBox) ackBox.scrollIntoView({behavior: 'smooth', block: 'center'});
+                    } else {
+                        alert('Error: ' + (data.message || data.error || 'Unknown'));
+                    }
                     if (btn && btn.dataset.original) { btn.disabled = false; btn.innerHTML = btn.dataset.original; }
                     return;
                 }

@@ -840,8 +840,27 @@ async function respondToOffer(offerId, action) {
     }
 
     let note = '';
+    let signature = null;
     if (action === 'accept') {
-        if (typeof askConfirm === 'function') {
+        // E-signature capture — replace old plain confirm with signed acceptance.
+        // Falls back to askConfirm if SignaturePad module didn't load (offline
+        // fallback za slucaj da signature_pad.js nije stigao do klijenta).
+        if (typeof SignaturePad !== 'undefined') {
+            const partnerName = (portalData?.partner?.contactPerson || portalData?.partner?.companyName || '').trim();
+            const sig = await SignaturePad.open({
+                title: 'Sign to accept offer',
+                signerName: partnerName,
+                description: 'By signing below you accept the terms of this offer. Your signature will be embedded into the acceptance record, together with a timestamp and audit trail.',
+                confirmText: 'Sign & Accept offer',
+            });
+            if (!sig || !sig.signed) return;
+            signature = {
+                dataUrl: sig.dataUrl,
+                signerName: sig.signerName,
+                signedAt: sig.signedAt,
+                userAgent: sig.userAgent,
+            };
+        } else if (typeof askConfirm === 'function') {
             const yes = await askConfirm(
                 'Accept this offer',
                 'By accepting, your account manager will contact you shortly to finalize the deal. Continue?',
@@ -876,7 +895,7 @@ async function respondToOffer(offerId, action) {
         const res = await fetch(`/api/portal/offers/accept/${TOKEN}/${offerId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
-            body: JSON.stringify({ action, note })
+            body: JSON.stringify({ action, note, signature })
         });
         if (typeof hideLoader === 'function') hideLoader();
         if (res.ok) {
@@ -1177,6 +1196,107 @@ document.addEventListener('DOMContentLoaded', () => {
             if (targetEl) targetEl.classList.remove('hidden');
         });
     });
+
+    // IBAN live validation on KYC bank field.
+    // Ako korisnik unese IBAN-format string (starts sa 2 slova), radimo full
+    // ISO 13616 provera; ako nije IBAN (npr. lokalni broj računa), ne blokiramo.
+    const ibanInp = document.getElementById('kyc-bank-iban');
+    const ibanStatus = document.getElementById('kyc-bank-iban-status');
+    if (ibanInp && ibanStatus && typeof IBAN !== 'undefined') {
+        const check = () => {
+            const raw = (ibanInp.value || '').trim();
+            if (!raw) { ibanStatus.textContent = ''; ibanStatus.style.color = ''; return; }
+            // Heuristic: format izgleda kao IBAN samo ako počinje sa 2 slova
+            if (!/^[A-Za-z]{2}/.test(raw)) {
+                ibanStatus.textContent = 'ℹ Local account number (not IBAN format) — SWIFT wire may not work internationally';
+                ibanStatus.style.color = '#a16207';
+                return;
+            }
+            const res = IBAN.validate(raw);
+            if (res.valid) {
+                ibanInp.value = res.formatted;  // reformat u grupe od 4
+                ibanStatus.textContent = `✓ Valid IBAN — ${res.country} (${res.length} chars)`;
+                ibanStatus.style.color = '#059669';
+            } else {
+                ibanStatus.textContent = `✗ ${res.message}`;
+                ibanStatus.style.color = '#dc2626';
+            }
+        };
+        ibanInp.addEventListener('blur', check);
+        ibanInp.addEventListener('input', () => {
+            // Silent while typing — only show when full-length hit
+            const raw = (ibanInp.value || '').replace(/\s/g, '');
+            if (raw.length >= 15) check();
+            else if (ibanStatus.textContent && !ibanStatus.textContent.startsWith('✓')) {
+                ibanStatus.textContent = '';
+            }
+        });
+    }
+
+    // BIC/SWIFT live validation on KYC bank field.
+    // Cross-check protiv IBAN country code kad je IBAN validan — potrebno je da
+    // BIC country prefix odgovara IBAN prefix-u da nema greške u wire transfer-u.
+    const swiftInp = document.getElementById('kyc-bank-swift');
+    const swiftStatus = document.getElementById('kyc-bank-swift-status');
+    if (swiftInp && swiftStatus && typeof BIC !== 'undefined') {
+        const checkBic = () => {
+            const raw = (swiftInp.value || '').trim();
+            if (!raw) { swiftStatus.textContent = ''; return; }
+            // Ako je IBAN validan, izvuci country za cross-check
+            let expected = null;
+            const ibanRaw = (document.getElementById('kyc-bank-iban')?.value || '').replace(/\s/g, '');
+            if (ibanRaw.length >= 4 && /^[A-Z]{2}/.test(ibanRaw)) expected = ibanRaw.slice(0, 2);
+            const r = BIC.validate(raw, expected);
+            if (r.valid) {
+                swiftInp.value = r.formatted;
+                swiftStatus.textContent = `✓ Valid BIC — ${r.country_code} bank ${r.bank_code}${r.is_hq ? ' (HQ)' : ` branch ${r.branch_code}`}${r.is_test ? ' [TEST]' : ''}`;
+                swiftStatus.style.color = '#059669';
+            } else {
+                swiftStatus.textContent = `✗ ${r.message}`;
+                swiftStatus.style.color = '#dc2626';
+            }
+        };
+        swiftInp.addEventListener('blur', checkBic);
+        swiftInp.addEventListener('input', () => {
+            const raw = (swiftInp.value || '').replace(/\s/g, '');
+            if (raw.length === 8 || raw.length === 11) checkBic();
+            else if (swiftStatus.textContent && !swiftStatus.textContent.startsWith('✓')) {
+                swiftStatus.textContent = '';
+            }
+        });
+    }
+
+    // Auto-fill dial code when country changes on KYC.
+    // Uses bundled ISO_COUNTRIES for instant offline; then hits REST Countries
+    // proxy for confirmation (updates flag/capital hint if UI has them).
+    const kycCountry = document.getElementById('kyc-country');
+    const kycPhone = document.getElementById('kyc-phone');
+    if (kycCountry) {
+        kycCountry.addEventListener('change', async () => {
+            const name = (kycCountry.value || '').trim();
+            if (!name || typeof ISO_COUNTRIES === 'undefined') return;
+            const c = ISO_COUNTRIES.byName(name);
+            if (!c) return;
+            // Predloži dial code samo ako telefon nije već popunjen
+            if (kycPhone && !kycPhone.value && c.dial) {
+                kycPhone.placeholder = `${c.dial} 123 456 789`;
+                kycPhone.value = c.dial + ' ';
+                kycPhone.focus();
+                kycPhone.setSelectionRange(kycPhone.value.length, kycPhone.value.length);
+            }
+            // Best-effort REST Countries confirmation (network); ne blokira UX
+            try {
+                const res = await fetch(`/api/geo/portal/country/${c.alpha2}`);
+                if (res.ok) {
+                    const rc = await res.json();
+                    // Ako ISO_COUNTRIES nema currency ili dial, dopuni iz live-a
+                    if (rc && rc.dial_code && kycPhone && !kycPhone.value.trim().replace(/\+/g,'').match(/\d/)) {
+                        kycPhone.value = rc.dial_code + ' ';
+                    }
+                }
+            } catch(_) { /* offline OK */ }
+        });
+    }
 });
 
 // ==========================================================

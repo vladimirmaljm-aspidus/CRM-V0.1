@@ -148,6 +148,58 @@ window.askConfirm = (title, description, opts) => askModal(Object.assign({ title
 window.askChoice = (title, options, opts) => askModal(Object.assign({ title, options, required: true }, opts || {}));
 
 // ==========================================================
+//  NATIVE alert() / confirm() / prompt() SHIM
+// ==========================================================
+// Prepiši native browser dijaloge — svi legacy alert()/confirm()/prompt()
+// pozivi (103 u kodu) sada automatski koriste stilizovani modalni prozor.
+// Očuvamo reference u __native* za slučaj da neki tok mora natrag.
+window.__nativeAlert = window.alert.bind(window);
+window.__nativeConfirm = window.confirm.bind(window);
+window.__nativePrompt = window.prompt.bind(window);
+
+// Detekcija: da li se poruka odnosi na grešku, upozorenje ili info?
+// Bazira se na ključnim rečima u tekstu — koristi se za automatsko biranje
+// naslova i boje.
+function _detectMessageKind(msg) {
+    const s = String(msg || '').toLowerCase();
+    if (/(greška|error|failed|fail|denied|neuspešn|nije uspe|invalid|blocked|refused|forbidden|zabranj)/i.test(s)) return 'error';
+    if (/(upozorenj|warning|pažnj|paznj|attention|manjak|caution)/i.test(s)) return 'warning';
+    if (/(uspešn|success|ok|sačuvano|saved|obrisano|deleted|created)/i.test(s)) return 'success';
+    return 'info';
+}
+
+// Sinhroni alert je nemoguć u browseru, ali je nekritičan pošto native
+// alert() je već blokirajući. Simuliramo modal — poziv će vratiti odmah,
+// ali korisnik će videti stilizovan overlay dok ne klikne OK.
+window.alert = function styledAlert(msg) {
+    const kind = _detectMessageKind(msg);
+    const title = kind === 'error' ? '⚠️ Greška'
+               : kind === 'warning' ? '⚠️ Upozorenje'
+               : kind === 'success' ? '✅ Uspešno'
+               : 'ℹ️ Informacija';
+    // Poziv askModal je async — ne čekamo, ali korisnik vidi overlay dok
+    // ne klikne OK. Za flow-ove koji se oslanjaju na blokirajući alert
+    // (retko), fallback na native je zadržan kroz window.__nativeAlert.
+    if (typeof window.askModal === 'function') {
+        askModal({
+            title,
+            description: String(msg || ''),
+            mode: 'confirm',
+            confirmText: 'OK',
+        }).catch(() => {});
+    } else {
+        window.__nativeAlert(msg);
+    }
+};
+
+// NAPOMENA: `window.confirm` i `window.prompt` NE prepisujemo globalno jer
+// JavaScript nema pravi sinhroni modal (browser API ograničenje) —
+// `if (confirm(...))` sintaksa bi break-ovala ako bismo vratili Promise.
+// Umesto toga, sve nove pozive treba pisati kao `await askConfirm(...)`
+// ili `await askInput(...)` koji vraćaju stilizovan modal. Legacy
+// `confirm()`/`prompt()` pozivi se konvertuju eksplicitno kroz kod.
+
+// ==========================================================
 //  PROFESIONALNI LOADER — full-screen overlay + inline spinner
 // ==========================================================
 // Cilj: korisnik uvek zna da aplikacija radi u pozadini.
@@ -472,7 +524,38 @@ function normalizeUnit(unit) {
 // Faktori konverzije tezinskih jedinica u kilograme. Samo prave tezinske
 // jedinice se mogu konvertovati - pcs/L/CBM/box/ctr itd. nemaju fiksan odnos
 // prema kilogramu pa se za njih konverzija ne radi (vraca se null).
-const WEIGHT_UNITS_TO_KG = { 'kg': 1, 'mt': 1000, 'g': 0.001, 'lb': 0.45359237, 'oz': 0.0283495231 };
+// Osnovni set za brzu lookup; puni set je u UNIT_CANONICAL (constants.js).
+const WEIGHT_UNITS_TO_KG = { 'kg': 1, 'mt': 1000, 't': 1000, 'g': 0.001, 'mg': 0.000001,
+    'lb': 0.45359237, 'lbs': 0.45359237, 'oz': 0.028349523125,
+    'st': 6.35029318, 'stone': 6.35029318,
+    'cwt': 45.359237, 'cwt_us': 45.359237, 'cwt_uk': 50.80234544,
+    'short_ton': 907.18474, 'sh_tn': 907.18474,
+    'long_ton': 1016.0469088, 'l_tn': 1016.0469088,
+    'grain': 0.00006479891,
+};
+
+// Generički konverter — koristi UNIT_CANONICAL kao source of truth za sve
+// vrste jedinica (mass/volume/area/length/count). Vraća null ako jedinice
+// nisu istog kind-a (npr. mass ↔ volume bez density-ja).
+function convertAny(qty, fromUnit, toUnit) {
+    if (qty === null || qty === undefined) return null;
+    const q = parseFloat(qty);
+    if (isNaN(q)) return null;
+    if (typeof UNIT_CANONICAL === 'undefined') return null;
+    const from = normalizeUnit(fromUnit);
+    const to = normalizeUnit(toUnit);
+    if (from === to) return q;
+    const fSpec = UNIT_CANONICAL[from];
+    const tSpec = UNIT_CANONICAL[to];
+    if (!fSpec || !tSpec) return null;
+    if (fSpec.kind !== tSpec.kind) return null;
+    // Pivot ključ zavisi od kind-a
+    if (fSpec.kind === 'mass'   && fSpec.toKg   && tSpec.toKg)   return q * fSpec.toKg   / tSpec.toKg;
+    if (fSpec.kind === 'volume' && fSpec.toL    && tSpec.toL)    return q * fSpec.toL    / tSpec.toL;
+    if (fSpec.kind === 'area'   && fSpec.toSqm  && tSpec.toSqm)  return q * fSpec.toSqm  / tSpec.toSqm;
+    if (fSpec.kind === 'length' && fSpec.toM    && tSpec.toM)    return q * fSpec.toM    / tSpec.toM;
+    return null;  // count → count = ne konvertuje se numerički
+}
 
 function isWeightUnit(unit) {
     return Object.prototype.hasOwnProperty.call(WEIGHT_UNITS_TO_KG, normalizeUnit(unit));
@@ -496,6 +579,49 @@ function convertWeight(qty, fromUnit, toUnit) {
 function toMetricTons(qty, unit) { return convertWeight(qty, unit, 'mt'); }
 // Vraca kolicinu izrazenu u kilogramima, ili null ako jedinica nije tezinska.
 function toKilograms(qty, unit) { return convertWeight(qty, unit, 'kg'); }
+
+// ==========================================================
+//  UNIT-AWARE PRICE MATH
+// ==========================================================
+// convertPricePerUnit(price, fromUnit, toUnit) — pretvara cenu izraženu
+// PO fromUnit u cenu PO toUnit. Kritično za PDF-ove i izveštaje: ako
+// ponuda kaže "1.5 USD po kg" a analitika radi po toni, mora se pomnožiti
+// sa 1000. Vraća null ako jedinice nisu istovrsne (npr. price/kg → price/pcs).
+function convertPricePerUnit(price, fromUnit, toUnit) {
+    if (price === null || price === undefined || price === '') return null;
+    const p = parseFloat(price);
+    if (isNaN(p)) return null;
+    const from = normalizeUnit(fromUnit);
+    const to = normalizeUnit(toUnit);
+    if (from === to) return p;
+    // Ako oba tipa mase → koristimo relaciju kg-a
+    if (WEIGHT_UNITS_TO_KG[from] && WEIGHT_UNITS_TO_KG[to]) {
+        // 1 unit(from) = WEIGHT_UNITS_TO_KG[from] kg. Ako cena je P/from,
+        // onda P/from = P / WEIGHT_UNITS_TO_KG[from] po kg. Pa u toUnit:
+        // po toUnit = po kg * WEIGHT_UNITS_TO_KG[to].
+        return p / WEIGHT_UNITS_TO_KG[from] * WEIGHT_UNITS_TO_KG[to];
+    }
+    // Ako se ne poklapaju (npr. price/kg → price/pcs) — ne možemo bez težine paketa.
+    return null;
+}
+
+// Ukupna cena robe: quantity * price, sve u istoj jedinici.
+// Vraća { total, canonicalUnit, wasConverted }.
+function totalPriceQty(quantity, priceUnit, quantityUnit, pricePerUnit) {
+    const qty = parseFloat(quantity) || 0;
+    const price = parseFloat(pricePerUnit) || 0;
+    // Ako su jedinice iste — trivial.
+    const pu = normalizeUnit(priceUnit);
+    const qu = normalizeUnit(quantityUnit);
+    if (pu === qu) return { total: qty * price, unit: pu, wasConverted: false };
+    // Pokušaj konverziju
+    const priceInQu = convertPricePerUnit(price, priceUnit, quantityUnit);
+    if (priceInQu !== null) {
+        return { total: qty * priceInQu, unit: qu, wasConverted: true };
+    }
+    // Ne može se konvertovati — vrati raw multiply sa warning
+    return { total: qty * price, unit: qu, wasConverted: false, warning: 'unit_mismatch' };
+}
 
 async function uploadFileToServer(file) {
     const formData = new FormData();
@@ -580,6 +706,9 @@ window.Utils = {
     convertWeight,
     toMetricTons,
     toKilograms,
+    convertAny,
+    convertPricePerUnit,
+    totalPriceQty,
     uploadFileToServer,
     formatBytes,
     initAutocomplete,

@@ -8,6 +8,8 @@ from werkzeug.utils import secure_filename
 from flask import request, jsonify, abort, send_from_directory, current_app, session
 from config import DB_FILE, PORTAL_DB_FILE, PORTAL_UPLOAD_FOLDER, ALLOWED_EXTENSIONS
 from utils import log_audit, login_required, encrypt_data, decrypt_data, is_safe_file_content, rate_limit
+from bank_validation import validate_iban, validate_bic
+import re as _re_bv
 from . import (portal_bp, safe_parse, verify_portal_session, find_partner_by_token, log_portal_activity)
 
 
@@ -902,6 +904,30 @@ def submit_kyc(token):
             return jsonify({"error": "PROOF_OF_ADDRESS_REQUIRED",
                             "message": "Individuals must upload proof of home address (utility bill or bank statement)."}), 400
 
+    # HARD BLOCK server-side: IBAN + BIC. Client može poslati bilo šta bypass-om
+    # UI validacije, zato ovde radimo istu proveru pre nego što uopšte upišemo
+    # nešto u bazu ili tražimo dopunske skupe operacije (upload, sanctions, itd).
+    _iban_in = str(kyc_data.get('bankIban', '')).strip()
+    _bic_in = str(kyc_data.get('bankSwift', '')).strip()
+
+    # BIC je uvek obavezan
+    if not _bic_in:
+        return jsonify({"error": "BIC_REQUIRED",
+                        "message": "SWIFT/BIC is required for KYC submission."}), 400
+    # Cross-check protiv IBAN country ako IBAN izgleda kao IBAN
+    _iban_prefix = _iban_in.replace(' ', '').upper()[:2]
+    _expected_country = _iban_prefix if _re_bv.match(r'^[A-Z]{2}$', _iban_prefix) else None
+    _bic_res = validate_bic(_bic_in, _expected_country)
+    if not _bic_res['valid']:
+        return jsonify({"error": "BIC_INVALID", "reason": _bic_res.get('reason'),
+                        "message": _bic_res.get('message', 'Invalid BIC/SWIFT')}), 400
+    # Ako IBAN ima 2-letter prefix, MORA da prođe mod-97
+    if _expected_country:
+        _iban_res = validate_iban(_iban_in)
+        if not _iban_res['valid']:
+            return jsonify({"error": "IBAN_INVALID", "reason": _iban_res.get('reason'),
+                            "message": _iban_res.get('message', 'Invalid IBAN')}), 400
+
     clean_data = {
         "entityType": entity_type,
         "companyName": str(kyc_data.get('companyName', '')).strip()[:150],
@@ -912,8 +938,8 @@ def submit_kyc(token):
         "regAddr": str(kyc_data.get('regAddr', '')).strip()[:200],
         "opAddr": str(kyc_data.get('opAddr', '')).strip()[:200],
         "bankName": str(kyc_data.get('bankName', '')).strip()[:100],
-        "bankIban": str(kyc_data.get('bankIban', '')).strip()[:50],
-        "bankSwift": str(kyc_data.get('bankSwift', '')).strip()[:20],
+        "bankIban": _iban_in[:50],
+        "bankSwift": _bic_in[:20],
         "bankAddr": str(kyc_data.get('bankAddr', '')).strip()[:200],
         "corrBank": str(kyc_data.get('corrBank', '')).strip()[:100],
         "turnover": str(kyc_data.get('turnover', '')).strip()[:50],
@@ -932,13 +958,40 @@ def submit_kyc(token):
     if not clean_data['consent']:
         return jsonify({"error": "Explicit consent is legally required."}), 400
     
+    # AUTOMATSKO OPENSANCTIONS SCREENING pri submit-u KYC-a. Screening ne blokira
+    # već samo obeležava sve moguce match-eve iz OFAC/UN/EU sankcionih lista.
+    # Admin dobija upozorenje u KYC review UI ako postoji ijedan match.
+    sanctions_results = None
+    try:
+        names_to_check = [clean_data.get('companyName')]
+        for d in (clean_data.get('directors') or []):
+            n = d.get('name') if isinstance(d, dict) else str(d)
+            if n: names_to_check.append(n)
+        for u in (clean_data.get('ubos') or []):
+            n = u.get('name') if isinstance(u, dict) else str(u)
+            if n: names_to_check.append(n)
+        sanctions_results = sanctions_screen_batch([n for n in names_to_check if n])
+        # Ubaci u clean_data ispod dedikovanog ključa (enkripcija štiti sadržaj)
+        clean_data['_sanctionsScreening'] = {
+            'ranAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'anyMatch': any(len(r.get('matches') or []) > 0 for r in (sanctions_results or [])),
+            'results': sanctions_results,
+        }
+    except Exception:
+        # Best effort — ne blokiramo submit ako screening padne
+        pass
+
     conn = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     c = conn.cursor()
-    c.execute('''INSERT INTO kyc_submissions (id, partner_id, token, data, submitted_at) VALUES (?, ?, ?, ?, ?)''', 
+    c.execute('''INSERT INTO kyc_submissions (id, partner_id, token, data, submitted_at) VALUES (?, ?, ?, ?, ?)''',
               (str(uuid.uuid4()), partner_id, token, encrypt_data(clean_data), datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')))
     conn.commit()
     conn.close()
     log_audit('EDIT', 'portal', f"Partner {clean_data.get('companyName')} payload securely encrypted inside air-gapped vault", is_suspicious=False)
+    if sanctions_results and any(len(r.get('matches') or []) > 0 for r in sanctions_results):
+        log_audit('WARNING', 'sanctions',
+                  f"KYC submission for {clean_data.get('companyName')} produced sanctions matches — REQUIRES ADMIN REVIEW",
+                  is_suspicious=True)
     log_portal_activity(partner_id, 'KYC_SUBMIT', f'KYC submission by {clean_data.get("companyName")}')
     return jsonify({"status": "success", "message": "KYC Data securely submitted to Vault."})
 
@@ -1011,6 +1064,8 @@ def approve_kyc_submission(sub_id):
     payload = request.get_json(silent=True) or {}
     risk_level = str(payload.get('riskLevel', 'medium')).strip()
     notes = str(payload.get('notes', '')).strip()[:2000]
+    sanctions_ack = bool(payload.get('sanctionsAck', False))
+    sanctions_ack_note = str(payload.get('sanctionsAckNote', '')).strip()[:1000]
 
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     cp = conn_p.cursor()
@@ -1023,6 +1078,31 @@ def approve_kyc_submission(sub_id):
 
     partner_id = row[0]
     kyc_data = decrypt_data(row[1])
+
+    # HARD GATE: ako je OpenSanctions screening zabeležio matcheve, admin MORA
+    # eksplicitno da prizna odgovornost pre nego što odobri partnera. Time se
+    # sprečava da radnik na brzinu klikne "Approve" i preskoči crveni banner.
+    _screening = kyc_data.get('_sanctionsScreening') or {}
+    if _screening.get('anyMatch') and not sanctions_ack:
+        conn_p.close()
+        return jsonify({
+            "error": "SANCTIONS_ACK_REQUIRED",
+            "message": ("This KYC submission has OpenSanctions matches. You must acknowledge "
+                        "responsibility for approving this partner before the system will proceed."),
+            "matches_count": sum(len(r.get('matches') or []) for r in (_screening.get('results') or [])),
+        }), 400
+    if _screening.get('anyMatch') and sanctions_ack:
+        # Beležimo prihvat kao poseban audit event — forenzički zapis ko je i kada
+        # svesno odobrio partnera koji je bio flaggovan.
+        log_audit('SECURITY', 'sanctions',
+                  f"Admin {session.get('username','?')} ACKNOWLEDGED sanctions match and approved partner {partner_id}. "
+                  f"Note: {sanctions_ack_note[:200]}",
+                  is_suspicious=True)
+        kyc_data['_sanctionsAck'] = {
+            'ackAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'ackBy': session.get('username', 'admin'),
+            'note': sanctions_ack_note,
+        }
 
     # Označi kao odobreno u portal bazi (za istoriju)
     if 'status' not in kyc_data: kyc_data['status'] = 'approved'
@@ -1529,10 +1609,27 @@ def portal_accept_offer(token, offer_id):
     payload = request.get_json(silent=True) or {}
     action = str(payload.get('action', 'accept')).lower()
     note = str(payload.get('note', '')).strip()[:1000]
+    signature = payload.get('signature')  # {dataUrl, signerName, signedAt, userAgent} on accept
 
     if action == 'decline' and len(note) < 3:
         return jsonify({"error": "DECLINE_REASON_REQUIRED",
                         "message": "Please provide a short reason for declining."}), 400
+
+    # Sanitize signature: mora biti data:image/png;base64,... i max ~200KB base64.
+    # PNG 640×180 crno-belo je oko 3-8KB, pa je 200KB velikodušan gornji limit.
+    signature_ok = None
+    if action == 'accept' and isinstance(signature, dict):
+        du = signature.get('dataUrl') or ''
+        sn = str(signature.get('signerName', '')).strip()[:200]
+        if (isinstance(du, str) and du.startswith('data:image/png;base64,')
+                and len(du) <= 200_000 and sn):
+            signature_ok = {
+                'dataUrl': du,
+                'signerName': sn,
+                'signedAt': str(signature.get('signedAt', ''))[:64],
+                'userAgent': str(signature.get('userAgent', ''))[:500],
+                'ipAddress': (request.headers.get('X-Forwarded-For') or request.remote_addr or '').split(',')[0].strip()[:64],
+            }
 
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
     try:
@@ -1555,6 +1652,10 @@ def portal_accept_offer(token, offer_id):
             offer['clientStatus'] = 'accepted'
             offer['clientAcceptedAt'] = now_iso
             offer['clientNote'] = note
+            if signature_ok:
+                # Cuvamo signature kao deo offer-a. clientSignature.dataUrl je
+                # embeddovan base64 PNG spreman za PDF regen na strani CRM-a.
+                offer['clientSignature'] = signature_ok
             log_action = 'APPROVE'
         elif action == 'decline':
             offer['clientStatus'] = 'declined'
@@ -1577,7 +1678,9 @@ def portal_accept_offer(token, offer_id):
 
     log_audit(log_action, 'portal',
               f"Client '{partner.get('companyName')}' {action}ed offer {offer.get('offerNo', offer_id)}"
-              + (f" — Reason: {note[:200]}" if action == 'decline' else ''),
+              + (f" — Reason: {note[:200]}" if action == 'decline' else '')
+              + (f" — Signed by {signature_ok['signerName']} @ {signature_ok['signedAt']} from IP {signature_ok['ipAddress']}"
+                 if signature_ok else ''),
               is_suspicious=False)
     log_portal_activity(partner_id, f'OFFER_{action.upper()}',
                         f"Offer {offer.get('offerNo', offer_id)}"

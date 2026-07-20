@@ -44,7 +44,7 @@ function renderDealsListView() {
             <td class="px-4 py-4 align-top text-main font-medium">${Utils.formatCurrency(saleValue, sCur)}</td>
             <td class="px-4 py-4 align-top text-base font-black ${netProfit >= 0 ? 'text-success':'text-danger'}">${Utils.formatCurrency(netProfit, sCur)}</td>
             <td class="px-4 py-4 align-top text-xs">${buyerPaid}${supplierPaid}</td>
-            <td class="px-4 py-4 align-top text-right whitespace-nowrap"><button class="invoice-deal btn small bg-accent text-white shadow-sm" data-id="${d.id}">📄 ${Utils.t('actions.invoice')}</button><button class="edit-deal text-warning mx-3 font-bold hover:underline" data-id="${d.id}">✏️ ${Utils.t('actions.edit')}</button><button class="delete-deal text-danger font-bold hover:underline" data-id="${d.id}">✕ ${Utils.t('actions.delete')}</button></td>
+            <td class="px-4 py-4 align-top text-right whitespace-nowrap"><button class="invoice-deal btn small bg-accent text-white shadow-sm" data-id="${d.id}">📄 ${Utils.t('actions.invoice')}</button><button class="ics-deal text-blue-600 mx-2 font-bold hover:underline" data-id="${d.id}" title="Export dates to calendar">📅</button><button class="edit-deal text-warning mx-2 font-bold hover:underline" data-id="${d.id}">✏️ ${Utils.t('actions.edit')}</button><button class="delete-deal text-danger font-bold hover:underline" data-id="${d.id}">✕ ${Utils.t('actions.delete')}</button></td>
         </tr>`;
     }).join('') || `<tr><td colspan="6" class="p-10 text-center text-[var(--muted)] font-bold border-dashed border-2">${Utils.t('finances.noData')}</td></tr>`}</tbody>`;
 
@@ -53,6 +53,47 @@ function renderDealsListView() {
 
     container.querySelectorAll('.edit-deal, .clickable-row').forEach(b => b.addEventListener('click', e => showDealForm({dealId: e.currentTarget.dataset.id})));
     container.querySelectorAll('.invoice-deal').forEach(b => b.addEventListener('click', e => { if(typeof renderInvoiceModal === 'function') renderInvoiceModal(e.currentTarget.dataset.id); }));
+    container.querySelectorAll('.ics-deal').forEach(b => b.addEventListener('click', e => {
+        e.stopPropagation();
+        const deal = (state.data.deals || []).find(d => d.id === e.currentTarget.dataset.id);
+        if (!deal || typeof ICS === 'undefined') return;
+        const buyer = Utils.getPartnerNameById(deal.buyerId) || 'Buyer';
+        const product = Utils.getProductNameById(deal.productId) || 'Product';
+        const events = [];
+        if (deal.deliveryDate) events.push({
+            summary: `📦 Delivery — ${deal.contractId}`,
+            description: `Deal ${deal.contractId}\nBuyer: ${buyer}\nProduct: ${product}\nQty: ${deal.quantity || ''} ${deal.unit || ''}`,
+            location: deal.deliveryLocation || '',
+            start: deal.deliveryDate, allDay: true,
+            category: 'Delivery',
+        });
+        if (deal.paymentDates?.buyer) events.push({
+            summary: `💰 Buyer payment due — ${deal.contractId}`,
+            description: `Deal ${deal.contractId}\nBuyer: ${buyer}\nExpected: ${deal.sellingPrice || ''} ${deal.sellingCurrency || ''}`,
+            start: deal.paymentDates.buyer, allDay: true,
+            category: 'Payment',
+        });
+        if (deal.paymentDates?.supplier) events.push({
+            summary: `💸 Supplier payment due — ${deal.contractId}`,
+            description: `Deal ${deal.contractId}\nSupplier payment: ${deal.purchasePrice || ''} ${deal.purchaseCurrency || ''}`,
+            start: deal.paymentDates.supplier, allDay: true,
+            category: 'Payment',
+        });
+        if (deal.dealStartDate) events.push({
+            summary: `🤝 Deal start — ${deal.contractId}`,
+            description: `Deal ${deal.contractId} with ${buyer}`,
+            start: deal.dealStartDate, allDay: true,
+            category: 'Milestone',
+        });
+        if (!events.length) {
+            if (typeof showToast === 'function') showToast('No dates set on this deal to export.', 'warning');
+            return;
+        }
+        ICS.downloadCalendar(events,
+            `deal-${(deal.contractId||deal.id).replace(/[^A-Za-z0-9-]/g,'_')}.ics`,
+            `Aspidus · ${deal.contractId || 'Deal'}`);
+        if (typeof showToast === 'function') showToast(`${events.length} event(s) exported to .ics`, 'success');
+    }));
     
     container.querySelectorAll('.delete-deal').forEach(b => b.addEventListener('click', async (e) => {
         const dealId = e.currentTarget.dataset.id;
@@ -61,7 +102,8 @@ function renderDealsListView() {
         
         const confirmMsg = Utils.t('deals.confirmCascadeDelete').replace('{0}', deal.contractId);
         
-        if(confirm(confirmMsg)) {
+        const _ok = await window.askConfirm('Brisanje posla?', confirmMsg, { danger: true, confirmText: 'Obriši' });
+        if (_ok) {
             // FIX: Bezbedno brisanje transakcija čak i ako nema učitanih
             const allTxs = state.data.transactions || [];
             const txsToDelete = allTxs.filter(t => t.invoiceNumber === deal.contractId || (t.reference && t.reference.includes(deal.contractId)));
