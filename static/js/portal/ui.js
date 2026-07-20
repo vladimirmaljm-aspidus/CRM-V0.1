@@ -1177,6 +1177,42 @@ document.addEventListener('DOMContentLoaded', () => {
             if (targetEl) targetEl.classList.remove('hidden');
         });
     });
+
+    // IBAN live validation on KYC bank field.
+    // Ako korisnik unese IBAN-format string (starts sa 2 slova), radimo full
+    // ISO 13616 provera; ako nije IBAN (npr. lokalni broj računa), ne blokiramo.
+    const ibanInp = document.getElementById('kyc-bank-iban');
+    const ibanStatus = document.getElementById('kyc-bank-iban-status');
+    if (ibanInp && ibanStatus && typeof IBAN !== 'undefined') {
+        const check = () => {
+            const raw = (ibanInp.value || '').trim();
+            if (!raw) { ibanStatus.textContent = ''; ibanStatus.style.color = ''; return; }
+            // Heuristic: format izgleda kao IBAN samo ako počinje sa 2 slova
+            if (!/^[A-Za-z]{2}/.test(raw)) {
+                ibanStatus.textContent = 'ℹ Local account number (not IBAN format) — SWIFT wire may not work internationally';
+                ibanStatus.style.color = '#a16207';
+                return;
+            }
+            const res = IBAN.validate(raw);
+            if (res.valid) {
+                ibanInp.value = res.formatted;  // reformat u grupe od 4
+                ibanStatus.textContent = `✓ Valid IBAN — ${res.country} (${res.length} chars)`;
+                ibanStatus.style.color = '#059669';
+            } else {
+                ibanStatus.textContent = `✗ ${res.message}`;
+                ibanStatus.style.color = '#dc2626';
+            }
+        };
+        ibanInp.addEventListener('blur', check);
+        ibanInp.addEventListener('input', () => {
+            // Silent while typing — only show when full-length hit
+            const raw = (ibanInp.value || '').replace(/\s/g, '');
+            if (raw.length >= 15) check();
+            else if (ibanStatus.textContent && !ibanStatus.textContent.startsWith('✓')) {
+                ibanStatus.textContent = '';
+            }
+        });
+    }
 });
 
 // ==========================================================
