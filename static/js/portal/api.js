@@ -677,4 +677,47 @@ window.portalLogout = function() {
 
 // Boot
 updateStaticText();
-loadPortalData();
+
+// Magic-link auto-consume: ako URL ima ?ml=<payload>, pokušaj instant sign-in
+// pre standardnog OTP flow-a. Uspeh → auth_key upisan, loadPortalData ide odmah.
+// Neuspeh → pada natrag na standardni OTP prompt bez korisničke intervencije.
+(async function tryMagicLink() {
+    const params = new URLSearchParams(window.location.search);
+    const ml = params.get('ml');
+    if (!ml || typeof TOKEN === 'undefined') { loadPortalData(); return; }
+    // GPS obavezan i za magic-link (isti standard kao OTP)
+    let loc;
+    try {
+        loc = await new Promise((resolve, reject) => {
+            if (!navigator.geolocation) return reject('no-geo');
+            navigator.geolocation.getCurrentPosition(
+                p => resolve(`${p.coords.latitude.toFixed(5)},${p.coords.longitude.toFixed(5)}`),
+                err => reject(err.code === err.PERMISSION_DENIED ? 'perm-denied' : 'geo-err'),
+                {enableHighAccuracy: true, timeout: 12000, maximumAge: 0}
+            );
+        });
+    } catch (e) {
+        // Bez GPS-a magic-link odbijamo; klijent ide na standardni OTP i tamo dobija poruku
+        loadPortalData();
+        return;
+    }
+    try {
+        const r = await fetch(`/api/portal/auth/consume_magic/${TOKEN}`, {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ml, location: loc}),
+        });
+        const j = await r.json();
+        if (r.ok && j.auth_key) {
+            authKey = j.auth_key;
+            sessionStorage.setItem(`portal_auth_${TOKEN}`, authKey);
+            // Očisti ?ml iz URL-a da se ne pojavi u share/screenshot-ovima
+            window.history.replaceState({}, '', window.location.pathname);
+            if (typeof showToast === 'function') showToast('✓ Signed in via secure link', 'success', 3000);
+        } else {
+            if (typeof showToast === 'function') showToast(j.message || 'Link cannot be used — please use the OTP code from your email.', 'warning', 6000);
+        }
+    } catch (_) {
+        // Silent fallback — user će videti OTP screen
+    }
+    loadPortalData();
+})();

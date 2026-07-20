@@ -1270,7 +1270,7 @@ class T16EmailQueue(BaseCase):
         sends = {'n': 0}
         def slow_send(*a, **kw):
             import time
-            time.sleep(0.4)  # simulira spor SMTP
+            time.sleep(0.4)
             sends['n'] += 1
             return (True, None)
 
@@ -1280,6 +1280,54 @@ class T16EmailQueue(BaseCase):
             t1.start(); t2.start(); t1.join(); t2.join()
 
         self.assertEqual(sends['n'], 1)
+
+
+class T17MagicLink(BaseCase):
+    """Magic-link token minting + verify + single-use enforcement."""
+
+    def test_01_mint_and_verify_ok(self):
+        from magic_link import mint, verify, _ensure_jti_table
+        _ensure_jti_table()
+        tok = 'test-portal-token-abc'
+        ml = mint(tok, ttl_minutes=15)
+        ok, reason = verify(ml, expected_portal_token=tok, client_ip='1.2.3.4')
+        self.assertTrue(ok, f'Expected ok, got {reason}')
+
+    def test_02_single_use_rejects_replay(self):
+        from magic_link import mint, verify
+        tok = 'test-portal-token-single-use'
+        ml = mint(tok, ttl_minutes=15)
+        ok1, _ = verify(ml, expected_portal_token=tok, client_ip='1.2.3.4')
+        ok2, reason2 = verify(ml, expected_portal_token=tok, client_ip='1.2.3.4')
+        self.assertTrue(ok1)
+        self.assertFalse(ok2)
+        self.assertEqual(reason2, 'already_used')
+
+    def test_03_expired_rejected(self):
+        from magic_link import mint, verify
+        tok = 'test-portal-token-exp'
+        ml = mint(tok, ttl_minutes=-1)   # već istekao
+        ok, reason = verify(ml, expected_portal_token=tok)
+        self.assertFalse(ok)
+        self.assertEqual(reason, 'expired')
+
+    def test_04_wrong_token_rejected(self):
+        from magic_link import mint, verify
+        ml = mint('one-token', ttl_minutes=15)
+        ok, reason = verify(ml, expected_portal_token='different-token')
+        self.assertFalse(ok)
+        self.assertEqual(reason, 'token_mismatch')
+
+    def test_05_tampered_signature_rejected(self):
+        from magic_link import mint, verify
+        tok = 'test-portal-token-tamper'
+        ml = mint(tok, ttl_minutes=15)
+        p, s = ml.split('.', 1)
+        # Flipuj jedan char signature-a
+        tampered_s = ('B' if s[0] != 'B' else 'C') + s[1:]
+        ok, reason = verify(f'{p}.{tampered_s}', expected_portal_token=tok)
+        self.assertFalse(ok)
+        self.assertEqual(reason, 'bad_signature')
 
 
 def main():

@@ -8,10 +8,10 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, session
+from flask import Blueprint, jsonify, session, request
 
 from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE, DATA_DIR, UPLOAD_FOLDER, PORTAL_UPLOAD_FOLDER
-from utils import login_required, log_audit, FirewallCache
+from utils import login_required, log_audit, FirewallCache, encrypt_data
 
 system_bp = Blueprint('system', __name__, url_prefix='/api/system')
 
@@ -171,3 +171,109 @@ def backup_now():
     threading.Thread(target=_one_shot, daemon=True).start()
     log_audit('CREATE', 'system', 'Admin-triggered manual backup started', is_suspicious=False)
     return jsonify({"status": "success", "message": "Backup started in background."})
+
+
+# ==========================================================
+#  OTP DELIVERY CONFIG — transactional email provider + magic link
+# ==========================================================
+
+@system_bp.route('/otp_delivery', methods=['GET'])
+@login_required
+def get_otp_delivery():
+    """Vraća redigovanu konfiguraciju (API ključ se ne otkriva) — koristi Settings UI."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    from mail_providers import config_summary
+    return jsonify(config_summary())
+
+
+@system_bp.route('/otp_delivery', methods=['POST'])
+@login_required
+def set_otp_delivery():
+    """Snima OTP delivery konfiguraciju. Encrypted u settings.otpMailProvider.
+    API ključ se traži samo kad se menja provider ili kad admin eksplicitno pošalje
+    'change_api_key: true' i novi 'api_key' — u suprotnom čuvamo postojeći ključ."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    import sqlite3, json
+    from utils import decrypt_data
+    from mail_providers import clear_config_cache
+
+    payload = request.get_json(silent=True) or {}
+    provider = str(payload.get('provider', 'smtp')).lower().strip()
+    if provider not in ('smtp', 'resend', 'sendgrid', 'postmark'):
+        return jsonify({"error": "INVALID_PROVIDER"}), 400
+
+    # Učitaj postojeći config da sačuvamo API ključ ako korisnik ne menja
+    existing = {}
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key='otpMailProvider'").fetchone()
+            if row and row[0]:
+                try: existing = decrypt_data(row[0]) or {}
+                except Exception: existing = {}
+    except Exception:
+        pass
+
+    new_cfg = {
+        'provider': provider,
+        'from_email': str(payload.get('from_email', existing.get('from_email', ''))).strip()[:120],
+        'from_name': str(payload.get('from_name', existing.get('from_name', 'Aspidus'))).strip()[:80],
+        'magic_link_enabled': bool(payload.get('magic_link_enabled', False)),
+        'magic_link_ttl_min': max(5, min(int(payload.get('magic_link_ttl_min', 15) or 15), 60)),
+    }
+
+    # API key: menjaj samo ako je poslat, u suprotnom nasledi postojeći
+    api_key_in = str(payload.get('api_key', '')).strip()
+    if provider == 'smtp':
+        new_cfg['api_key'] = ''  # SMTP nema api_key
+    elif api_key_in:
+        new_cfg['api_key'] = api_key_in
+    else:
+        new_cfg['api_key'] = existing.get('api_key', '')
+
+    # Validacija api_key formata po provideru
+    if provider == 'resend' and new_cfg['api_key'] and not new_cfg['api_key'].startswith('re_'):
+        return jsonify({"error": "RESEND_KEY_INVALID",
+                        "message": "Resend API key must start with 're_'"}), 400
+    if provider == 'sendgrid' and new_cfg['api_key'] and not new_cfg['api_key'].startswith('SG.'):
+        return jsonify({"error": "SENDGRID_KEY_INVALID",
+                        "message": "SendGrid API key must start with 'SG.'"}), 400
+
+    try:
+        with sqlite3.connect(DB_FILE, timeout=30) as conn:
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('otpMailProvider', ?)",
+                         (encrypt_data(new_cfg),))
+            conn.commit()
+    except Exception as e:
+        return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
+
+    clear_config_cache()
+    log_audit('SECURITY', 'system',
+              f'OTP delivery provider changed to {provider} by {session.get("username","?")}',
+              is_suspicious=False)
+    return jsonify({"status": "success", "provider": provider})
+
+
+@system_bp.route('/otp_delivery/test', methods=['POST'])
+@login_required
+def test_otp_delivery():
+    """Šalje test mejl na admin-adresu preko trenutno konfigurisanog providera —
+    admin može odmah da vidi da li konfiguracija radi bez čekanja klijenta."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    payload = request.get_json(silent=True) or {}
+    to_email = str(payload.get('to', '')).strip().lower()
+    if not to_email or '@' not in to_email:
+        return jsonify({"error": "INVALID_EMAIL"}), 400
+    from mail_providers import send_transactional
+    ok, info = send_transactional(
+        to_email,
+        '[Aspidus] OTP delivery test',
+        '<html><body><h2>✓ OTP delivery works</h2><p>This test was sent via the currently configured provider. If you received it in the inbox (not spam), the setup is correct.</p></body></html>',
+        'OTP delivery works — this test was sent via the currently configured provider.',
+    )
+    log_audit('INFO', 'system',
+              f'OTP delivery test to {to_email}: {"OK" if ok else "FAIL"} ({str(info)[:200]})',
+              is_suspicious=False)
+    return jsonify({"ok": bool(ok), "info": str(info)[:300]})
