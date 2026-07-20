@@ -157,6 +157,8 @@ function showProductForm(id = null) {
                           <input name="hsCode" id="prod-hs-input" autocomplete="off" class="crm-input crm-input-mono" value="${Utils.escapeHtml(item.hsCode || '')}" placeholder="${tLang('Npr. 1806 ili kucaj: chocolate, iron pipe, sunflower oil…','e.g. 1806 or type: chocolate, iron pipe, sunflower oil…')}" pattern="[0-9]{2,10}"/>
                           <div id="prod-hs-dd" class="hs-dd" style="position:absolute;top:100%;left:0;right:0;z-index:20;background:#fff;border:1px solid #cbd5e1;border-radius:6px;max-height:280px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.12);display:none;"></div>
                           <p class="crm-help" id="prod-hs-desc">${tLang('Harmonizovana carinska šifra (6–10 cifara). Pretraga po nazivu ili kodu.','Harmonized customs code (6-10 digits). Search by name or code.')}</p>
+                          <button type="button" id="prod-hs-trade-btn" style="margin-top:6px;font-size:11px;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:4px 10px;border-radius:4px;cursor:pointer;font-weight:700;">${tLang('📊 Vidi svetsku trgovinu (UN Comtrade)', '📊 View world trade (UN Comtrade)')}</button>
+                          <div id="prod-hs-trade-out" style="margin-top:8px;font-size:11px;"></div>
                       </div>
                       <script>
                       (function(){
@@ -208,6 +210,50 @@ function showProductForm(id = null) {
                               showResolved();
                           }, 50);
                       })();
+
+                      // UN Comtrade panel — na klik dugmeta povučemo top 10 zemalja
+                      // izvoznika/uvoznika za dati HS kod. Podaci iz comtradeapi.un.org.
+                      setTimeout(function(){
+                          var btnT = document.getElementById('prod-hs-trade-btn');
+                          var inpT = document.getElementById('prod-hs-input');
+                          var outT = document.getElementById('prod-hs-trade-out');
+                          if (!btnT || !inpT || !outT) return;
+                          btnT.addEventListener('click', async function(){
+                              var hs = (inpT.value || '').trim().replace(/\s|\./g,'');
+                              if (!hs || !/^\d{2,10}$/.test(hs)) {
+                                  outT.innerHTML = '<span style="color:#dc2626;">Unesite prvo validan HS kod (2-10 cifara).</span>';
+                                  return;
+                              }
+                              btnT.disabled = true;
+                              outT.innerHTML = '<span style="color:#6b7280;">⏳ Povlačim iz UN Comtrade…</span>';
+                              try {
+                                  var r = await fetch('/api/geo/trade/' + encodeURIComponent(hs));
+                                  if (!r.ok) throw new Error('HTTP ' + r.status);
+                                  var j = await r.json();
+                                  if (!j.rows || !j.rows.length) {
+                                      outT.innerHTML = '<span style="color:#a16207;">⚠ Nema podataka za ovaj HS kod.</span>';
+                                      btnT.disabled = false;
+                                      return;
+                                  }
+                                  var rows = j.rows.slice(0, 10).map(function(r){
+                                      return '<tr><td style="padding:2px 6px;">' + (r.reporter || '-') + '</td>' +
+                                             '<td style="padding:2px 6px;font-family:monospace;text-align:right;">' + (r.partner || '-') + '</td>' +
+                                             '<td style="padding:2px 6px;font-family:monospace;text-align:right;">' + (r.tradeValue ? Number(r.tradeValue).toLocaleString() : '-') + '</td></tr>';
+                                  }).join('');
+                                  outT.innerHTML =
+                                      '<div style="border:1px solid #c7d2fe;border-radius:4px;padding:6px;background:#eef2ff;">' +
+                                      '<div style="font-weight:800;font-size:11px;margin-bottom:4px;color:#3730a3;">📊 UN Comtrade — HS ' + hs + '</div>' +
+                                      '<table style="width:100%;font-size:10px;"><thead><tr style="border-bottom:1px solid #c7d2fe;"><th style="text-align:left;padding:2px 6px;">Reporter</th><th style="text-align:right;padding:2px 6px;">Partner</th><th style="text-align:right;padding:2px 6px;">Value (USD)</th></tr></thead><tbody>' +
+                                      rows + '</tbody></table>' +
+                                      '<div style="font-size:9px;color:#4b5563;margin-top:4px;">Izvor: comtradeapi.un.org — poslednja godina objavljenih podataka.</div>' +
+                                      '</div>';
+                              } catch (e) {
+                                  outT.innerHTML = '<span style="color:#dc2626;">✗ ' + (e.message || e) + '</span>';
+                              } finally {
+                                  btnT.disabled = false;
+                              }
+                          });
+                      }, 100);
                       </script>
                       <div class="crm-field">
                           <label class="crm-label">SKU / Article No.</label>
