@@ -5,7 +5,7 @@ const translations = {
     missing_password: 'Lozinka je obavezna za novog korisnika.',
     cannot_delete_self: 'Sistem bezbednosti: Ne možete obrisati sopstveni nalog dok ste ulogovani.',
     
-    nav: { deals: 'Poslovi (Kanban)', network: 'Mreža Kontakata', finances: 'Finansije', product_search: 'Pretraga Robe', offers: 'Ponude', partners:'Partneri', products:'Proizvodi', demands:'Potražnja', cashflow: 'Tok Novca' },
+    nav: { dashboard: 'Dashboard', deals: 'Poslovi (Kanban)', network: 'Mreža Kontakata', finances: 'Finansije', product_search: 'Pretraga Robe', offers: 'Ponude', partners:'Partneri', products:'Proizvodi', demands:'Potražnja', cashflow: 'Tok Novca' },
     audit: {
         title: '🛡️ Bezbednosni Dnevnik (Audit Log)',
         desc: 'Kompletan, neizbrisiv trag svih dešavanja na serveru. Prati svaku prijavu, izmenu, klik i IP adresu.',
@@ -140,7 +140,7 @@ const translations = {
     missing_password: 'Password is required for a new user.',
     cannot_delete_self: 'Security System: You cannot delete your own account while logged in.',
     
-    nav: { deals: 'Deals (Kanban)', network: 'Network Connections', finances: 'Finances', product_search: 'Product Search', offers: 'Offers', partners:'Partners', products:'Products', demands:'Demands', cashflow: 'Cash Flow' },
+    nav: { dashboard: 'Dashboard', deals: 'Deals (Kanban)', network: 'Network Connections', finances: 'Finances', product_search: 'Product Search', offers: 'Offers', partners:'Partners', products:'Products', demands:'Demands', cashflow: 'Cash Flow' },
     audit: {
         title: 'System Audit Log',
         desc: 'Complete, immutable track of all server events. Monitors every login, modification, and IP address.',

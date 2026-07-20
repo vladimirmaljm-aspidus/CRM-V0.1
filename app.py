@@ -64,6 +64,21 @@ if not app.config['SESSION_COOKIE_SECURE']:
 # (npr. kolona 'signature') se ne bi primenile. Sada se izvršava uvek.
 init_db()
 
+# Bulletproof DB — postavi WAL, mmap, cache-size, busy_timeout na SVIM DB
+# fajlovima. WAL mode je persistan na disku, tako da svi budući konektori
+# (uključujući i one koji zovu sqlite3.connect direktno) rade preko WAL-a.
+try:
+    import db as _db
+    from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE
+    for _p in (DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE):
+        try:
+            with _db.connect(_p) as _c:
+                pass  # _apply_pragmas se izvrši u connect() kontekstu
+        except Exception as _e:
+            print(f'[db bootstrap] {_p}: {_e}')
+except Exception as _e:
+    print(f'[db bootstrap] failed: {_e}')
+
 # Učitaj firewall/session postavke (admin ih menja preko Settings modula) i
 # pokreni pozadinsko održavanje (rotacija audit log-a, čišćenje kešova).
 load_firewall_settings()

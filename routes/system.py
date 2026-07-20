@@ -107,6 +107,16 @@ def health():
         'settings': dict(FirewallCache.settings),
     }
 
+    # Bulletproof-DB pragme (WAL, busy_timeout, integrity_check) —
+    # pokazuje da li je hardening iz db.py stvarno primenjen.
+    db_pragmas = {}
+    try:
+        import db as _db
+        for _name, _p in (('crm', DB_FILE), ('portal', PORTAL_DB_FILE), ('audit', AUDIT_DB_FILE)):
+            db_pragmas[_name] = _db.health_check(_p)
+    except Exception as _e:
+        db_pragmas = {'error': str(_e)}
+
     payload = {
         'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         'databases': {
@@ -114,6 +124,7 @@ def health():
             'portal': _db_stats(PORTAL_DB_FILE),
             'audit': _db_stats(AUDIT_DB_FILE),
         },
+        'db_pragmas': db_pragmas,
         'storage': {
             'data_dir': DATA_DIR,
             'uploads_size_mb': round(_dir_size(UPLOAD_FOLDER) / 1024 / 1024, 2),
