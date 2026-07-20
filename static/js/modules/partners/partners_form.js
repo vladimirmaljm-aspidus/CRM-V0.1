@@ -129,7 +129,59 @@ function showPartnerForm(id=null){
     
     Utils.openModal(state.editingItem ? Utils.t('actions.edit') : Utils.t('add.partner'), html, async (fd) => {
         const id = state.editingItem?.id || Utils.generateId();
-        
+
+        // HARD BLOCK: ako je zemlja EU i taxId je popunjen, MORA da prođe VIES.
+        // Ako sistem nije uspeo da dokaže da je VAT validan (nikad kliknut check
+        // ili je VIES vratio invalid), zaustavljamo save. Time se sprečava da
+        // radnik sačuva partnera sa neispravnim/lažnim VAT brojem koji bi kasnije
+        // pokvario invoice sa VIES-nekonzistentnim podacima.
+        const taxIdVal = String(fd.get('taxId') || '').replace(/\s|-/g, '').toUpperCase();
+        const EU_ISO2 = ['AT','BE','BG','CY','CZ','DE','DK','EE','EL','ES','FI','FR','HR','HU',
+                         'IE','IT','LT','LU','LV','MT','NL','PL','PT','RO','SE','SI','SK','GR','XI'];
+        const looksEuVat = taxIdVal.length >= 4 && EU_ISO2.includes(taxIdVal.slice(0,2));
+        if (looksEuVat) {
+            const viesStatus = document.getElementById('partner-vies-status');
+            // Pokreni proveru automatski (bez klika) ako je user preskočio
+            const alreadyValid = viesStatus && viesStatus.textContent.startsWith('✓ Valid');
+            if (!alreadyValid) {
+                if (viesStatus) { viesStatus.textContent = '⏳ Running VIES validation before save…'; viesStatus.style.color = '#6b7280'; }
+                let viesRes;
+                try {
+                    const r = await fetch('/api/geo/vat/validate', {
+                        method: 'POST', headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({vat_number: taxIdVal})
+                    });
+                    viesRes = await r.json();
+                } catch (e) {
+                    viesRes = null;
+                }
+                if (!viesRes || (!viesRes.valid && viesRes.error !== 'service_unavailable')) {
+                    if (viesStatus) {
+                        viesStatus.textContent = '✗ ' + (viesRes?.message || 'VIES rejected this VAT — cannot save partner');
+                        viesStatus.style.color = '#dc2626';
+                    }
+                    const inp = document.getElementById('partner-tax-id');
+                    if (inp) {
+                        inp.scrollIntoView({behavior:'smooth', block:'center'});
+                        inp.style.borderColor = '#dc2626';
+                        inp.style.boxShadow = '0 0 0 3px rgba(220,38,38,.15)';
+                        setTimeout(()=>{ inp.style.borderColor=''; inp.style.boxShadow=''; }, 4000);
+                        inp.focus();
+                    }
+                    if (typeof showToast === 'function')
+                        showToast(`✗ VAT ${taxIdVal} rejected by EU VIES. Fix or clear the tax ID.`, 'error', 8000);
+                    return; // BLOKIRA save
+                }
+                if (viesRes.error === 'service_unavailable' && typeof showToast === 'function') {
+                    showToast('⚠ VIES service temporarily down — VAT could not be verified. Saving without validation.', 'warning', 6000);
+                }
+                if (viesRes.valid && viesStatus) {
+                    viesStatus.textContent = `✓ Valid — ${viesRes.name || ''}`;
+                    viesStatus.style.color = '#059669';
+                }
+            }
+        }
+
         const tagsInput = fd.get('tags') || '';
         const tagsArr = tagsInput.split(',').map(t => t.trim()).filter(t => t !== '');
 
@@ -175,11 +227,20 @@ function showPartnerForm(id=null){
     
     const form = document.getElementById('partner-form');
 
-    // VIES VAT validation button
+    // VIES VAT validation — button trigger + auto-run on blur when it looks like EU VAT
     const viesBtn = document.getElementById('partner-vies-check');
     const taxInp = document.getElementById('partner-tax-id');
     const viesStatus = document.getElementById('partner-vies-status');
     if (viesBtn && taxInp && viesStatus) {
+        const _EU = ['AT','BE','BG','CY','CZ','DE','DK','EE','EL','ES','FI','FR','HR','HU',
+                     'IE','IT','LT','LU','LV','MT','NL','PL','PT','RO','SE','SI','SK','GR','XI'];
+        // Auto-run on blur ako izgleda kao EU VAT — korisnik ne mora nikad ni da klikne
+        taxInp.addEventListener('blur', () => {
+            const v = (taxInp.value || '').replace(/\s|-/g,'').toUpperCase();
+            if (v.length >= 4 && _EU.includes(v.slice(0,2))) {
+                viesBtn.click();
+            }
+        });
         viesBtn.addEventListener('click', async () => {
             const raw = (taxInp.value || '').trim();
             if (!raw) { viesStatus.textContent = 'Enter VAT number first (e.g. DE123456789)'; viesStatus.style.color = '#dc2626'; return; }
