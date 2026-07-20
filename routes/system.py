@@ -107,6 +107,16 @@ def health():
         'settings': dict(FirewallCache.settings),
     }
 
+    # Bulletproof-DB pragme (WAL, busy_timeout, integrity_check) —
+    # pokazuje da li je hardening iz db.py stvarno primenjen.
+    db_pragmas = {}
+    try:
+        import db as _db
+        for _name, _p in (('crm', DB_FILE), ('portal', PORTAL_DB_FILE), ('audit', AUDIT_DB_FILE)):
+            db_pragmas[_name] = _db.health_check(_p)
+    except Exception as _e:
+        db_pragmas = {'error': str(_e)}
+
     payload = {
         'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         'databases': {
@@ -114,6 +124,7 @@ def health():
             'portal': _db_stats(PORTAL_DB_FILE),
             'audit': _db_stats(AUDIT_DB_FILE),
         },
+        'db_pragmas': db_pragmas,
         'storage': {
             'data_dir': DATA_DIR,
             'uploads_size_mb': round(_dir_size(UPLOAD_FOLDER) / 1024 / 1024, 2),
@@ -512,6 +523,55 @@ def set_api_keys():
                   f'API keys updated ({",".join(updated)}) by {session.get("username","?")}',
                   is_suspicious=False)
     return jsonify({"status": "success", "updated": updated})
+
+
+# ==========================================================
+#  FTS5 UNIFIED SEARCH — globalna pretraga za Cmd+K
+# ==========================================================
+
+@system_bp.route('/search', methods=['GET'])
+@login_required
+def unified_search():
+    """FTS5 pretraga preko svih entiteta. Query params:
+       - q: search string (obavezno)
+       - limit: max broj rezultata (default 20, max 100)
+       - types: comma-separated list ('partner,product,deal,offer,document')
+    """
+    q = (request.args.get('q') or '').strip()
+    if not q:
+        return jsonify({"results": [], "query": ""})
+    try:
+        limit = min(int(request.args.get('limit', 20)), 100)
+    except Exception:
+        limit = 20
+    types = None
+    if request.args.get('types'):
+        types = [t.strip() for t in request.args['types'].split(',') if t.strip()]
+
+    from search_index import search
+    results = search(q, limit=limit, entity_types=types)
+    return jsonify({"query": q, "count": len(results), "results": results})
+
+
+@system_bp.route('/search/rebuild', methods=['POST'])
+@login_required
+def rebuild_search_index():
+    """Ručno pokreće rebuild FTS5 indeksa. Admin-only."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    from search_index import rebuild_index
+    counts = rebuild_index()
+    log_audit('INFO', 'system',
+              f'Search index rebuilt: {counts} by {session.get("username","?")}',
+              is_suspicious=False)
+    return jsonify({"status": "success", "indexed": counts})
+
+
+@system_bp.route('/search/stats', methods=['GET'])
+@login_required
+def search_stats():
+    from search_index import index_stats
+    return jsonify(index_stats())
 
 
 @system_bp.route('/otp_delivery/test', methods=['POST'])

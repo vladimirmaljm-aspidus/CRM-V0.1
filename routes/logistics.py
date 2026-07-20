@@ -656,11 +656,9 @@ def list_airports():
 # Rezervisano za budućnost — trenutno portal koristi read-only, isti fajl.
 @logistics_bp.route('/api/portal/logistics/ports', methods=['GET'])
 def portal_list_ports():
-    # Portal auth se proverava kroz X-Portal-Auth header (isto kao ostale portal rute)
-    from routes.portal.actions import _portal_auth_check
-    ok = _portal_auth_check() if hasattr(__import__('routes.portal.actions', fromlist=['_portal_auth_check']), '_portal_auth_check') else True
-    if not ok:
-        return jsonify({"error": "PORTAL_AUTH_REQUIRED"}), 401
+    # Portal ports/airports su reference podaci (UN/LOCODE, IATA) — otvoreni
+    # za portal read-only bez auth-a (isti podaci su i inače public).
+    # Ako u budućnosti dodamo per-tenant filtriranje, ovde dolazi auth check.
     return _list_locations(_load_ports(), 'unlocode', 'name')
 
 @logistics_bp.route('/api/portal/logistics/airports', methods=['GET'])
