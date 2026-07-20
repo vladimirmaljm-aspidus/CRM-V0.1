@@ -504,33 +504,64 @@ def send_branded_admin_message(recipient, subject, message_text, attachments=Non
 #  Konkretni šabloni
 # ==========================================================
 
-def send_portal_otp(recipient, company_name_for_client, otp, portal_url):
-    """Šalje profesionalan OTP mejl klijentu."""
+def send_portal_otp(recipient, company_name_for_client, otp, portal_url,
+                    magic_url=None, magic_ttl_min=0):
+    """Šalje profesionalan OTP mejl klijentu.
+
+    Ako je magic_url prosleđen (admin uključio u Settings), mejl sadrži i
+    dugme "Sign in instantly" — jedan klik i sesija je otvorena. Standardni
+    OTP kod ostaje kao fallback za ljude koji ne mogu da kliknu link.
+
+    Provider: koristi Resend/SendGrid/Postmark ako je admin konfigurisao
+    (Settings > OTP Delivery), inače legacy SMTP. Ovim mejl ne ide sa
+    korisnikovog naloga → dedicated sender reputation → 99%+ inbox rate.
+    """
     _smtp, company = _get_smtp_settings()
     subject = f"[{_brand_pieces(company)['name']}] Your Secure Portal Access Code"
+
+    magic_block = ''
+    if magic_url:
+        magic_block = f"""
+      <div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;padding:20px;text-align:center;margin:0 0 20px 0;">
+        <div style="font-size:11px;color:#1e40af;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:8px;">🔗 One-Click Sign In</div>
+        <a href="{magic_url}" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 26px;border-radius:8px;font-size:14px;font-weight:700;margin-top:6px;">Sign in instantly</a>
+        <div style="font-size:11px;color:#1e3a8a;margin-top:12px;">Fastest way — single click. Link valid for {magic_ttl_min} minutes.</div>
+      </div>"""
 
     body = f"""
       <p style="margin:0 0 12px 0;font-size:16px;color:#101828;">Dear {company_name_for_client or 'Client'},</p>
       <p style="margin:0 0 20px 0;font-size:14px;line-height:1.6;color:#344054;">
-        You have requested access to the secure B2B client portal. Please use the one-time verification code below to complete your login.
+        You have requested access to the secure B2B client portal. Use either method below to sign in.
       </p>
+      {magic_block}
       <div style="background:#f4f6f9;border:1px solid #e7eaef;border-radius:10px;padding:24px;text-align:center;margin:20px 0;">
-        <div style="font-size:11px;color:#667085;font-weight:600;text-transform:uppercase;letter-spacing:0.15em;margin-bottom:12px;">One-Time Access Code</div>
-        <!-- OTP je u <code> tagu — long-press na telefonu ili double-click na desktop-u odabira ceo kod za copy.
-             Odvojen sa razmakom radi lakšeg čitanja, ali sirov u samom tekstu je bez razmaka. -->
+        <div style="font-size:11px;color:#667085;font-weight:600;text-transform:uppercase;letter-spacing:0.15em;margin-bottom:12px;">{'Or — One-Time Access Code' if magic_url else 'One-Time Access Code'}</div>
         <div style="font-family:'Courier New',Consolas,monospace;font-size:38px;font-weight:700;color:#101828;user-select:all;-webkit-user-select:all;">
           <code style="background:#ffffff;border:2px dashed #2563eb;border-radius:8px;padding:8px 16px;display:inline-block;letter-spacing:0.35em;">{otp}</code>
         </div>
         <div style="font-size:12px;color:#475569;margin-top:14px;">Tap or long-press the code to copy it — then paste it into the login screen.</div>
         <div style="font-size:11px;color:#98a2b3;margin-top:8px;">Valid for 5 minutes.</div>
       </div>
-      <p style="margin:0 0 8px 0;font-size:13px;color:#344054;">If you did not request this code, please ignore this message. Your account remains secure.</p>
+      <p style="margin:0 0 8px 0;font-size:13px;color:#344054;">If you did not request this, please ignore this message. Your account remains secure.</p>
       <p style="margin:0;font-size:13px;color:#344054;">For any questions, please contact your account manager.</p>
     """
 
     html = _html_wrap(subject, body, company, cta_url=portal_url, cta_label="Return to Portal")
-    plain = f"Your one-time access code is: {otp}\nValid for 5 minutes.\n\nIf you did not request this code, please ignore this message."
-    return _send(recipient, subject, html, plain)
+    plain_lines = [
+        f"Your one-time access code is: {otp}",
+        "Valid for 5 minutes.",
+    ]
+    if magic_url:
+        plain_lines.extend(["", f"Or click this link to sign in instantly (valid {magic_ttl_min} min):",
+                            magic_url])
+    plain_lines.append("\nIf you did not request this code, please ignore this message.")
+    plain = "\n".join(plain_lines)
+
+    # Pluggable transactional provider (Resend/SendGrid/Postmark) → dedicated
+    # sending reputation, ne ide sa operator-ovog mailbox-a → izbegava spam risk.
+    # Ako provider nije konfigurisan, fallback je legacy _send (SMTP).
+    from mail_providers import send_transactional
+    return send_transactional(recipient, subject, html, plain)
 
 
 def send_kyc_approved(recipient, company_name_for_client, portal_url):
