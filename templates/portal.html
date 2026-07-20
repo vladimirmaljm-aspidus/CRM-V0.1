@@ -517,6 +517,7 @@
                                 <label class="label required" id="lbl-bank-iban">IBAN / Account No.</label>
                                 <input type="text" id="kyc-bank-iban" class="input font-mono" required>
                                 <p class="field-help">International Bank Account Number or local account number</p>
+                                <div id="kyc-bank-iban-status" class="mt-1 text-xs font-semibold" style="min-height:1.1em;"></div>
                             </div>
                             <div>
                                 <label class="label required" id="lbl-bank-swift">SWIFT / BIC</label>
@@ -1167,6 +1168,9 @@
     </script>
     <datalist id="shared-countries-datalist"></datalist>
     <script src="/static/js/config/shared_constants.js"></script>
+    <script src="/static/js/config/iso_countries.js"></script>
+    <script src="/static/js/config/hs_codes.js"></script>
+    <script src="/static/js/vendor/iban.js"></script>
     <script>
         // Populate country datalist and bind to all text inputs whose id contains 'country'.
         (function() {
