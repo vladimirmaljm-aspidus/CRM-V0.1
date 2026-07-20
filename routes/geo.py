@@ -5,8 +5,6 @@ Sources:
       currency, languages, timezone, capital, flag URL).
     * PubChem PUG-REST (pubchem.ncbi.nlm.nih.gov) — chemical CAS lookup.
     * VIES (ec.europa.eu/taxation_customs/vies) — EU VAT number validation.
-    * open-meteo.com — free weather forecast, no API key.
-    * UN Comtrade (comtrade.un.org) — international trade statistics by HS code.
 
 All proxies cache aggressively (24h RAM) to protect the free tiers and to keep
 latency sub-100ms once warm. Cache is per-process, cleared on restart.
@@ -468,7 +466,6 @@ def _comtrade_cached(hs_code, reporter='all', partner='all'):
     if data:
         _COMTRADE_CACHE[key] = (now + _COMTRADE_TTL_S, data)
     return data
-
 
 @geo_bp.route('/trade/<hs_code>', methods=['GET'])
 @login_required

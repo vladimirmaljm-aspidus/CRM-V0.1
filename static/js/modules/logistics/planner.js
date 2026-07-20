@@ -808,92 +808,17 @@
                 </button>
               </div>
               ${items}
-              <div id="logi-weather" style="margin-top:14px;"></div>
               ${costTotalsBlock}
               ${vesselsBlock}`;
             const replayBtn = el.querySelector('#logi-replay');
             if (replayBtn) {
                 replayBtn.addEventListener('click', () => {
                     if (animRequest) cancelAnimationFrame(animRequest);
+                    // Ukloni prethodni "moving marker" i trail iz map-e — svaka
+                    // replay iteracija kreira sveže
                     drawPlan(plan);
                 });
             }
-            // Weather forecast at origin + destination (best-effort, async)
-            (async function loadWeather() {
-                const wxBox = el.querySelector('#logi-weather');
-                if (!wxBox) return;
-                const firstLeg = plan.legs[0];
-                const lastLeg = plan.legs[plan.legs.length - 1];
-                if (!firstLeg || !lastLeg) return;
-                const oLat = firstLeg.from[0], oLon = firstLeg.from[1];
-                const dLat = lastLeg.to[0], dLon = lastLeg.to[1];
-                const isPortal = (opts.apiBase || '').includes('/portal/');
-                const wxUrl = isPortal ? '/api/geo/portal/weather' : '/api/geo/weather';
-                wxBox.innerHTML = `<div style="font-size:11px;color:#94a3b8;">⛅ ${T('Učitavam vremensku prognozu…','Loading weather forecast…')}</div>`;
-                const wcodeIcon = c => {
-                    if (c == null) return '·';
-                    if (c === 0) return '☀️';
-                    if (c <= 3) return '⛅';
-                    if (c <= 48) return '🌫';
-                    if (c <= 67) return '🌧';
-                    if (c <= 77) return '❄️';
-                    if (c <= 82) return '🌧';
-                    if (c <= 86) return '🌨';
-                    if (c <= 99) return '⛈';
-                    return '·';
-                };
-                const wcodeText = c => {
-                    if (c == null) return '';
-                    if (c === 0) return T('Vedro','Clear');
-                    if (c <= 3) return T('Delimično oblačno','Partly cloudy');
-                    if (c <= 48) return T('Magla','Fog');
-                    if (c <= 67) return T('Kiša','Rain');
-                    if (c <= 77) return T('Sneg','Snow');
-                    if (c <= 82) return T('Pljusak','Showers');
-                    if (c <= 86) return T('Sneg pljuskovito','Snow showers');
-                    if (c <= 99) return T('Grmljavina','Thunderstorm');
-                    return '';
-                };
-                async function fetchAt(lat, lon) {
-                    try {
-                        const r = await fetch(`${wxUrl}?lat=${lat}&lon=${lon}&days=3`);
-                        if (!r.ok) return null;
-                        return await r.json();
-                    } catch (_) { return null; }
-                }
-                const [oWx, dWx] = await Promise.all([fetchAt(oLat, oLon), fetchAt(dLat, dLon)]);
-                const renderCard = (title, wx) => {
-                    if (!wx) return `<div style="padding:8px;font-size:11px;color:#9ca3af;background:#f9fafb;border-radius:6px;">${title}: ${T('nedostupno','unavailable')}</div>`;
-                    const c = wx.current || {};
-                    const daysHtml = (wx.daily || []).slice(0, 3).map(d => `
-                        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;padding:2px 0;color:#4b5563;">
-                            <span>${d.date ? d.date.slice(5) : ''}</span>
-                            <span>${wcodeIcon(d.weather_code)}</span>
-                            <span>${d.tmin_c != null ? Math.round(d.tmin_c) : '?'}° / ${d.tmax_c != null ? Math.round(d.tmax_c) : '?'}°</span>
-                            <span style="color:#3b82f6;">${d.precip_mm != null ? d.precip_mm.toFixed(1) : '0.0'} mm</span>
-                            <span style="color:#f59e0b;">💨 ${d.wind_max_kmh != null ? Math.round(d.wind_max_kmh) : '?'} km/h</span>
-                        </div>`).join('');
-                    return `
-                        <div style="padding:8px 10px;background:#f0f9ff;border-left:3px solid #0ea5e9;border-radius:6px;">
-                            <div style="font-size:11px;font-weight:800;color:#0c4a6e;margin-bottom:4px;">${title}</div>
-                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                                <span style="font-size:24px;">${wcodeIcon(c.weather_code)}</span>
-                                <span style="font-size:20px;font-weight:800;color:#0c4a6e;">${c.temperature_c != null ? Math.round(c.temperature_c) : '?'}°C</span>
-                                <span style="font-size:11px;color:#0369a1;">${wcodeText(c.weather_code)}</span>
-                            </div>
-                            <div style="font-size:10px;color:#0369a1;margin-bottom:4px;">💨 ${c.wind_kmh != null ? Math.round(c.wind_kmh) : '?'} km/h${c.precipitation_mm ? ` · 🌧 ${c.precipitation_mm} mm` : ''}</div>
-                            <div style="border-top:1px dashed #bae6fd;margin-top:6px;padding-top:4px;">${daysHtml}</div>
-                        </div>`;
-                };
-                wxBox.innerHTML = `
-                    <h3 style="font-size:12px;font-weight:700;color:#111827;text-transform:uppercase;letter-spacing:.06em;margin:0 0 6px 0;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">
-                      <i class="fa-solid fa-cloud-sun"></i> ${T('Prognoza duž rute (open-meteo)','Weather along route (open-meteo)')}
-                    </h3>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-                        ${renderCard(T('Polazište','Origin'), oWx)}
-                        ${renderCard(T('Odredište','Destination'), dWx)}
-                    </div>`;
-            })();
         }
 
         // -------- AUTOCOMPLETE + AUTO-DETECT --------

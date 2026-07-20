@@ -508,69 +508,15 @@ function showProductForm(id = null) {
 
     Utils.openModal(state.editingItem ? tLang('Uređivanje Proizvoda', 'Edit Product Profile') : tLang('Novi Proizvod u Katalogu', 'Create New Product'), html, async (fd) => {
         const id = state.editingItem?.id || Utils.generateId();
-
-        // HARD BLOCK: HS Code MORA da postoji u bundle-u ako je popunjen.
-        // Prihvatamo 2/4/6/8/10-cifarne varijante — poredimo prefix protiv chapter (2) i heading (4).
-        const hsIn = String(fd.get('hsCode') || '').trim().replace(/\s|\./g,'');
-        if (hsIn) {
-            if (!/^\d{2,10}$/.test(hsIn)) {
-                const el = document.querySelector('input[name="hsCode"]');
-                if (el) { el.style.borderColor='#dc2626'; el.focus(); setTimeout(()=>el.style.borderColor='',3500); }
-                if (typeof showToast === 'function') showToast('✗ HS code must be 2-10 digits.', 'error', 6000);
-                return;
-            }
-            const known = (typeof HS !== 'undefined') &&
-                (HS.chapterName(hsIn.slice(0,2)) || HS.headingName(hsIn.slice(0,4)));
-            if (!known) {
-                const el = document.querySelector('input[name="hsCode"]');
-                if (el) { el.style.borderColor='#dc2626'; el.focus(); setTimeout(()=>el.style.borderColor='',3500); }
-                if (typeof showToast === 'function')
-                    showToast(`✗ HS code ${hsIn} not in HS 2022 nomenclature. Use the autocomplete to pick a valid heading.`, 'error', 8000);
-                return;
-            }
-        }
-        // HARD BLOCK: ako je CAS popunjen, MORA da bude po formatu XXXXX-XX-X + PubChem resolve.
-        // Format je striktno definisan CAS Registry format (2-7 broj, 2 broja, 1 check digit).
-        const casIn = String(fd.get('casNumber') || '').trim();
-        if (casIn) {
-            if (!/^\d{2,7}-\d{2}-\d$/.test(casIn)) {
-                const el = document.querySelector('input[name="casNumber"]');
-                if (el) { el.style.borderColor='#dc2626'; el.focus(); setTimeout(()=>el.style.borderColor='',3500); }
-                if (typeof showToast === 'function') showToast('✗ CAS format must be XXXXX-XX-X (e.g. 56-81-5).', 'error', 6000);
-                return;
-            }
-            // Auto-run PubChem lookup — ne blokira ako je servis dole (best effort),
-            // ali blokira ako PubChem eksplicitno kaže "ne postoji ovaj CAS".
-            const out = document.getElementById('prod-cas-result');
-            if (out) { out.textContent = '⏳ Auto-validating CAS via PubChem before save…'; out.style.color = '#6b7280'; }
-            try {
-                const r = await fetch('/api/geo/chem/cas/' + encodeURIComponent(casIn));
-                if (r.status === 404) {
-                    const el = document.querySelector('input[name="casNumber"]');
-                    if (el) { el.style.borderColor='#dc2626'; el.focus(); setTimeout(()=>el.style.borderColor='',3500); }
-                    if (out) { out.textContent = `✗ PubChem: CAS ${casIn} not found`; out.style.color = '#dc2626'; }
-                    if (typeof showToast === 'function') showToast(`✗ CAS ${casIn} not found in PubChem. Fix or clear it.`, 'error', 7000);
-                    return;
-                }
-                if (r.ok) {
-                    const j = await r.json();
-                    if (out) { out.innerHTML = `✓ ${j.name || j.iupac_name || 'valid'} · ${j.formula || ''}`; out.style.color = '#059669'; }
-                }
-            } catch (_) {
-                // Network fail — dozvoli save uz warning
-                if (out) { out.textContent = '⚠ PubChem unreachable — CAS saved without verification.'; out.style.color = '#a16207'; }
-            }
-        }
-
-        const prod = {
-             id,
-             name: fd.get('name'),
+        const prod = { 
+             id, 
+             name: fd.get('name'), 
              imageUrl: fd.get('imageUrl'),
-             category: fd.get('category'),
-             hsCode: hsIn,
+             category: fd.get('category'), 
+             hsCode: fd.get('hsCode'),
              sku: fd.get('sku'),
              brand: fd.get('brand'),
-             casNumber: casIn,
+             casNumber: fd.get('casNumber'),
              shelfLife: fd.get('shelfLife'),
              detailedSpec: fd.get('detailedSpec'), 
              targetPrice: parseFloat(fd.get('targetPrice')) || 0,
