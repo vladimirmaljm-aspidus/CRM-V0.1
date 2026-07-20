@@ -509,13 +509,8 @@ function showProductForm(id = null) {
     Utils.openModal(state.editingItem ? tLang('Uređivanje Proizvoda', 'Edit Product Profile') : tLang('Novi Proizvod u Katalogu', 'Create New Product'), html, async (fd) => {
         const id = state.editingItem?.id || Utils.generateId();
 
-        // v22 P0 FIX: SOFT WARNING za HS Code, ne blokira save.
-        // Prethodna verzija (v22 batch 2) je BLOKIRALA save ako HS kod nije
-        // u lokalnom bundle-u od ~250 headings-a. To znači da bilo koji legitiman
-        // HS kod (WCO ima 5400+ 6-cifarnih) nije mogao da se sačuva. Iz proizvodnje:
-        // "proizvodi se ne cuvaju u bazi". Sada:
-        //   - format check (2-10 cifara) STILL blocks — pravi typo se hvata
-        //   - nepoznat kod = warning toast + zeleno save (admin može posle da promeni)
+        // P0 FIX: SOFT WARNING for HS Code — earlier v22 hard-block rejected legit codes.
+        // Format check (2-10 digits) still blocks obvious typos; unknown codes save with warning.
         const hsIn = String(fd.get('hsCode') || '').trim().replace(/\s|\./g,'');
         if (hsIn && !/^\d{2,10}$/.test(hsIn)) {
             const el = document.querySelector('input[name="hsCode"]');
@@ -529,9 +524,7 @@ function showProductForm(id = null) {
                 showToast(`⚠ HS code ${hsIn} not in local bundle — saving anyway. Verify with your customs broker.`, 'warning', 5000);
             }
         }
-        // v22 P0 FIX: SOFT WARNING za CAS. Format i PubChem provera ostaju kao
-        // BLOKING samo za očigledne greške (neispravan format); nepoznat CAS
-        // dobija warning ali proizvod se čuva.
+        // P0 FIX: SOFT WARNING for CAS — format still blocks obvious typos.
         const casIn = String(fd.get('casNumber') || '').trim();
         if (casIn && !/^\d{2,7}-\d{2}-\d$/.test(casIn)) {
             const el = document.querySelector('input[name="casNumber"]');
@@ -540,7 +533,6 @@ function showProductForm(id = null) {
             return;
         }
         if (casIn) {
-            // Best-effort PubChem lookup — ako nije nađen, samo warning, ne blokira save
             const out = document.getElementById('prod-cas-result');
             try {
                 const r = await fetch('/api/geo/chem/cas/' + encodeURIComponent(casIn));
@@ -560,11 +552,11 @@ function showProductForm(id = null) {
              id,
              name: fd.get('name'),
              imageUrl: fd.get('imageUrl'),
-             category: fd.get('category'),
-             hsCode: hsIn,
+             category: fd.get('category'), 
+             hsCode: fd.get('hsCode'),
              sku: fd.get('sku'),
              brand: fd.get('brand'),
-             casNumber: casIn,
+             casNumber: fd.get('casNumber'),
              shelfLife: fd.get('shelfLife'),
              detailedSpec: fd.get('detailedSpec'), 
              targetPrice: parseFloat(fd.get('targetPrice')) || 0,
