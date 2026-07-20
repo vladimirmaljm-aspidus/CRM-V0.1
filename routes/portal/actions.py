@@ -932,13 +932,40 @@ def submit_kyc(token):
     if not clean_data['consent']:
         return jsonify({"error": "Explicit consent is legally required."}), 400
     
+    # AUTOMATSKO OPENSANCTIONS SCREENING pri submit-u KYC-a. Screening ne blokira
+    # već samo obeležava sve moguce match-eve iz OFAC/UN/EU sankcionih lista.
+    # Admin dobija upozorenje u KYC review UI ako postoji ijedan match.
+    sanctions_results = None
+    try:
+        names_to_check = [clean_data.get('companyName')]
+        for d in (clean_data.get('directors') or []):
+            n = d.get('name') if isinstance(d, dict) else str(d)
+            if n: names_to_check.append(n)
+        for u in (clean_data.get('ubos') or []):
+            n = u.get('name') if isinstance(u, dict) else str(u)
+            if n: names_to_check.append(n)
+        sanctions_results = sanctions_screen_batch([n for n in names_to_check if n])
+        # Ubaci u clean_data ispod dedikovanog ključa (enkripcija štiti sadržaj)
+        clean_data['_sanctionsScreening'] = {
+            'ranAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'anyMatch': any(len(r.get('matches') or []) > 0 for r in (sanctions_results or [])),
+            'results': sanctions_results,
+        }
+    except Exception:
+        # Best effort — ne blokiramo submit ako screening padne
+        pass
+
     conn = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     c = conn.cursor()
-    c.execute('''INSERT INTO kyc_submissions (id, partner_id, token, data, submitted_at) VALUES (?, ?, ?, ?, ?)''', 
+    c.execute('''INSERT INTO kyc_submissions (id, partner_id, token, data, submitted_at) VALUES (?, ?, ?, ?, ?)''',
               (str(uuid.uuid4()), partner_id, token, encrypt_data(clean_data), datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')))
     conn.commit()
     conn.close()
     log_audit('EDIT', 'portal', f"Partner {clean_data.get('companyName')} payload securely encrypted inside air-gapped vault", is_suspicious=False)
+    if sanctions_results and any(len(r.get('matches') or []) > 0 for r in sanctions_results):
+        log_audit('WARNING', 'sanctions',
+                  f"KYC submission for {clean_data.get('companyName')} produced sanctions matches — REQUIRES ADMIN REVIEW",
+                  is_suspicious=True)
     log_portal_activity(partner_id, 'KYC_SUBMIT', f'KYC submission by {clean_data.get("companyName")}')
     return jsonify({"status": "success", "message": "KYC Data securely submitted to Vault."})
 
