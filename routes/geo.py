@@ -308,3 +308,280 @@ def validate_vat():
         return jsonify({'error': 'service_unavailable',
                         'message': 'VIES service temporarily unreachable — please retry'}), 502
     return jsonify(data)
+
+
+# ---------- open-meteo weather forecast ----------
+_WX_CACHE = {}      # {(lat,lon,days): (expiry_ts, payload)}
+_WX_TTL_S = 30 * 60  # 30min — vremenska prognoza se često menja
+
+def _fetch_openmeteo(lat, lon, days=3):
+    """POST-less GET na api.open-meteo.com. Bez API ključa. Vraća:
+       { current: {temperature, weather_code, wind_speed, ...},
+         daily: [ {date, tmin, tmax, weather_code, precipitation}, ... ] }"""
+    try:
+        params = urllib.parse.urlencode({
+            'latitude': f'{float(lat):.4f}',
+            'longitude': f'{float(lon):.4f}',
+            'current': 'temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation',
+            'daily': 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max',
+            'forecast_days': str(min(max(int(days or 3), 1), 16)),
+            'timezone': 'auto',
+        })
+        req = urllib.request.Request(
+            f'https://api.open-meteo.com/v1/forecast?{params}',
+            headers={'User-Agent': 'AspidusCRM/1.0'}
+        )
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as r:
+            raw = json.loads(r.read().decode('utf-8'))
+        cur = raw.get('current') or {}
+        daily = raw.get('daily') or {}
+        # Kompaktiraj daily granice u niz redova
+        d_rows = []
+        times = daily.get('time') or []
+        wcodes = daily.get('weather_code') or []
+        tmaxs = daily.get('temperature_2m_max') or []
+        tmins = daily.get('temperature_2m_min') or []
+        prec = daily.get('precipitation_sum') or []
+        wind = daily.get('wind_speed_10m_max') or []
+        for i, dt in enumerate(times):
+            d_rows.append({
+                'date': dt,
+                'weather_code': wcodes[i] if i < len(wcodes) else None,
+                'tmax_c': tmaxs[i] if i < len(tmaxs) else None,
+                'tmin_c': tmins[i] if i < len(tmins) else None,
+                'precip_mm': prec[i] if i < len(prec) else None,
+                'wind_max_kmh': wind[i] if i < len(wind) else None,
+            })
+        return {
+            'latitude': raw.get('latitude'),
+            'longitude': raw.get('longitude'),
+            'timezone': raw.get('timezone'),
+            'current': {
+                'temperature_c': cur.get('temperature_2m'),
+                'weather_code': cur.get('weather_code'),
+                'wind_kmh': cur.get('wind_speed_10m'),
+                'wind_dir_deg': cur.get('wind_direction_10m'),
+                'precipitation_mm': cur.get('precipitation'),
+                'time': cur.get('time'),
+            },
+            'daily': d_rows,
+            'source': 'open-meteo.com',
+        }
+    except Exception:
+        return None
+
+
+def _wx_cached(lat, lon, days):
+    key = (round(float(lat), 3), round(float(lon), 3), int(days))
+    now = time.time()
+    entry = _WX_CACHE.get(key)
+    if entry and entry[0] > now:
+        return entry[1]
+    data = _fetch_openmeteo(lat, lon, days)
+    if data:
+        _WX_CACHE[key] = (now + _WX_TTL_S, data)
+    return data
+
+
+@geo_bp.route('/weather', methods=['GET'])
+@login_required
+def get_weather():
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'bad_coords'}), 400
+    days = request.args.get('days', 3)
+    data = _wx_cached(lat, lon, days)
+    if not data:
+        return jsonify({'error': 'service_unavailable'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/portal/weather', methods=['GET'])
+def portal_weather():
+    """Portal-friendly ekvivalent; open-meteo je javan pa nema tajni."""
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'bad_coords'}), 400
+    days = request.args.get('days', 3)
+    data = _wx_cached(lat, lon, days)
+    if not data:
+        return jsonify({'error': 'service_unavailable'}), 502
+    return jsonify(data)
+
+
+# ---------- UN Comtrade trade stats ----------
+_COMTRADE_CACHE = {}       # {(hs, reporter, partner): (expiry, payload)}
+_COMTRADE_TTL_S = 24 * 3600
+
+def _fetch_comtrade_stats(hs_code, reporter='all', partner='all'):
+    """Comtrade free tier endpoint. Zove /public/v1/preview/C/A/HS.
+    Zabranjuje > 500 zapisa i > 10 poziva u minuti bez ključa. Vraćamo top 8
+    zemlje-partneri po trade value za posmatrani HS 6-cifreni kod, poslednja
+    dostupna godina.
+    """
+    try:
+        # Free preview API — bez ključa, ograničen ali dovoljan za info tab
+        params = urllib.parse.urlencode({
+            'r': reporter, 'p': partner,
+            'ps': 'recent',           # najskorija godina
+            'cc': str(hs_code)[:6],   # HS heading do 6 cifara
+            'freq': 'A',              # annual
+            'px': 'HS',
+            'rg': '2',                # 1=Import, 2=Export, all=1&2
+            'max': '10',
+        })
+        req = urllib.request.Request(
+            f'https://comtradeapi.un.org/public/v1/preview/C/A/HS?{params}',
+            headers={'User-Agent': 'AspidusCRM/1.0', 'Accept': 'application/json'}
+        )
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as r:
+            raw = json.loads(r.read().decode('utf-8'))
+        rows = raw.get('data') or raw.get('result') or []
+        top = []
+        for r in rows[:10]:
+            top.append({
+                'reporter': r.get('reporterDesc') or r.get('rtTitle'),
+                'partner':  r.get('partnerDesc')  or r.get('ptTitle'),
+                'year':     r.get('refYear') or r.get('yr'),
+                'trade_value_usd': r.get('primaryValue') or r.get('TradeValue'),
+                'quantity': r.get('qty') or r.get('primaryQty'),
+                'flow': r.get('flowDesc') or r.get('rgDesc'),
+            })
+        return {'hs_code': hs_code, 'rows': top, 'source': 'comtradeapi.un.org'}
+    except Exception:
+        return None
+
+
+def _comtrade_cached(hs_code, reporter='all', partner='all'):
+    key = (str(hs_code)[:6], reporter, partner)
+    now = time.time()
+    entry = _COMTRADE_CACHE.get(key)
+    if entry and entry[0] > now:
+        return entry[1]
+    data = _fetch_comtrade_stats(hs_code, reporter, partner)
+    if data:
+        _COMTRADE_CACHE[key] = (now + _COMTRADE_TTL_S, data)
+    return data
+
+@geo_bp.route('/trade/<hs_code>', methods=['GET'])
+@login_required
+def get_trade_stats(hs_code):
+    reporter = request.args.get('reporter', 'all')
+    partner = request.args.get('partner', 'all')
+    data = _comtrade_cached(hs_code, reporter, partner)
+    if not data:
+        return jsonify({'error': 'service_unavailable'}), 502
+    return jsonify(data)
+
+
+# ---------- Live FX + commodity market data ----------
+
+@geo_bp.route('/fx/rates', methods=['GET'])
+@login_required
+def get_fx_rates():
+    """Vraća {rates: {USD:1.0, EUR:0.92, ...}, base, source} — ECB reference
+    kursevi preko exchangerate.host, cache 4h."""
+    from market_data import fx_rates
+    base = (request.args.get('base') or 'USD').upper()
+    rates = fx_rates(base)
+    if not rates:
+        return jsonify({'error': 'service_unavailable'}), 502
+    return jsonify({'base': base, 'rates': rates, 'source': 'exchangerate.host'})
+
+
+@geo_bp.route('/fx/convert', methods=['GET'])
+@login_required
+def convert_fx():
+    """?amount=100&from=USD&to=EUR → {amount, converted}"""
+    from market_data import fx_convert
+    try:
+        amt = float(request.args.get('amount') or 0)
+    except ValueError:
+        return jsonify({'error': 'bad_amount'}), 400
+    frm = request.args.get('from', 'USD')
+    to = request.args.get('to', 'USD')
+    out = fx_convert(amt, frm, to)
+    if out is None:
+        return jsonify({'error': 'unable_to_convert'}), 502
+    return jsonify({'amount': amt, 'from': frm.upper(), 'to': to.upper(), 'converted': out})
+
+
+@geo_bp.route('/commodity/<symbol>', methods=['GET'])
+@login_required
+def get_commodity(symbol):
+    """Vraća najnoviju cenu za commodity (npr. wti, brent, wheat, corn).
+    Vrati 404 ako simbol nije podržan, 502 ako Alpha Vantage padne ili
+    ključ nije postavljen. Cache 6h."""
+    from market_data import commodity_price, COMMODITY_MAP
+    if symbol.lower() not in COMMODITY_MAP:
+        return jsonify({'error': 'unknown_symbol'}), 404
+    data = commodity_price(symbol)
+    if not data:
+        return jsonify({'error': 'service_unavailable',
+                        'message': 'Alpha Vantage key not configured or rate limited'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/commodity', methods=['GET'])
+@login_required
+def list_commodities():
+    """Lista svih podržanih commodities — za frontend dropdown widget."""
+    from market_data import commodity_list
+    return jsonify({'items': commodity_list()})
+
+
+# ---------- Shipment / vessel / flight tracking ----------
+
+@geo_bp.route('/track/shipment/<path:number>', methods=['GET'])
+@login_required
+def track_shipment_ep(number):
+    """Container / parcel tracking preko 17TRACK.
+    Za container koristi UN/ISO container broj (npr. MSCU1234567), za parcel
+    airway bill (FedEx/DHL). Odgovor sadrži status + events istoriju."""
+    from tracking import track_shipment
+    data = track_shipment(number, carrier_hint=request.args.get('carrier'))
+    if not data:
+        return jsonify({'error': 'not_found_or_unconfigured',
+                        'message': '17TRACK unavailable or number not found. Configure API key in Settings > Tracking.'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/track/vessel', methods=['GET'])
+@login_required
+def track_vessel_ep():
+    """?imo=9704611 or ?mmsi=636016432 or ?name=MSC%20OSCAR"""
+    from tracking import track_vessel
+    imo = request.args.get('imo')
+    mmsi = request.args.get('mmsi')
+    name = request.args.get('name')
+    data = track_vessel(imo=imo, mmsi=mmsi, name=name)
+    if not data:
+        return jsonify({'error': 'not_found_or_unconfigured',
+                        'message': 'MarineTraffic unavailable. Configure API key in Settings > Tracking.'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/track/flight/<flight_number>', methods=['GET'])
+@login_required
+def track_flight_ep(flight_number):
+    from tracking import track_flight
+    data = track_flight(flight_number)
+    if not data:
+        return jsonify({'error': 'not_found_or_unconfigured',
+                        'message': 'FlightAware unavailable. Configure API key in Settings > Tracking.'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/business_register/<country>/<reg_number>', methods=['GET'])
+@login_required
+def business_register_lookup(country, reg_number):
+    """Lookup u nacionalnom biznis registru (GB/FR/OpenCorporates fallback za sve)."""
+    from tracking import lookup_business
+    data = lookup_business(country, reg_number=reg_number)
+    if not data:
+        return jsonify({'error': 'not_found'}), 404
+    return jsonify(data)
