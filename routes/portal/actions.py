@@ -8,6 +8,8 @@ from werkzeug.utils import secure_filename
 from flask import request, jsonify, abort, send_from_directory, current_app, session
 from config import DB_FILE, PORTAL_DB_FILE, PORTAL_UPLOAD_FOLDER, ALLOWED_EXTENSIONS
 from utils import log_audit, login_required, encrypt_data, decrypt_data, is_safe_file_content, rate_limit
+from bank_validation import validate_iban, validate_bic
+import re as _re_bv
 from . import (portal_bp, safe_parse, verify_portal_session, find_partner_by_token, log_portal_activity)
 
 
@@ -902,6 +904,30 @@ def submit_kyc(token):
             return jsonify({"error": "PROOF_OF_ADDRESS_REQUIRED",
                             "message": "Individuals must upload proof of home address (utility bill or bank statement)."}), 400
 
+    # HARD BLOCK server-side: IBAN + BIC. Client može poslati bilo šta bypass-om
+    # UI validacije, zato ovde radimo istu proveru pre nego što uopšte upišemo
+    # nešto u bazu ili tražimo dopunske skupe operacije (upload, sanctions, itd).
+    _iban_in = str(kyc_data.get('bankIban', '')).strip()
+    _bic_in = str(kyc_data.get('bankSwift', '')).strip()
+
+    # BIC je uvek obavezan
+    if not _bic_in:
+        return jsonify({"error": "BIC_REQUIRED",
+                        "message": "SWIFT/BIC is required for KYC submission."}), 400
+    # Cross-check protiv IBAN country ako IBAN izgleda kao IBAN
+    _iban_prefix = _iban_in.replace(' ', '').upper()[:2]
+    _expected_country = _iban_prefix if _re_bv.match(r'^[A-Z]{2}$', _iban_prefix) else None
+    _bic_res = validate_bic(_bic_in, _expected_country)
+    if not _bic_res['valid']:
+        return jsonify({"error": "BIC_INVALID", "reason": _bic_res.get('reason'),
+                        "message": _bic_res.get('message', 'Invalid BIC/SWIFT')}), 400
+    # Ako IBAN ima 2-letter prefix, MORA da prođe mod-97
+    if _expected_country:
+        _iban_res = validate_iban(_iban_in)
+        if not _iban_res['valid']:
+            return jsonify({"error": "IBAN_INVALID", "reason": _iban_res.get('reason'),
+                            "message": _iban_res.get('message', 'Invalid IBAN')}), 400
+
     clean_data = {
         "entityType": entity_type,
         "companyName": str(kyc_data.get('companyName', '')).strip()[:150],
@@ -912,8 +938,8 @@ def submit_kyc(token):
         "regAddr": str(kyc_data.get('regAddr', '')).strip()[:200],
         "opAddr": str(kyc_data.get('opAddr', '')).strip()[:200],
         "bankName": str(kyc_data.get('bankName', '')).strip()[:100],
-        "bankIban": str(kyc_data.get('bankIban', '')).strip()[:50],
-        "bankSwift": str(kyc_data.get('bankSwift', '')).strip()[:20],
+        "bankIban": _iban_in[:50],
+        "bankSwift": _bic_in[:20],
         "bankAddr": str(kyc_data.get('bankAddr', '')).strip()[:200],
         "corrBank": str(kyc_data.get('corrBank', '')).strip()[:100],
         "turnover": str(kyc_data.get('turnover', '')).strip()[:50],
@@ -1038,6 +1064,8 @@ def approve_kyc_submission(sub_id):
     payload = request.get_json(silent=True) or {}
     risk_level = str(payload.get('riskLevel', 'medium')).strip()
     notes = str(payload.get('notes', '')).strip()[:2000]
+    sanctions_ack = bool(payload.get('sanctionsAck', False))
+    sanctions_ack_note = str(payload.get('sanctionsAckNote', '')).strip()[:1000]
 
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     cp = conn_p.cursor()
@@ -1050,6 +1078,31 @@ def approve_kyc_submission(sub_id):
 
     partner_id = row[0]
     kyc_data = decrypt_data(row[1])
+
+    # HARD GATE: ako je OpenSanctions screening zabeležio matcheve, admin MORA
+    # eksplicitno da prizna odgovornost pre nego što odobri partnera. Time se
+    # sprečava da radnik na brzinu klikne "Approve" i preskoči crveni banner.
+    _screening = kyc_data.get('_sanctionsScreening') or {}
+    if _screening.get('anyMatch') and not sanctions_ack:
+        conn_p.close()
+        return jsonify({
+            "error": "SANCTIONS_ACK_REQUIRED",
+            "message": ("This KYC submission has OpenSanctions matches. You must acknowledge "
+                        "responsibility for approving this partner before the system will proceed."),
+            "matches_count": sum(len(r.get('matches') or []) for r in (_screening.get('results') or [])),
+        }), 400
+    if _screening.get('anyMatch') and sanctions_ack:
+        # Beležimo prihvat kao poseban audit event — forenzički zapis ko je i kada
+        # svesno odobrio partnera koji je bio flaggovan.
+        log_audit('SECURITY', 'sanctions',
+                  f"Admin {session.get('username','?')} ACKNOWLEDGED sanctions match and approved partner {partner_id}. "
+                  f"Note: {sanctions_ack_note[:200]}",
+                  is_suspicious=True)
+        kyc_data['_sanctionsAck'] = {
+            'ackAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+            'ackBy': session.get('username', 'admin'),
+            'note': sanctions_ack_note,
+        }
 
     # Označi kao odobreno u portal bazi (za istoriju)
     if 'status' not in kyc_data: kyc_data['status'] = 'approved'
