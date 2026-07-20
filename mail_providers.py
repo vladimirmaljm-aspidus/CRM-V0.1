@@ -199,13 +199,18 @@ def magic_link_config():
 
 
 def config_summary():
-    """Redigovana verzija config-a — API key se ne otkriva na frontend."""
+    """Redigovana verzija config-a — API key se ne otkriva na frontend, vraća se maska."""
     cfg = _load_config()
+    ak = str(cfg.get('api_key', '') or '')
+    masked = ''
+    if ak:
+        masked = (ak[:4] + '…' + ak[-4:]) if len(ak) > 8 else ('•' * len(ak))
     return {
         'provider': cfg.get('provider', 'smtp'),
         'from_email': cfg.get('from_email', ''),
         'from_name': cfg.get('from_name', ''),
         'magic_link_enabled': bool(cfg.get('magic_link_enabled', False)),
         'magic_link_ttl_min': int(cfg.get('magic_link_ttl_min', 15) or 15),
-        'has_api_key': bool(str(cfg.get('api_key', '')).strip()),
+        'has_api_key': bool(ak),
+        'api_key_masked': masked,
     }

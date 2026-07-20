@@ -141,7 +141,8 @@ function render() {
 
   // Bezbedno renderovanje view-ova (sprečava pucanje ako modul nije učitan)
   try {
-      if(state.currentView === 'deals' && hasPerm('deals', 'view')) { if(typeof renderDealsKanbanView==='function') renderDealsKanbanView(); }
+      if(state.currentView === 'dashboard') { if(typeof renderDashboardView==='function') renderDashboardView(); }
+      else if(state.currentView === 'deals' && hasPerm('deals', 'view')) { if(typeof renderDealsKanbanView==='function') renderDealsKanbanView(); }
       else if(state.currentView === 'network') { if(typeof renderNetworkView==='function') renderNetworkView(); }
       else if(state.currentView === 'finances' && hasPerm('finances', 'view')) { if(typeof renderFinanceView==='function') renderFinanceView(); }
       else if(state.currentView === 'cashflow' && hasPerm('finances', 'view')) { if(typeof renderCashFlowView==='function') renderCashFlowView(); }
