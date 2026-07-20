@@ -479,3 +479,112 @@ def get_trade_stats(hs_code):
     if not data:
         return jsonify({'error': 'service_unavailable'}), 502
     return jsonify(data)
+
+
+# ---------- Live FX + commodity market data ----------
+
+@geo_bp.route('/fx/rates', methods=['GET'])
+@login_required
+def get_fx_rates():
+    """Vraća {rates: {USD:1.0, EUR:0.92, ...}, base, source} — ECB reference
+    kursevi preko exchangerate.host, cache 4h."""
+    from market_data import fx_rates
+    base = (request.args.get('base') or 'USD').upper()
+    rates = fx_rates(base)
+    if not rates:
+        return jsonify({'error': 'service_unavailable'}), 502
+    return jsonify({'base': base, 'rates': rates, 'source': 'exchangerate.host'})
+
+
+@geo_bp.route('/fx/convert', methods=['GET'])
+@login_required
+def convert_fx():
+    """?amount=100&from=USD&to=EUR → {amount, converted}"""
+    from market_data import fx_convert
+    try:
+        amt = float(request.args.get('amount') or 0)
+    except ValueError:
+        return jsonify({'error': 'bad_amount'}), 400
+    frm = request.args.get('from', 'USD')
+    to = request.args.get('to', 'USD')
+    out = fx_convert(amt, frm, to)
+    if out is None:
+        return jsonify({'error': 'unable_to_convert'}), 502
+    return jsonify({'amount': amt, 'from': frm.upper(), 'to': to.upper(), 'converted': out})
+
+
+@geo_bp.route('/commodity/<symbol>', methods=['GET'])
+@login_required
+def get_commodity(symbol):
+    """Vraća najnoviju cenu za commodity (npr. wti, brent, wheat, corn).
+    Vrati 404 ako simbol nije podržan, 502 ako Alpha Vantage padne ili
+    ključ nije postavljen. Cache 6h."""
+    from market_data import commodity_price, COMMODITY_MAP
+    if symbol.lower() not in COMMODITY_MAP:
+        return jsonify({'error': 'unknown_symbol'}), 404
+    data = commodity_price(symbol)
+    if not data:
+        return jsonify({'error': 'service_unavailable',
+                        'message': 'Alpha Vantage key not configured or rate limited'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/commodity', methods=['GET'])
+@login_required
+def list_commodities():
+    """Lista svih podržanih commodities — za frontend dropdown widget."""
+    from market_data import commodity_list
+    return jsonify({'items': commodity_list()})
+
+
+# ---------- Shipment / vessel / flight tracking ----------
+
+@geo_bp.route('/track/shipment/<path:number>', methods=['GET'])
+@login_required
+def track_shipment_ep(number):
+    """Container / parcel tracking preko 17TRACK.
+    Za container koristi UN/ISO container broj (npr. MSCU1234567), za parcel
+    airway bill (FedEx/DHL). Odgovor sadrži status + events istoriju."""
+    from tracking import track_shipment
+    data = track_shipment(number, carrier_hint=request.args.get('carrier'))
+    if not data:
+        return jsonify({'error': 'not_found_or_unconfigured',
+                        'message': '17TRACK unavailable or number not found. Configure API key in Settings > Tracking.'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/track/vessel', methods=['GET'])
+@login_required
+def track_vessel_ep():
+    """?imo=9704611 or ?mmsi=636016432 or ?name=MSC%20OSCAR"""
+    from tracking import track_vessel
+    imo = request.args.get('imo')
+    mmsi = request.args.get('mmsi')
+    name = request.args.get('name')
+    data = track_vessel(imo=imo, mmsi=mmsi, name=name)
+    if not data:
+        return jsonify({'error': 'not_found_or_unconfigured',
+                        'message': 'MarineTraffic unavailable. Configure API key in Settings > Tracking.'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/track/flight/<flight_number>', methods=['GET'])
+@login_required
+def track_flight_ep(flight_number):
+    from tracking import track_flight
+    data = track_flight(flight_number)
+    if not data:
+        return jsonify({'error': 'not_found_or_unconfigured',
+                        'message': 'FlightAware unavailable. Configure API key in Settings > Tracking.'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/business_register/<country>/<reg_number>', methods=['GET'])
+@login_required
+def business_register_lookup(country, reg_number):
+    """Lookup u nacionalnom biznis registru (GB/FR/OpenCorporates fallback za sve)."""
+    from tracking import lookup_business
+    data = lookup_business(country, reg_number=reg_number)
+    if not data:
+        return jsonify({'error': 'not_found'}), 404
+    return jsonify(data)
