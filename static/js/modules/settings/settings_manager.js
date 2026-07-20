@@ -327,7 +327,7 @@ const SettingsManager = {
                                             <p class="text-[10px] text-slate-500">${tLang('Rešava probleme sa zaglavljenim interfejsom.', 'Resolves UI glitches and stuck data.')}</p>
                                         </div>
                                     </div>
-                                    <button type="button" class="w-full bg-orange-50 border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold py-2.5 rounded-md text-xs transition-colors" onclick="if(confirm(tLang('Da li ste sigurni? Ovo će osvežiti aplikaciju.', 'Are you sure? This will reload the app.'))) { localStorage.clear(); window.location.reload(); }">${tLang('Očisti i Restartuj', 'Clear & Restart')}</button>
+                                    <button type="button" class="w-full bg-orange-50 border border-orange-200 text-orange-700 hover:bg-orange-100 font-bold py-2.5 rounded-md text-xs transition-colors" onclick="(async()=>{const ok=await window.askConfirm(tLang('Restart aplikacije','Restart app'),tLang('Da li ste sigurni? Ovo će osvežiti aplikaciju.','Are you sure? This will reload the app.'),{danger:true,confirmText:tLang('Restart','Restart')});if(ok){localStorage.clear();window.location.reload();}})()">${tLang('Očisti i Restartuj', 'Clear & Restart')}</button>
                                 </div>
 
                                 <div class="bg-white border border-slate-200 p-6 rounded-xl shadow-sm">
