@@ -66,6 +66,17 @@ def init_db():
                 c.execute("ALTER TABLE users ADD COLUMN last_password_change_at TEXT")
             if 'last_login_country' not in cols:
                 c.execute("ALTER TABLE users ADD COLUMN last_login_country TEXT")
+            # MIGRACIJA v21: 2FA/TOTP polja. totp_secret je base32 encoded shared
+            # secret za HOTP/TOTP RFC 6238 (kompatibilno sa Google Authenticator,
+            # Authy, 1Password). totp_enabled je bool zastavica koja bira da li
+            # login flow traži drugu proveru. totp_recovery je JSON lista
+            # hasovanih recovery kodova za slučaj gubitka telefona.
+            if 'totp_secret' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
+            if 'totp_enabled' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0")
+            if 'totp_recovery' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN totp_recovery TEXT")
             
             # Kreiranje tabela za sve entitete
             tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
