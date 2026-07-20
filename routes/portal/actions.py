@@ -992,7 +992,26 @@ def submit_kyc(token):
         log_audit('WARNING', 'sanctions',
                   f"KYC submission for {clean_data.get('companyName')} produced sanctions matches — REQUIRES ADMIN REVIEW",
                   is_suspicious=True)
+        # Push notifikacije na sve konfigurisane kanale (Slack/Teams/Telegram/ntfy/WhatsApp)
+        try:
+            from webhooks import notify as _notify
+            _notify('sanctions_flag', {
+                'Company': clean_data.get('companyName'),
+                'Partner ID': partner_id,
+                'Matches': sum(len(r.get('matches') or []) for r in (sanctions_results or [])),
+                'Action': 'Review before approval',
+            })
+        except Exception: pass
     log_portal_activity(partner_id, 'KYC_SUBMIT', f'KYC submission by {clean_data.get("companyName")}')
+    # KYC submitted push
+    try:
+        from webhooks import notify as _notify
+        _notify('kyc_submitted', {
+            'Company': clean_data.get('companyName'),
+            'Type': entity_type,
+            'Country': clean_data.get('regAddr', '')[:80],
+        })
+    except Exception: pass
     return jsonify({"status": "success", "message": "KYC Data securely submitted to Vault."})
 
 @portal_bp.route('/api/portal/admin/submissions/<partner_id>', methods=['GET'])
@@ -1685,6 +1704,16 @@ def portal_accept_offer(token, offer_id):
     log_portal_activity(partner_id, f'OFFER_{action.upper()}',
                         f"Offer {offer.get('offerNo', offer_id)}"
                         + (f" — {note[:200]}" if note else ''))
+    # Push notifikacije adminu (Slack/Teams/Telegram/ntfy/WhatsApp)
+    try:
+        from webhooks import notify as _notify
+        _notify('offer_accepted' if action == 'accept' else 'offer_declined', {
+            'Client': partner.get('companyName'),
+            'Offer': offer.get('offerNo', offer_id),
+            'Signed': 'yes' if signature_ok else 'no',
+            'Note': (note[:200] if note else '(none)'),
+        })
+    except Exception: pass
 
     # Email obaveštenje adminu (best effort)
     try:
