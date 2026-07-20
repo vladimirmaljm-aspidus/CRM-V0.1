@@ -215,7 +215,25 @@ def change_password():
     
     if not is_strong_password(new_password):
         return jsonify({"error": "WEAK_PASSWORD"}), 400
-    
+
+    # HIBP breach check — odbija lozinke poznate iz curenja podataka. K-anonymity:
+    # samo prvih 5 char SHA-1 hasha ide na haveibeenpwned.com; puna lozinka ne
+    # napušta server. Ako je HIBP servis dole, propuštamo (fail-open).
+    try:
+        from security_ext import is_password_pwned
+        pwned, hits = is_password_pwned(new_password, min_hits=1)
+        if pwned:
+            log_audit('SECURITY', 'users',
+                      f'Password change blocked — new password found in {hits} known breaches. User: {session.get("username","?")}',
+                      is_suspicious=True)
+            return jsonify({
+                "error": "PWNED_PASSWORD",
+                "message": f"This password appears in {hits} known data breaches. Please choose a different one.",
+                "hits": hits,
+            }), 400
+    except Exception:
+        pass
+
     try:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
         with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
