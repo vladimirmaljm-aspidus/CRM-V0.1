@@ -5,6 +5,8 @@ Sources:
       currency, languages, timezone, capital, flag URL).
     * PubChem PUG-REST (pubchem.ncbi.nlm.nih.gov) — chemical CAS lookup.
     * VIES (ec.europa.eu/taxation_customs/vies) — EU VAT number validation.
+    * open-meteo.com — free weather forecast, no API key.
+    * UN Comtrade (comtrade.un.org) — international trade statistics by HS code.
 
 All proxies cache aggressively (24h RAM) to protect the free tiers and to keep
 latency sub-100ms once warm. Cache is per-process, cleared on restart.
@@ -307,4 +309,173 @@ def validate_vat():
     if data is None:
         return jsonify({'error': 'service_unavailable',
                         'message': 'VIES service temporarily unreachable — please retry'}), 502
+    return jsonify(data)
+
+
+# ---------- open-meteo weather forecast ----------
+_WX_CACHE = {}      # {(lat,lon,days): (expiry_ts, payload)}
+_WX_TTL_S = 30 * 60  # 30min — vremenska prognoza se često menja
+
+def _fetch_openmeteo(lat, lon, days=3):
+    """POST-less GET na api.open-meteo.com. Bez API ključa. Vraća:
+       { current: {temperature, weather_code, wind_speed, ...},
+         daily: [ {date, tmin, tmax, weather_code, precipitation}, ... ] }"""
+    try:
+        params = urllib.parse.urlencode({
+            'latitude': f'{float(lat):.4f}',
+            'longitude': f'{float(lon):.4f}',
+            'current': 'temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation',
+            'daily': 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max',
+            'forecast_days': str(min(max(int(days or 3), 1), 16)),
+            'timezone': 'auto',
+        })
+        req = urllib.request.Request(
+            f'https://api.open-meteo.com/v1/forecast?{params}',
+            headers={'User-Agent': 'AspidusCRM/1.0'}
+        )
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as r:
+            raw = json.loads(r.read().decode('utf-8'))
+        cur = raw.get('current') or {}
+        daily = raw.get('daily') or {}
+        # Kompaktiraj daily granice u niz redova
+        d_rows = []
+        times = daily.get('time') or []
+        wcodes = daily.get('weather_code') or []
+        tmaxs = daily.get('temperature_2m_max') or []
+        tmins = daily.get('temperature_2m_min') or []
+        prec = daily.get('precipitation_sum') or []
+        wind = daily.get('wind_speed_10m_max') or []
+        for i, dt in enumerate(times):
+            d_rows.append({
+                'date': dt,
+                'weather_code': wcodes[i] if i < len(wcodes) else None,
+                'tmax_c': tmaxs[i] if i < len(tmaxs) else None,
+                'tmin_c': tmins[i] if i < len(tmins) else None,
+                'precip_mm': prec[i] if i < len(prec) else None,
+                'wind_max_kmh': wind[i] if i < len(wind) else None,
+            })
+        return {
+            'latitude': raw.get('latitude'),
+            'longitude': raw.get('longitude'),
+            'timezone': raw.get('timezone'),
+            'current': {
+                'temperature_c': cur.get('temperature_2m'),
+                'weather_code': cur.get('weather_code'),
+                'wind_kmh': cur.get('wind_speed_10m'),
+                'wind_dir_deg': cur.get('wind_direction_10m'),
+                'precipitation_mm': cur.get('precipitation'),
+                'time': cur.get('time'),
+            },
+            'daily': d_rows,
+            'source': 'open-meteo.com',
+        }
+    except Exception:
+        return None
+
+
+def _wx_cached(lat, lon, days):
+    key = (round(float(lat), 3), round(float(lon), 3), int(days))
+    now = time.time()
+    entry = _WX_CACHE.get(key)
+    if entry and entry[0] > now:
+        return entry[1]
+    data = _fetch_openmeteo(lat, lon, days)
+    if data:
+        _WX_CACHE[key] = (now + _WX_TTL_S, data)
+    return data
+
+
+@geo_bp.route('/weather', methods=['GET'])
+@login_required
+def get_weather():
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'bad_coords'}), 400
+    days = request.args.get('days', 3)
+    data = _wx_cached(lat, lon, days)
+    if not data:
+        return jsonify({'error': 'service_unavailable'}), 502
+    return jsonify(data)
+
+
+@geo_bp.route('/portal/weather', methods=['GET'])
+def portal_weather():
+    """Portal-friendly ekvivalent; open-meteo je javan pa nema tajni."""
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'bad_coords'}), 400
+    days = request.args.get('days', 3)
+    data = _wx_cached(lat, lon, days)
+    if not data:
+        return jsonify({'error': 'service_unavailable'}), 502
+    return jsonify(data)
+
+
+# ---------- UN Comtrade trade stats ----------
+_COMTRADE_CACHE = {}       # {(hs, reporter, partner): (expiry, payload)}
+_COMTRADE_TTL_S = 24 * 3600
+
+def _fetch_comtrade_stats(hs_code, reporter='all', partner='all'):
+    """Comtrade free tier endpoint. Zove /public/v1/preview/C/A/HS.
+    Zabranjuje > 500 zapisa i > 10 poziva u minuti bez ključa. Vraćamo top 8
+    zemlje-partneri po trade value za posmatrani HS 6-cifreni kod, poslednja
+    dostupna godina.
+    """
+    try:
+        # Free preview API — bez ključa, ograničen ali dovoljan za info tab
+        params = urllib.parse.urlencode({
+            'r': reporter, 'p': partner,
+            'ps': 'recent',           # najskorija godina
+            'cc': str(hs_code)[:6],   # HS heading do 6 cifara
+            'freq': 'A',              # annual
+            'px': 'HS',
+            'rg': '2',                # 1=Import, 2=Export, all=1&2
+            'max': '10',
+        })
+        req = urllib.request.Request(
+            f'https://comtradeapi.un.org/public/v1/preview/C/A/HS?{params}',
+            headers={'User-Agent': 'AspidusCRM/1.0', 'Accept': 'application/json'}
+        )
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as r:
+            raw = json.loads(r.read().decode('utf-8'))
+        rows = raw.get('data') or raw.get('result') or []
+        top = []
+        for r in rows[:10]:
+            top.append({
+                'reporter': r.get('reporterDesc') or r.get('rtTitle'),
+                'partner':  r.get('partnerDesc')  or r.get('ptTitle'),
+                'year':     r.get('refYear') or r.get('yr'),
+                'trade_value_usd': r.get('primaryValue') or r.get('TradeValue'),
+                'quantity': r.get('qty') or r.get('primaryQty'),
+                'flow': r.get('flowDesc') or r.get('rgDesc'),
+            })
+        return {'hs_code': hs_code, 'rows': top, 'source': 'comtradeapi.un.org'}
+    except Exception:
+        return None
+
+
+def _comtrade_cached(hs_code, reporter='all', partner='all'):
+    key = (str(hs_code)[:6], reporter, partner)
+    now = time.time()
+    entry = _COMTRADE_CACHE.get(key)
+    if entry and entry[0] > now:
+        return entry[1]
+    data = _fetch_comtrade_stats(hs_code, reporter, partner)
+    if data:
+        _COMTRADE_CACHE[key] = (now + _COMTRADE_TTL_S, data)
+    return data
+
+
+@geo_bp.route('/trade/<hs_code>', methods=['GET'])
+@login_required
+def get_trade_stats(hs_code):
+    reporter = request.args.get('reporter', 'all')
+    partner = request.args.get('partner', 'all')
+    data = _comtrade_cached(hs_code, reporter, partner)
+    if not data:
+        return jsonify({'error': 'service_unavailable'}), 502
     return jsonify(data)

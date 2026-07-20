@@ -769,11 +769,31 @@ def build_offer_pdf(offer, company=None, settings=None):
         canvas.setFillColor(primary)
         canvas.drawString(15*mm, 16.5*mm, f"VERIFICATION HASH: {ver_hash}")
 
+        # QR koji vodi na public verify stranicu — klijent skenira, dobije stranicu
+        # sa svim ključnim podacima dokumenta i statusom "authentic" ili "modified".
+        # Public host je izvučen iz company config (fallback default).
+        try:
+            verify_host = (company.get('portalHost') or company.get('publicHost') or 'https://aspidus.io').rstrip('/')
+            verify_url = f'{verify_host}/verify/{ver_hash}'
+            qr = QrCodeWidget(verify_url, barLevel='L')
+            b = qr.getBounds()
+            w, h = b[2] - b[0], b[3] - b[1]
+            size = 16 * mm
+            d = Drawing(size, size, transform=[size / w, 0, 0, size / h, 0, 0])
+            d.add(qr)
+            from reportlab.graphics import renderPDF
+            renderPDF.draw(d, canvas, A4[0] - 15*mm - size, 15*mm - 4*mm)
+            canvas.setFont('Helvetica', 5)
+            canvas.setFillColor(colors.HexColor('#98a2b3'))
+            canvas.drawRightString(A4[0] - 15*mm, 15*mm - 6.5*mm, "Scan to verify")
+        except Exception:
+            logger.debug('verify QR failed', exc_info=True)
+
         # Confidentiality line
         canvas.setFont('Helvetica-Oblique', 6)
         canvas.setFillColor(colors.HexColor('#667085'))
         canvas.drawString(15*mm, 12.5*mm,
-                          "This document is electronically generated. Verify authenticity by hash above.")
+                          "This document is electronically generated. Verify authenticity by scanning the QR or the hash above.")
 
         # Company address (bold, centrirano dole)
         canvas.setFont('Helvetica-Bold', 7)
