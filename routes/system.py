@@ -430,6 +430,90 @@ def set_hcaptcha_config():
     return jsonify({"status": "success", "enabled": bool(cfg['sitekey']) and bool(cfg['secret'])})
 
 
+# ==========================================================
+#  API KEYS — tracking (17TRACK, MarineTraffic, FlightAware,
+#  Companies House) + market data (Alpha Vantage)
+# ==========================================================
+
+_API_KEYS = {
+    'track17ApiKey':      {'label': '17TRACK API key',       'group': 'tracking'},
+    'marineTrafficKey':   {'label': 'MarineTraffic PS7 key', 'group': 'tracking'},
+    'flightAwareKey':     {'label': 'FlightAware AeroAPI',   'group': 'tracking'},
+    'companiesHouseKey':  {'label': 'Companies House UK',    'group': 'tracking'},
+    'alphaVantageKey':    {'label': 'Alpha Vantage key',     'group': 'market'},
+}
+
+
+def _mask_key(s):
+    s = str(s or '')
+    if not s: return ''
+    if len(s) <= 8: return '•' * len(s)
+    return s[:4] + '…' + s[-4:]
+
+
+@system_bp.route('/api_keys', methods=['GET'])
+@login_required
+def get_api_keys():
+    """Redigovan pregled svih integracijskih ključeva — vraća samo maske."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    import sqlite3
+    from utils import decrypt_data
+    out = {}
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10) as conn:
+            for key, meta in _API_KEYS.items():
+                row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+                val = ''
+                if row and row[0]:
+                    try: val = str(decrypt_data(row[0]) or '')
+                    except Exception: val = ''
+                out[key] = {
+                    'label': meta['label'],
+                    'group': meta['group'],
+                    'has_value': bool(val),
+                    'masked': _mask_key(val),
+                }
+    except Exception as e:
+        return jsonify({"error": "READ_FAILED", "message": str(e)}), 500
+    return jsonify(out)
+
+
+@system_bp.route('/api_keys', methods=['POST'])
+@login_required
+def set_api_keys():
+    """Snima jedan ili više ključeva. Prazna string / maska (sadrži '…' ili samo '•')
+    znači 'ne menjaj postojeći'. Sve se enkriptuje pre snimanja."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    import sqlite3
+    from utils import decrypt_data
+    payload = request.get_json(silent=True) or {}
+    updated = []
+    try:
+        with sqlite3.connect(DB_FILE, timeout=30) as conn:
+            for key in _API_KEYS.keys():
+                if key not in payload:
+                    continue
+                incoming = str(payload.get(key, '') or '').strip()
+                if not incoming or '…' in incoming or set(incoming) <= {'•'}:
+                    continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                    (key, encrypt_data(incoming))
+                )
+                updated.append(key)
+            conn.commit()
+    except Exception as e:
+        return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
+
+    if updated:
+        log_audit('SECURITY', 'system',
+                  f'API keys updated ({",".join(updated)}) by {session.get("username","?")}',
+                  is_suspicious=False)
+    return jsonify({"status": "success", "updated": updated})
+
+
 @system_bp.route('/otp_delivery/test', methods=['POST'])
 @login_required
 def test_otp_delivery():
