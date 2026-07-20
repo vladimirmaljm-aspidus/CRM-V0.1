@@ -2,6 +2,7 @@ import json
 import secrets
 import time
 import sqlite3
+from datetime import datetime, timezone
 from flask import request, jsonify, abort
 from config import DB_FILE
 from utils import log_audit, login_required, decrypt_data
@@ -136,16 +137,33 @@ def send_otp(token):
         client_email = partner.get('contact', {}).get('email') or partner.get('email')
         otp = create_portal_otp(token)
 
-        # Profesionalan mejl (HTML šablon sa logom firme + confidentiality footer).
+        # Profesionalan mejl. Provider: Resend / SendGrid / Postmark ako je admin
+        # konfigurisao u Settings > OTP Delivery; inače legacy SMTP.
+        # Ako je magic-link uključen, i on ide u istom mejlu kao alternativa OTP-u.
         email_sent = False
         if client_email:
             try:
-                from utils_email import send_portal_otp
                 portal_url = request.url_root.rstrip('/') + f"/portal/{token}"
-                ok, err = send_portal_otp(client_email, partner.get('companyName', ''), otp, portal_url)
+
+                # Magic-link (opciono, konfigurabilno)
+                from mail_providers import magic_link_config
+                ml_cfg = magic_link_config()
+                magic_url = None
+                if ml_cfg['enabled']:
+                    from magic_link import mint
+                    ml = mint(token, ttl_minutes=ml_cfg['ttl_min'])
+                    magic_url = f"{portal_url}?ml={ml}"
+
+                from utils_email import send_portal_otp
+                ok, err = send_portal_otp(
+                    client_email, partner.get('companyName', ''), otp, portal_url,
+                    magic_url=magic_url,
+                    magic_ttl_min=ml_cfg['ttl_min'] if ml_cfg['enabled'] else 0,
+                )
                 if ok:
                     email_sent = True
-                    log_audit('COMMUNICATION', 'portal', f'OTP sent via professional email to {client_email}', is_suspicious=False)
+                    log_audit('COMMUNICATION', 'portal', f'OTP sent to {client_email}' +
+                              (' (with magic-link)' if magic_url else ''), is_suspicious=False)
                 else:
                     log_audit('ERROR', 'portal', f'OTP email send failed to {client_email}: {err}', is_suspicious=False)
             except Exception as e:
@@ -190,6 +208,64 @@ def verify_otp(token):
         return jsonify({"status": "success", "auth_key": auth_key})
 
     return jsonify({"error": "Invalid or expired OTP"}), 401
+
+
+# ==========================================================
+#  MAGIC LINK — single-click sign-in alternative to OTP
+# ==========================================================
+
+@portal_bp.route('/api/portal/auth/consume_magic/<token>', methods=['POST'])
+def consume_magic_link(token):
+    """Verifikuje magic-link payload i vraća auth_key kao da je klijent
+    predao ispravan OTP. Payload je potpisan sa SECRET_KEY, TTL 15min
+    default (konfigurisano u Settings > OTP Delivery), single-use preko
+    magic_link_used_jti registra."""
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    if ip and ',' in ip: ip = ip.split(',')[0].strip()
+    if not check_portal_rate_limit(ip): abort(429)
+
+    payload = request.get_json(silent=True) or {}
+    ml = str(payload.get('ml', '')).strip()
+    location = str(payload.get('location', '')).strip()
+    if not location or ',' not in location:
+        return jsonify({"error": "LOCATION_REQUIRED",
+                        "message": "Precise location must be shared to access the portal."}), 403
+
+    # Osnovna partner + kill-switch provera pre magic-link verifikacije
+    conn = sqlite3.connect(DB_FILE, timeout=15)
+    try:
+        c = conn.cursor()
+        partner_id, partner = find_partner_by_token(c, token, enforce_active=False)
+        if not partner:
+            return jsonify({"error": "Invalid token"}), 403
+        if partner.get('isPortalActive', True) is False:
+            log_audit('SECURITY', 'portal', f'Blocked magic-link login for revoked portal. Partner ID: {partner_id}', is_suspicious=True)
+            return jsonify({"error": "Access Revoked. Contact administrator."}), 403
+    finally:
+        conn.close()
+
+    from magic_link import verify
+    ok, reason = verify(ml, expected_portal_token=token, client_ip=ip)
+    if not ok:
+        log_audit('SECURITY', 'portal',
+                  f'Magic-link login rejected ({reason}) for partner {partner_id}',
+                  is_suspicious=(reason in ('bad_signature', 'token_mismatch', 'already_used')))
+        return jsonify({"error": "LINK_INVALID", "reason": reason,
+                        "message": {
+                            'expired': 'Link has expired — please request a new code.',
+                            'already_used': 'This link was already used. Request a new code to sign in.',
+                            'bad_signature': 'Invalid link. Request a new code.',
+                            'token_mismatch': 'Link does not match this portal. Request a new code.',
+                            'invalid_format': 'Link is malformed. Request a new code.',
+                        }.get(reason, 'Link cannot be verified.')}), 401
+
+    # Isti auth_key kao posle uspešnog OTP-a
+    from . import portal_auth_sessions
+    import secrets as _sec
+    auth_key = _sec.token_urlsafe(32)
+    portal_auth_sessions[token] = {'auth_key': auth_key, 'issued_at': datetime.now(timezone.utc).timestamp()}
+    log_portal_activity(partner_id, 'LOGIN_SUCCESS', f'Magic-link login (GPS: {location})')
+    return jsonify({"status": "success", "auth_key": auth_key})
 
 
 # ==========================================================

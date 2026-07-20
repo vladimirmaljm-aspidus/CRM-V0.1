@@ -294,15 +294,52 @@ def _polyline_length_km(points):
 # do waypoint-a, zatim great-circle od waypoint-a do sledeće tačke. Time se
 # izbegava da algoritam vodi rutu preko kopna (Sinajski poluostrvo, itd).
 WAYPOINTS = {
-    'suez':       (30.5852, 32.2654),
-    'panama':     (9.0819, -79.6800),
-    'bosphorus':  (41.1200, 29.0400),
-    'gibraltar':  (35.9660, -5.5500),
-    'malacca':    (1.4300, 102.8900),
-    'cape_good_hope': (-34.8500, 20.0000),
-    'cape_horn':  (-55.9833, -67.2717),
-    'dover':      (51.0300, 1.3500),
-    'bab_el_mandeb': (12.5800, 43.3300),
+    # KANALI I USKI PROLAZI (fizičke lokacije samih kanala)
+    'suez':          (30.5852, 32.2654),   # Suez Canal (Egypt)
+    'panama':        (9.0819, -79.6800),   # Panama Canal (Panama)
+    'bosphorus':     (41.1200, 29.0400),   # Bosphorus Strait (Türkiye)
+    'gibraltar':     (35.9660, -5.5500),   # Strait of Gibraltar
+    'malacca':       (1.4300, 102.8900),   # Strait of Malacca (near Singapore)
+    'cape_good_hope':(-34.8500, 20.0000),  # Cape of Good Hope (South Africa)
+    'cape_horn':     (-55.9833, -67.2717), # Cape Horn (South America)
+    'dover':         (51.0300, 1.3500),    # Strait of Dover
+    'bab_el_mandeb': (12.5800, 43.3300),   # Bab-el-Mandeb (Red Sea / Gulf of Aden)
+    'kiel':          (54.3667, 10.1333),   # Kiel Canal (North Sea → Baltic)
+
+    # OCEANSKI KORIDORI — tačke usred okeana koje sprečavaju great-circle
+    # segmente da prelaze preko kopna (Iberijski poluostrvo, Skandinavija,
+    # Amerika, Afrika, Južna Azija). Bez ovih tačaka polyline seče kopno.
+    'n_atlantic_mid':   (45.0, -30.0),     # Sredina Sev. Atlantika (EU ↔ US East)
+    'n_atlantic_east':  (48.0, -12.0),     # Ulaz u La Manš (from Atlantic)
+    'gib_atlantic':     (36.0, -8.5),      # Zapadno od Gibraltara
+    'medit_west':       (37.0, 4.0),       # Zapadno Sredozemlje (Balearics)
+    'medit_east':       (34.0, 22.0),      # Istočno Sredozemlje (Kreta)
+    'red_sea_mid':      (20.0, 38.5),      # Sredina Crvenog mora
+    'arabian_sea':      (13.0, 65.0),      # Arapsko more (između Bab-al-Mandeba i Malacca)
+    'bengal_bay':       (7.0, 88.0),       # Bengalski zaliv (ulaz u Malacca sa juga)
+    's_china_sea':      (10.0, 112.0),     # Južno kinesko more (posle Malacca)
+    'e_china_sea':      (28.0, 125.0),     # Istočno kinesko more (Japan, Koreja)
+    'n_pacific_mid':    (35.0, -170.0),    # Sredina sev. Pacifika (Azija ↔ US West)
+    'n_pacific_west':   (35.0, 150.0),     # Zapadno sev. Pacifik (izlaz iz E Kine)
+    'n_pacific_east':   (35.0, -130.0),    # Ulaz u LA/Long Beach sa okeana
+    'panama_pacific':   (7.5, -80.5),      # Ulaz u Panamu iz Pacifika
+    'panama_carib':     (9.5, -78.5),      # Ulaz u Panamu iz Kariba
+    'carib_east':       (18.0, -65.0),     # Karibi (istok)
+    'us_east_offshore': (32.0, -73.0),     # US Ist. obala (New York, Norfolk offshore)
+    's_atlantic_mid':   (-20.0, -20.0),    # Sredina Juž. Atlantika (Brazil ↔ Afrika)
+    's_atlantic_east':  (-30.0, 10.0),     # J. Atlantik istok (pre Cape of Good Hope)
+    'agulhas':          (-36.0, 25.0),     # Južno od Cape Agulhas (pravi južni kraj)
+    's_indian_mid':     (-30.0, 60.0),     # J. Indijski okean (Afrika ↔ Australija)
+    's_indian_east':    (-30.0, 100.0),    # J. Indijski okean istok (pre Malacca)
+    'oceania_north':    (-8.0, 130.0),     # Sever Australije / Timor Sea
+    'oceania_east':     (-25.0, 165.0),    # Istočno od Australije (Nova Kaledonija)
+    'north_sea_mid':    (56.0, 3.0),       # Severno more (Rotterdam ↔ Skandinavija)
+    'baltic_west':      (55.0, 12.0),      # Zapadni Baltik (za Kiel corridor)
+    'english_channel':  (50.0, -1.0),      # Kanal (odmah severno od Doverа)
+    'biscay':           (46.0, -6.0),      # Biskajski zaliv (Španija/Francuska Atlantik)
+    'north_of_horn':    (-45.0, -65.0),    # Severno od Cape Horna (S Amerika Atlantik)
+    'south_of_horn':    (-58.0, -70.0),    # Južno od Cape Horna (Atl → Pac)
+    'pac_of_horn':      (-45.0, -80.0),    # Zapadno od Cape Horna (S Amerika Pacifik)
 }
 
 # Regionalna klasifikacija luke — pomaže odabir kanala/rute.
@@ -327,42 +364,96 @@ def _classify_port_region(lat, lon):
 
 
 def _sea_route_waypoints(a_lat, a_lon, b_lat, b_lon, avoid=None):
-    """Vraća listu waypoint imena između luke A i B — heuristička ali dovoljna
-    za realistične globalne rute. `avoid` je set imena koje treba izbeći
-    (npr. 'suez' zbog Crvenog mora)."""
+    """Vraća listu waypoint imena između luke A i B. UMESTO da vraća samo kanale
+    (posle čega bi great-circle segmenti sekli kopno), sada vraćamo puni koridor
+    otvorenog mora: strait_ulaz → kanal → strait_izlaz → ocean_mid → cilj.
+
+    Redosled je bitno jer se polyline crta segment-po-segment; svaki uzastopni
+    par mora imati čist morski put između sebe.
+
+    `avoid` je set imena koje treba izbeći (npr. 'suez' zbog Crvenog mora)."""
     avoid = set(avoid or [])
     ra = _classify_port_region(a_lat, a_lon)
     rb = _classify_port_region(b_lat, b_lon)
-    if {ra, rb} == {'medit', 'americas_east'} or {ra, rb} == {'medit', 'americas_west'}:
-        return ['gibraltar'] + ([] if 'americas_east' in {ra, rb} else ['panama'])
-    if {ra, rb} == {'wesn_europe', 'east_asia'}:
-        return ['gibraltar', 'suez', 'bab_el_mandeb', 'malacca'] if 'suez' not in avoid else \
-               ['gibraltar', 'cape_good_hope', 'malacca']
-    if {ra, rb} == {'wesn_europe', 'south_asia_gulf'}:
-        return ['gibraltar', 'suez', 'bab_el_mandeb'] if 'suez' not in avoid else \
-               ['gibraltar', 'cape_good_hope']
-    if {ra, rb} == {'medit', 'east_asia'}:
-        return ['suez', 'bab_el_mandeb', 'malacca'] if 'suez' not in avoid else \
-               ['gibraltar', 'cape_good_hope', 'malacca']
-    if {ra, rb} == {'medit', 'south_asia_gulf'}:
-        return ['suez', 'bab_el_mandeb'] if 'suez' not in avoid else \
-               ['gibraltar', 'cape_good_hope']
-    if {ra, rb} == {'wesn_europe', 'americas_east'}:
-        return []  # direktan Atlantik
-    if {ra, rb} == {'americas_east', 'east_asia'}:
-        return ['panama']
-    if {ra, rb} == {'americas_west', 'east_asia'}:
-        return []  # Pacifik direktno
-    if {ra, rb} == {'wesn_europe', 'americas_west'}:
-        return ['panama']
-    if {ra, rb} == {'americas_east', 'south_asia_gulf'}:
-        return ['gibraltar', 'suez', 'bab_el_mandeb'] if 'suez' not in avoid else \
-               ['cape_good_hope']
-    if {ra, rb} == {'africa', 'east_asia'}:
-        return ['cape_good_hope', 'malacca']
-    if {ra, rb} == {'africa', 'wesn_europe'}:
-        return ['cape_good_hope', 'gibraltar']
-    return []
+    key = frozenset({ra, rb})
+    # Utvrdi u kom smeru ide korisnik da bi se koridor prikladno okrenuo.
+    # Praksa: ako je 'ra' na "levoj" strani (npr. wesn_europe), koridor kreće od
+    # zapada; ako je desno (east_asia), invertujemo listu na kraju.
+
+    corridor = None
+
+    if key == {'wesn_europe', 'east_asia'}:
+        corridor = ['english_channel','biscay','gib_atlantic','gibraltar','medit_west','medit_east',
+                    'suez','red_sea_mid','bab_el_mandeb','arabian_sea','bengal_bay','malacca','s_china_sea','e_china_sea']
+        if 'suez' in avoid:
+            corridor = ['english_channel','biscay','gib_atlantic','s_atlantic_east','agulhas','cape_good_hope',
+                        's_indian_mid','s_indian_east','malacca','s_china_sea','e_china_sea']
+
+    elif key == {'wesn_europe', 'south_asia_gulf'}:
+        corridor = ['english_channel','biscay','gib_atlantic','gibraltar','medit_west','medit_east',
+                    'suez','red_sea_mid','bab_el_mandeb','arabian_sea']
+        if 'suez' in avoid:
+            corridor = ['english_channel','biscay','gib_atlantic','s_atlantic_east','agulhas','cape_good_hope','s_indian_mid','arabian_sea']
+
+    elif key == {'medit', 'east_asia'}:
+        corridor = ['medit_east','suez','red_sea_mid','bab_el_mandeb','arabian_sea','bengal_bay','malacca','s_china_sea','e_china_sea']
+        if 'suez' in avoid:
+            corridor = ['medit_west','gibraltar','gib_atlantic','s_atlantic_east','agulhas','cape_good_hope','s_indian_mid','s_indian_east','malacca','s_china_sea','e_china_sea']
+
+    elif key == {'medit', 'south_asia_gulf'}:
+        corridor = ['medit_east','suez','red_sea_mid','bab_el_mandeb','arabian_sea']
+        if 'suez' in avoid:
+            corridor = ['medit_west','gibraltar','gib_atlantic','s_atlantic_east','agulhas','cape_good_hope','s_indian_mid','arabian_sea']
+
+    elif key == {'medit', 'americas_east'}:
+        corridor = ['medit_west','gibraltar','gib_atlantic','n_atlantic_mid','us_east_offshore']
+
+    elif key == {'medit', 'americas_west'}:
+        corridor = ['medit_west','gibraltar','gib_atlantic','n_atlantic_mid','carib_east','panama_carib','panama','panama_pacific']
+
+    elif key == {'wesn_europe', 'americas_east'}:
+        corridor = ['english_channel','biscay','n_atlantic_mid','us_east_offshore']
+
+    elif key == {'wesn_europe', 'americas_west'}:
+        corridor = ['english_channel','biscay','n_atlantic_mid','carib_east','panama_carib','panama','panama_pacific']
+
+    elif key == {'americas_east', 'east_asia'}:
+        corridor = ['us_east_offshore','carib_east','panama_carib','panama','panama_pacific','n_pacific_east','n_pacific_mid','n_pacific_west']
+
+    elif key == {'americas_west', 'east_asia'}:
+        corridor = ['n_pacific_east','n_pacific_mid','n_pacific_west']
+
+    elif key == {'americas_east', 'south_asia_gulf'}:
+        corridor = ['us_east_offshore','n_atlantic_mid','gib_atlantic','gibraltar','medit_west','medit_east','suez','red_sea_mid','bab_el_mandeb','arabian_sea']
+        if 'suez' in avoid:
+            corridor = ['us_east_offshore','n_atlantic_mid','s_atlantic_mid','s_atlantic_east','agulhas','cape_good_hope','s_indian_mid','arabian_sea']
+
+    elif key == {'africa', 'east_asia'}:
+        corridor = ['s_atlantic_east','agulhas','cape_good_hope','s_indian_mid','s_indian_east','malacca','s_china_sea','e_china_sea']
+
+    elif key == {'africa', 'wesn_europe'}:
+        corridor = ['s_atlantic_east','agulhas','cape_good_hope','s_atlantic_mid','gib_atlantic','biscay','english_channel']
+
+    elif key == {'africa', 'americas_east'}:
+        corridor = ['s_atlantic_east','s_atlantic_mid','us_east_offshore']
+
+    elif key == {'oceania', 'east_asia'}:
+        corridor = ['oceania_north','s_china_sea','e_china_sea']
+
+    elif key == {'oceania', 'wesn_europe'}:
+        corridor = ['oceania_east','south_of_horn','north_of_horn','s_atlantic_mid','biscay','english_channel']
+
+    else:
+        corridor = []
+
+    # Ako je 'ra' na "istočnijoj" strani od 'rb', invertujemo koridor
+    # da bi listovi bili u smeru putovanja.
+    if corridor and (ra in ('east_asia','south_asia_gulf','oceania') and rb not in ('east_asia','south_asia_gulf','oceania')):
+        corridor = list(reversed(corridor))
+    elif corridor and ra == 'americas_west' and rb == 'americas_east':
+        corridor = list(reversed(corridor))
+
+    return corridor
 
 
 # ==========================================================
@@ -417,6 +508,96 @@ CO2_G_PER_TKM = {     # gram CO2 po tonskom kilometru
     'sea': 8,
     'air': 602,
 }
+
+
+# ==========================================================
+#  KANALSKI TROSKOVI I TRANZIT
+# ==========================================================
+# Podaci su medijani iz javnih tarifnih raspona 2024 (Suez SCA, Panama Canal
+# Authority ACP, Kiel Canal WSA). Ne zamenjuju pravu rezervaciju agenta ali
+# daju red veličine tolerantan +-25%. Naplata je uglavnom kombinacija:
+#   base_usd  — administrativna taksa i pilot (nezavisno od tereta)
+#   per_teu   — dodatak po TEU-u kontejnera (za container ships)
+#   per_ton   — dodatak po netto toni (za bulk / breakbulk / tanker)
+#   transit_h — koliko sati brod provede prolazeći kanal (bez čekanja konvoja)
+#   wait_h    — prosečan čekanje na konvoj / booking slot
+CANAL_FEES = {
+    'suez': {
+        'display_name': 'Suez Canal',
+        'country': 'Egypt',
+        'base_usd': 80000, 'per_teu': 50, 'per_ton': 8,
+        'transit_h': 14, 'wait_h': 12,
+        'notes': 'SCA convoys northbound & southbound. Toll applies to net tonnage; container ships pay TEU-based surcharge.',
+    },
+    'panama': {
+        'display_name': 'Panama Canal',
+        'country': 'Panama',
+        'base_usd': 90000, 'per_teu': 60, 'per_ton': 10,
+        'transit_h': 10, 'wait_h': 16,
+        'notes': 'ACP booking system; slots auctioned. Dry-season drought may impose draft restrictions and additional wait.',
+    },
+    'kiel': {
+        'display_name': 'Kiel Canal',
+        'country': 'Germany',
+        'base_usd': 5000, 'per_teu': 4, 'per_ton': 1.2,
+        'transit_h': 8, 'wait_h': 3,
+        'notes': 'North Sea ↔ Baltic short-cut. Pilotage compulsory above 25 m LOA.',
+    },
+    'bosphorus': {
+        'display_name': 'Bosphorus + Dardanelles',
+        'country': 'Türkiye',
+        'base_usd': 3000, 'per_teu': 0, 'per_ton': 0.3,
+        'transit_h': 6, 'wait_h': 2,
+        'notes': 'Montreux Convention free-passage; pilot/tugs are optional but recommended.',
+    },
+    # Prirodni tesnaci — nema pravog "canal fee", ali VTS i pilot su naplaćeni:
+    'malacca': {
+        'display_name': 'Strait of Malacca',
+        'country': 'Singapore / Malaysia',
+        'base_usd': 3500, 'per_teu': 0, 'per_ton': 0.2,
+        'transit_h': 20, 'wait_h': 0,
+        'notes': 'MSDS (Malacca Straits Dues Scheme) light-dues.',
+    },
+    'gibraltar':      {'display_name': 'Strait of Gibraltar',      'country': 'Spain / Morocco', 'base_usd': 0, 'per_teu': 0, 'per_ton': 0, 'transit_h': 3, 'wait_h': 0, 'notes': 'Open passage.'},
+    'bab_el_mandeb':  {'display_name': 'Bab-el-Mandeb',            'country': 'Yemen / Djibouti','base_usd': 0, 'per_teu': 0, 'per_ton': 0, 'transit_h': 3, 'wait_h': 0, 'notes': 'Open passage; check piracy/geopolitical warnings.'},
+    'dover':          {'display_name': 'Strait of Dover',          'country': 'UK / France',     'base_usd': 0, 'per_teu': 0, 'per_ton': 0, 'transit_h': 3, 'wait_h': 0, 'notes': 'Open passage; Dover TSS traffic scheme.'},
+    'cape_good_hope': {'display_name': 'Cape of Good Hope',        'country': 'South Africa',    'base_usd': 0, 'per_teu': 0, 'per_ton': 0, 'transit_h': 24, 'wait_h': 0, 'notes': 'Open ocean cape route; adds ~10-14 days vs Suez but no toll.'},
+    'cape_horn':      {'display_name': 'Cape Horn',                'country': 'Chile',           'base_usd': 0, 'per_teu': 0, 'per_ton': 0, 'transit_h': 24, 'wait_h': 0, 'notes': 'Open ocean cape route; heavy seas year-round.'},
+}
+
+
+def _canal_passages_for_corridor(corridor_names, profile):
+    """Vraća listu {name, display_name, country, fee_usd, transit_hours, wait_hours,
+    notes} za svaki kanal/tesnac koji ruta prolazi. Fee se računa po cargo profilu:
+    kontejneri → base + TEU*count; bulk/tanker → base + tons.
+    """
+    passages = []
+    ct = profile.get('container_type', '')
+    teu_count = max(1, profile.get('container_count', 0)) if ct in ('teu','feu','reefer','lcl') else 0
+    # Za feu se za kanalsku taksu tretira kao 2 TEU
+    if ct == 'feu':
+        teu_count *= 2
+    tons = profile.get('weight_tons', 0)
+
+    for name in corridor_names:
+        info = CANAL_FEES.get(name)
+        if not info:
+            continue
+        fee = float(info['base_usd'])
+        if teu_count > 0:
+            fee += float(info['per_teu']) * teu_count
+        else:
+            fee += float(info['per_ton']) * tons
+        passages.append({
+            'name': name,
+            'display_name': info['display_name'],
+            'country': info['country'],
+            'fee_usd': round(fee, 0),
+            'transit_hours': info['transit_h'],
+            'wait_hours': info['wait_h'],
+            'notes': info['notes'],
+        })
+    return passages
 
 
 # ==========================================================
@@ -840,6 +1021,108 @@ def _airport_dwell_hours(profile):
     return round(handling + customs, 1)
 
 
+def _port_charges_breakdown(port_ops, profile, is_origin):
+    """Detaljna razrada troškova u luci. Vraća listu {label, hours, cost_usd,
+    description}. Suma cost_usd = ukupna procenjena naknada, suma hours = dwell.
+
+    Podaci su srednji sektorski proseci 2024 (Drewry / UNCTAD Port Handbook).
+    Kontejnerske stavke:
+      THC (Terminal Handling Charge) — utovar/istovar samog kontejnera
+      Doc fee — B/L izdavanje, manifest, ISPS
+      Port dues — po net-ton ship-a (za kontejnere fiksni surcharge)
+      Pilotage — obavezan u većini luka
+      Tugs — 2 tega za veći containership
+      Storage — free time 5-7 dana, posle demurrage
+    """
+    ct = profile.get('container_type', '')
+    tons = profile.get('weight_tons', 0)
+    boxes = max(1, profile.get('container_count', 0))
+    is_container = ct in ('teu','feu','reefer','lcl')
+    is_bulk = ct in ('bulk_dry','bulk_liquid')
+
+    # Skalirane stope po tier-u luke. Top-tier je efikasniji ali skuplji;
+    # congested je jeftiniji po satu ali čeka duže → veći ukupni trošak dwell-a.
+    tier = (port_ops.get('_tier') or 'average').lower()
+    tier_thc_mul = {'top_tier': 1.15, 'efficient': 1.05, 'average': 1.0, 'congested': 0.9}.get(tier, 1.0)
+    tier_hour_mul = float(port_ops.get('congestion_factor', 1.0))
+
+    op_word = 'loading' if is_origin else 'discharge'
+    items = []
+
+    if is_container:
+        cranes_h = float(port_ops.get('container_crane_moves_per_hour', 25))
+        thc_per_teu = 210 * tier_thc_mul  # median THC 2024
+        thc_multi = 2.0 if ct == 'feu' else 1.0
+        items.append({
+            'label': f'THC ({op_word})', 'category': 'handling',
+            'hours': round((boxes / cranes_h) * tier_hour_mul, 1),
+            'cost_usd': round(thc_per_teu * thc_multi * boxes, 0),
+            'description': f'{boxes}× container crane moves at {int(cranes_h)}/h',
+        })
+        items.append({
+            'label': 'Terminal storage / yard buffer', 'category': 'storage',
+            'hours': round(float(port_ops.get('container_dwell_hours', 48)) * tier_hour_mul, 1),
+            'cost_usd': round(35 * boxes, 0),  # 5-7 free days included; token yard fee
+            'description': 'Container yard sit-time inside free-time window',
+        })
+    elif is_bulk:
+        rate = float(port_ops.get('bulk_discharge_tons_per_hour', 1000))
+        items.append({
+            'label': f'Bulk {op_word}', 'category': 'handling',
+            'hours': round((tons / max(rate, 1)) * tier_hour_mul, 1),
+            'cost_usd': round(3.5 * tons * tier_thc_mul, 0),  # ~$3.5/t stevedoring
+            'description': f'Grabs / conveyors at {int(rate)} t/h',
+        })
+        items.append({
+            'label': 'Silo / tank storage', 'category': 'storage',
+            'hours': round(float(port_ops.get('bulk_dwell_hours', 72)) * tier_hour_mul, 1),
+            'cost_usd': round(0.4 * tons, 0),
+            'description': 'Silo standby fee',
+        })
+    else:  # breakbulk / oog / parcel
+        rate = float(port_ops.get('breakbulk_tons_per_hour', 120))
+        items.append({
+            'label': f'Breakbulk {op_word}', 'category': 'handling',
+            'hours': round((tons / max(rate, 1)) * tier_hour_mul, 1),
+            'cost_usd': round(12 * tons * tier_thc_mul, 0),
+            'description': f'Slings / MAFI trailers at {int(rate)} t/h',
+        })
+        items.append({
+            'label': 'Cargo shed storage', 'category': 'storage',
+            'hours': round(float(port_ops.get('breakbulk_dwell_hours', 120)) * tier_hour_mul, 1),
+            'cost_usd': round(0.8 * tons, 0),
+            'description': 'Warehouse standby',
+        })
+
+    # Univerzalno: port dues, pilot, tugs, doc, ISPS security
+    items.append({'label': 'Port dues',        'category': 'authority', 'hours': 0,   'cost_usd': round(1200 + 6 * tons, 0),  'description': 'Harbour master fee on net tonnage'})
+    items.append({'label': 'Pilotage',         'category': 'authority', 'hours': 1,   'cost_usd': 2500,                       'description': 'Compulsory pilot in most commercial ports'})
+    items.append({'label': 'Tug boats (2×)',   'category': 'authority', 'hours': 1,   'cost_usd': 3800,                       'description': 'In/out tugs for berthing'})
+    items.append({'label': 'ISPS security',    'category': 'authority', 'hours': 0,   'cost_usd': 350,                        'description': 'International Ship & Port Security surcharge'})
+    items.append({'label': 'Documentation / B/L', 'category': 'admin',  'hours': 0,   'cost_usd': 180,                        'description': 'B/L, manifest, EDI submissions'})
+
+    # Carina — trošak zavisi od tereta
+    customs_h = float(port_ops.get('customs_clearance_hours', 24)) * tier_hour_mul
+    customs_fee = 250 if not profile.get('hazmat') else 650  # hazmat dodatna dozvola
+    if profile.get('high_value'):
+        customs_fee += 400  # insurance broker adder
+    items.append({
+        'label': 'Customs clearance', 'category': 'customs',
+        'hours': round(customs_h, 1), 'cost_usd': customs_fee,
+        'description': 'Import/export declaration, duty assessment' + (' + hazmat DGD' if profile.get('hazmat') else ''),
+    })
+
+    return items
+
+
+def _sum_port_breakdown(items):
+    return {
+        'total_hours': round(sum(i['hours'] for i in items), 1),
+        'total_cost_usd': round(sum(i['cost_usd'] for i in items), 0),
+        'items': items,
+    }
+
+
 # ==========================================================
 #  MOD FITNESS SCORING — koja je od 3 opcije NAJPAMETNIJA
 #  za DATI cargo profil? Vraća score + human-readable razloge.
@@ -914,6 +1197,149 @@ def _mode_fitness(mode, profile, plan):
     return score, reasons
 
 
+def _pick_trailer(profile):
+    """Bira tip prikolice/kamiona iz cargo profila. Vraća dict sa nazivom,
+    tipičnom kapacitetom, i posebnim uslovima."""
+    ct = profile.get('container_type', '')
+    if profile.get('perishable'):
+        return {'kind': 'reefer_trailer', 'display_name': 'Reefer trailer (13.6 m)',
+                'capacity_tons': 24, 'volume_m3': 66,
+                'notes': 'Temperature-controlled -25 °C to +25 °C. Genset fuel adds ~$60/day.'}
+    if profile.get('hazmat'):
+        return {'kind': 'adr_curtain', 'display_name': 'ADR-compliant curtain-side (13.6 m)',
+                'capacity_tons': 24, 'volume_m3': 92,
+                'notes': 'ADR driver certification, orange plates, DGD documentation.'}
+    if profile.get('oversize') or ct == 'oog':
+        return {'kind': 'lowloader', 'display_name': 'Low-loader / step-deck (13.6-16 m)',
+                'capacity_tons': 40, 'volume_m3': 0,
+                'notes': 'Requires abnormal-load permits, escort in some jurisdictions.'}
+    if ct == 'bulk_liquid':
+        return {'kind': 'tanker', 'display_name': 'ISO tank container / road tanker',
+                'capacity_tons': 26, 'volume_m3': 33,
+                'notes': 'Cleaning certificate required between different products.'}
+    if ct == 'bulk_dry':
+        return {'kind': 'tipper', 'display_name': 'Tipper / walking-floor trailer (13.6 m)',
+                'capacity_tons': 25, 'volume_m3': 70,
+                'notes': 'Discharges by tipping or moving floor.'}
+    if ct in ('teu', 'feu', 'reefer', 'lcl'):
+        return {'kind': 'container_chassis', 'display_name': "Container chassis (20'/40'/45')",
+                'capacity_tons': 26, 'volume_m3': 76,
+                'notes': 'Chassis matches box type; twist-locks mandatory.'}
+    return {'kind': 'curtain_ftl', 'display_name': 'Curtain-side FTL (13.6 m)',
+            'capacity_tons': 24, 'volume_m3': 92,
+            'notes': 'Standard EU 13.6 m tautliner; 33 EUR pallets.'}
+
+
+def _road_cost_breakdown(distance_km, profile, is_cross_border):
+    """Detaljna razrada cene drumskog transporta. Vraća listu {label, cost_usd,
+    description}. Suma = total road cost. Realni prosek EU 2024:
+      Fuel:     ~$0.55/km (diesel 1.6 EUR/L @ 30 L/100 km × 1.08 USD/EUR)
+      Driver:   ~$0.35/km (mid-range EU driver salary + per-diem)
+      Tolls:    ~$0.15/km EU average
+      Insurance & permit: fixed per trip
+      Border:   ~$150-400 per crossing (documentation + wait)
+    """
+    trucks = max(1, int((profile['weight_tons'] + 23) // 24))
+    trailer = _pick_trailer(profile)
+    items = []
+    fuel_per_km = 0.55 * (1.20 if trailer['kind'] == 'reefer_trailer' else 1.0)  # reefer troši više
+    items.append({'label': f'Fuel × {trucks} truck(s)', 'category': 'fuel',
+                  'cost_usd': round(fuel_per_km * distance_km * trucks, 0),
+                  'description': f'Diesel ~30 L/100 km × 1.60 €/L{" (reefer +20%)" if trailer["kind"] == "reefer_trailer" else ""}'})
+    items.append({'label': f'Driver wages × {trucks}', 'category': 'labor',
+                  'cost_usd': round(0.35 * distance_km * trucks, 0),
+                  'description': 'EU tariff incl. per-diem, weekly rest'})
+    items.append({'label': 'Road tolls', 'category': 'infrastructure',
+                  'cost_usd': round(0.15 * distance_km * trucks, 0),
+                  'description': 'Highway tolls (EU AT/DE/HU/FR average)'})
+    items.append({'label': 'Insurance & CMR', 'category': 'admin',
+                  'cost_usd': 120 * trucks,
+                  'description': 'CMR waybill + carrier liability'})
+    if trailer['kind'] == 'reefer_trailer':
+        days_est = distance_km / (60 * 12) + 1  # driving days assuming 12h drive/day
+        items.append({'label': 'Reefer genset diesel', 'category': 'fuel',
+                      'cost_usd': round(60 * days_est * trucks, 0),
+                      'description': 'Refrigeration unit fuel'})
+    if profile.get('hazmat'):
+        items.append({'label': 'ADR surcharge', 'category': 'admin',
+                      'cost_usd': 220 * trucks,
+                      'description': 'ADR handling + DGD, orange plates, escort risk fee'})
+    if profile.get('oversize'):
+        items.append({'label': 'Oversize permit + escort', 'category': 'permit',
+                      'cost_usd': round(900 * trucks, 0),
+                      'description': 'Abnormal-load permit + police escort in EU'})
+    if is_cross_border:
+        borders = 1 if distance_km <= 1500 else 2 if distance_km <= 3500 else 3
+        items.append({'label': f'Border crossings × {borders}', 'category': 'customs',
+                      'cost_usd': 280 * borders * trucks,
+                      'description': 'Customs broker, wait time, docs'})
+    return {'trailer': trailer, 'trucks_needed': trucks,
+            'total_cost_usd': round(sum(i['cost_usd'] for i in items), 0),
+            'items': items}
+
+
+def _pick_aircraft(profile, air_km):
+    """Bira tip aviona za teret."""
+    wt = profile.get('weight_tons', 0)
+    if wt <= 0.5 and air_km <= 4000:
+        return {'kind': 'belly_narrow', 'display_name': 'Passenger belly (A320/B737)',
+                'capacity_tons': 3, 'notes': 'Cargo in passenger flight belly. Limited to ~3 t / narrow ULD.'}
+    if wt <= 20 and air_km <= 8000:
+        return {'kind': 'belly_wide', 'display_name': 'Passenger belly wide-body (A330/B777)',
+                'capacity_tons': 20, 'notes': 'Cargo in wide-body passenger belly. LD-3/LD-6 ULD.'}
+    if wt <= 45:
+        return {'kind': 'freighter_narrow', 'display_name': 'Freighter narrow-body (B737-800F, A321F)',
+                'capacity_tons': 45, 'notes': 'Dedicated freighter. Main-deck ULD access.'}
+    if wt <= 100:
+        return {'kind': 'freighter_wide', 'display_name': 'Freighter wide-body (B777F, B747-8F)',
+                'capacity_tons': 100, 'notes': 'Long-range wide-body freighter with nose door on some variants.'}
+    return {'kind': 'freighter_ana', 'display_name': 'Special freighter (An-124, B747F)',
+            'capacity_tons': 250, 'notes': 'Very heavy / OOG cargo. Charter market.'}
+
+
+def _air_cost_breakdown(distance_km, profile):
+    """Air cargo troškovi razdvojeni po stavkama. Realni prosek 2024:
+      Cargo rate ~ 2.50-4.50 $/kg intercontinental (uzimamo 3.20 base)
+      Fuel surcharge ~ 0.55 $/kg (varijabilna po jet fuel indeksu)
+      Security fee (100% X-ray) ~ 0.15 $/kg
+      Terminal handling (origin+destination) ~ 0.35 $/kg
+      Customs broker fee ~ $180 flat
+      Insurance ~ 0.3% cargo value
+    """
+    kg = profile['weight_tons'] * 1000
+    aircraft = _pick_aircraft(profile, distance_km)
+    dist_factor = 1.0 + max(0, (distance_km - 3000) / 10000) * 0.3
+    items = []
+    items.append({'label': 'Air cargo base rate', 'category': 'freight',
+                  'cost_usd': round(3.20 * kg * dist_factor, 0),
+                  'description': f'IATA TACT median × distance factor {round(dist_factor,2)}'})
+    items.append({'label': 'Fuel surcharge (FSC)', 'category': 'fuel',
+                  'cost_usd': round(0.55 * kg, 0),
+                  'description': 'Jet fuel index adjustment'})
+    items.append({'label': 'Security screening', 'category': 'admin',
+                  'cost_usd': round(0.15 * kg, 0),
+                  'description': '100% cargo X-ray or ETD'})
+    items.append({'label': 'Terminal handling (2×)', 'category': 'handling',
+                  'cost_usd': round(0.35 * kg, 0),
+                  'description': 'Origin + destination cargo terminals'})
+    items.append({'label': 'Customs broker', 'category': 'customs',
+                  'cost_usd': 180, 'description': 'Import declaration filing'})
+    if profile.get('high_value') and profile.get('value_usd'):
+        items.append({'label': 'Cargo insurance', 'category': 'admin',
+                      'cost_usd': round(0.003 * profile['value_usd'], 0),
+                      'description': '0.3% of declared value'})
+    if profile.get('hazmat'):
+        items.append({'label': 'DGR handling (IATA)', 'category': 'admin',
+                      'cost_usd': 350, 'description': 'Dangerous Goods regulations surcharge'})
+    if profile.get('perishable'):
+        items.append({'label': 'Cool chain / reefer', 'category': 'handling',
+                      'cost_usd': round(0.20 * kg, 0),
+                      'description': 'Cold storage at both terminals'})
+    return {'aircraft': aircraft,
+            'total_cost_usd': round(sum(i['cost_usd'] for i in items), 0),
+            'items': items}
+
+
 def _cost_estimate_usd(mode, plan, profile):
     """Vrlo okvirno: koristi javne tarifne prosečne cene (per kg-km ili
     ton-km) da bi korisnik dobio red veličine. NE zamenjuje pravi tender.
@@ -979,6 +1405,7 @@ def _do_plan():
         border_h = 8 if d_road_actual > 800 else 0
         total_h = hours + border_h
         co2_t = d_road_actual * cargo_tons * CO2_G_PER_TKM['road'] / 1_000_000
+        road_breakdown = _road_cost_breakdown(d_road_actual, profile, is_cross_border=(border_h > 0))
 
         plan_road = {
             'mode': 'road',
@@ -992,6 +1419,9 @@ def _do_plan():
                 'hours': round(hours, 1),
                 'trucks_needed': trucks_needed,
                 'border_crossing_hours': border_h,
+                'trailer_type': road_breakdown['trailer'],
+                'cost_breakdown_items': road_breakdown['items'],
+                'cost_breakdown_total': road_breakdown['total_cost_usd'],
             }],
             'total_distance_km': round(d_road_actual, 1),
             'total_hours': round(total_h, 1),
@@ -1002,7 +1432,8 @@ def _do_plan():
         score, reasons = _mode_fitness('road', profile, plan_road)
         plan_road['fitness_score'] = score
         plan_road['fitness_reasons'] = reasons
-        plan_road['estimated_cost_usd'] = _cost_estimate_usd('road', plan_road, profile)
+        plan_road['estimated_cost_usd'] = road_breakdown['total_cost_usd']
+        plan_road['cost_breakdown_usd'] = {'road_freight': road_breakdown['total_cost_usd']}
         plans.append(plan_road)
 
     # --- 2. ROAD → SEA → ROAD --------------------------------------------
@@ -1034,17 +1465,26 @@ def _do_plan():
             sea_poly.extend(seg)
         sea_km = _polyline_length_km(sea_poly)
 
-        # Per-luka dwell time — koristi realne parametre iz port_operations.json
+        # Per-luka dwell time + detaljni cost breakdown
         origin_ops = _port_ops_for(p_o.get('unlocode'))
         dest_ops = _port_ops_for(p_d.get('unlocode'))
-        h_dwell_origin = _port_dwell_hours(origin_ops, profile)
-        h_dwell_dest = _port_dwell_hours(dest_ops, profile)
+        origin_breakdown = _sum_port_breakdown(_port_charges_breakdown(origin_ops, profile, is_origin=True))
+        dest_breakdown = _sum_port_breakdown(_port_charges_breakdown(dest_ops, profile, is_origin=False))
+        h_dwell_origin = origin_breakdown['total_hours']
+        h_dwell_dest = dest_breakdown['total_hours']
         h_port_dwell = h_dwell_origin + h_dwell_dest
+
+        # Kanalski troškovi + tranzit vreme
+        canal_passages = _canal_passages_for_corridor(wps, profile)
+        h_canal_transit = sum(cp['transit_hours'] + cp['wait_hours'] for cp in canal_passages)
+        canal_cost_total = sum(cp['fee_usd'] for cp in canal_passages)
 
         h_road_o = land_o_km / SPEED_KMH['road']
         h_sea = sea_km / SPEED_KMH['sea']
         h_road_d = land_d_km / SPEED_KMH['road']
-        total_h = h_road_o + h_sea + h_port_dwell + h_road_d
+        # Sea leg vreme uključuje čist plov + kanalske tranzite (SPEED_KMH['sea']
+        # je open-ocean brzina, brod dramatično usporava kroz kanal)
+        total_h = h_road_o + h_sea + h_canal_transit + h_port_dwell + h_road_d
         total_km = land_o_km + sea_km + land_d_km
         co2_t = (
             land_o_km * cargo_tons * CO2_G_PER_TKM['road'] +
@@ -1078,6 +1518,9 @@ def _do_plan():
                     'via_waypoints': wps,
                     'distance_km': round(sea_km, 1),
                     'hours': round(h_sea, 1),
+                    'canal_transit_hours': round(h_canal_transit, 1),
+                    'canal_cost_usd': canal_cost_total,
+                    'canal_passages': canal_passages,
                     'port_dwell_hours': round(h_port_dwell, 1),
                     'origin_port': {
                         'unlocode': p_o.get('unlocode'),
@@ -1085,6 +1528,8 @@ def _do_plan():
                         'country': p_o.get('country'),
                         'tier': origin_ops.get('_tier'),
                         'dwell_hours': round(h_dwell_origin, 1),
+                        'charges_usd': origin_breakdown['total_cost_usd'],
+                        'charges_breakdown': origin_breakdown['items'],
                         'notes': origin_ops.get('_notes') or '',
                     },
                     'destination_port': {
@@ -1093,6 +1538,8 @@ def _do_plan():
                         'country': p_d.get('country'),
                         'tier': dest_ops.get('_tier'),
                         'dwell_hours': round(h_dwell_dest, 1),
+                        'charges_usd': dest_breakdown['total_cost_usd'],
+                        'charges_breakdown': dest_breakdown['items'],
                         'notes': dest_ops.get('_notes') or '',
                     },
                 },
@@ -1115,7 +1562,21 @@ def _do_plan():
         score, reasons = _mode_fitness('sea', profile, plan_sea)
         plan_sea['fitness_score'] = score
         plan_sea['fitness_reasons'] = reasons
-        plan_sea['estimated_cost_usd'] = _cost_estimate_usd('sea', plan_sea, profile)
+        # Ukupno = sea freight + port fees (obe strane) + canal tolls + road za pre/post
+        sea_freight = _cost_estimate_usd('sea', plan_sea, profile)
+        road_pre_post = _cost_estimate_usd('road',
+            {'total_distance_km': land_o_km + land_d_km}, profile)
+        plan_sea['estimated_cost_usd'] = round(
+            sea_freight + road_pre_post +
+            origin_breakdown['total_cost_usd'] + dest_breakdown['total_cost_usd'] +
+            canal_cost_total, 0)
+        plan_sea['cost_breakdown_usd'] = {
+            'sea_freight': sea_freight,
+            'road_pre_and_post': road_pre_post,
+            'port_origin': origin_breakdown['total_cost_usd'],
+            'port_destination': dest_breakdown['total_cost_usd'],
+            'canal_tolls': canal_cost_total,
+        }
         # Predloži tipove brodova koji su tehnički prikladni za ovaj cargo profil
         plan_sea['vessel_recommendations'] = _match_vessels_for_cargo(profile, sea_km)
         plans.append(plan_sea)
@@ -1145,6 +1606,11 @@ def _do_plan():
 
         active_dis = [d for d in _load_disruptions() if 'air' in d.get('affects', [])]
 
+        # Detaljni breakdown-i
+        air_breakdown = _air_cost_breakdown(air_km, profile)
+        road_o_bd = _road_cost_breakdown(land_o_km, profile, is_cross_border=False)
+        road_d_bd = _road_cost_breakdown(land_d_km, profile, is_cross_border=False)
+
         plan_air = {
             'mode': 'air',
             'label': 'Truck → Air Cargo → Truck',
@@ -1156,6 +1622,9 @@ def _do_plan():
                     'polyline': _great_circle_polyline(o_lat, o_lon, a_o['lat'], a_o['lon'], segments=16),
                     'distance_km': round(land_o_km, 1),
                     'hours': round(h_road_o, 1),
+                    'trailer_type': road_o_bd['trailer'],
+                    'cost_breakdown_items': road_o_bd['items'],
+                    'cost_breakdown_total': road_o_bd['total_cost_usd'],
                 },
                 {
                     'kind': 'air',
@@ -1167,6 +1636,9 @@ def _do_plan():
                     'airport_dwell_hours': round(h_air_dwell, 1),
                     'origin_airport': {'iata': a_o.get('iata'), 'name': a_o.get('name')},
                     'destination_airport': {'iata': a_d.get('iata'), 'name': a_d.get('name')},
+                    'aircraft_type': air_breakdown['aircraft'],
+                    'cost_breakdown_items': air_breakdown['items'],
+                    'cost_breakdown_total': air_breakdown['total_cost_usd'],
                 },
                 {
                     'kind': 'road',
@@ -1175,6 +1647,9 @@ def _do_plan():
                     'polyline': _great_circle_polyline(a_d['lat'], a_d['lon'], d_lat, d_lon, segments=16),
                     'distance_km': round(land_d_km, 1),
                     'hours': round(h_road_d, 1),
+                    'trailer_type': road_d_bd['trailer'],
+                    'cost_breakdown_items': road_d_bd['items'],
+                    'cost_breakdown_total': road_d_bd['total_cost_usd'],
                 },
             ],
             'total_distance_km': round(total_km, 1),
@@ -1186,7 +1661,14 @@ def _do_plan():
         score, reasons = _mode_fitness('air', profile, plan_air)
         plan_air['fitness_score'] = score
         plan_air['fitness_reasons'] = reasons
-        plan_air['estimated_cost_usd'] = _cost_estimate_usd('air', plan_air, profile)
+        plan_air['estimated_cost_usd'] = round(
+            air_breakdown['total_cost_usd'] +
+            road_o_bd['total_cost_usd'] + road_d_bd['total_cost_usd'], 0)
+        plan_air['cost_breakdown_usd'] = {
+            'air_freight': air_breakdown['total_cost_usd'],
+            'road_pre': road_o_bd['total_cost_usd'],
+            'road_post': road_d_bd['total_cost_usd'],
+        }
         plans.append(plan_air)
 
     if not plans:

@@ -24,11 +24,91 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
 )
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
+from reportlab.graphics.barcode.qr import QrCodeWidget
+from reportlab.graphics.shapes import Drawing
 
 from config import DB_FILE, UPLOAD_FOLDER
 from utils import decrypt_data
 
 logger = logging.getLogger(__name__)
+
+
+def _sepa_epc_payload(beneficiary, iban, amount_eur, remittance='', bic='', reference=''):
+    """Formira EPC069-12 v002 QR payload za SEPA 'Scan to Pay'.
+
+    Struktura je 8-12 linija razdvojenih \\n:
+        BCD          (service tag, fiksno)
+        002          (verzija)
+        1            (character set — 1 = UTF-8)
+        SCT          (SEPA Credit Transfer)
+        BIC          (opciono u v002)
+        Beneficiary  (max 70 karaktera)
+        IBAN         (obavezno, bez razmaka)
+        EUR<amount>  (currency + amount, max EUR 999999999.99)
+        Purpose      (opciono, 4 char SEPA purpose code)
+        Reference    (opciono, structured creditor reference)
+        Remittance   (max 140 chars — free-form)
+        Information  (max 70 chars — additional beneficiary info)
+
+    Bez amount-a QR vodi na "enter amount manually" screen na banka app-u.
+    Bez IBAN-a payload je invalid — vratimo None.
+    """
+    iban = str(iban or '').replace(' ', '').replace('-', '').upper().strip()
+    if not iban or len(iban) < 15:
+        return None
+    beneficiary = str(beneficiary or '')[:70].strip()
+    if not beneficiary:
+        return None
+    lines = [
+        'BCD',
+        '002',
+        '1',
+        'SCT',
+        str(bic or '').strip()[:11],
+        beneficiary,
+        iban,
+    ]
+    # Amount: samo EUR podržan u EPC069. Ako je 0 ili nedefinisan, ostavljamo prazno
+    # → banka app tera korisnika da unese sam iznos.
+    try:
+        amt = float(amount_eur or 0)
+        if amt > 0:
+            lines.append(f'EUR{amt:.2f}')
+        else:
+            lines.append('')
+    except (TypeError, ValueError):
+        lines.append('')
+    lines.append('')                                      # Purpose (opciono)
+    lines.append(str(reference or '')[:35])               # Structured reference
+    lines.append(str(remittance or '')[:140])             # Unstructured remittance
+    # Total payload mora biti ≤ 331 bajt — trim ako je previše
+    payload = '\n'.join(lines).encode('utf-8')
+    if len(payload) > 331:
+        # Skratimo remittance dok payload ne stane
+        while len(payload) > 331 and lines[-1]:
+            lines[-1] = lines[-1][:-5]
+            payload = '\n'.join(lines).encode('utf-8')
+    return payload.decode('utf-8')
+
+
+def _build_epc_qr_drawing(beneficiary, iban, amount_eur, remittance='', bic='', reference='', size_mm=24):
+    """Vraća ReportLab Drawing sa SEPA EPC QR kodom spreman za flow layout,
+    ili None ako input nije dovoljan za validan EPC payload."""
+    payload = _sepa_epc_payload(beneficiary, iban, amount_eur, remittance, bic, reference)
+    if not payload:
+        return None
+    try:
+        qr = QrCodeWidget(payload, barLevel='M')
+        bounds = qr.getBounds()
+        w = bounds[2] - bounds[0]
+        h = bounds[3] - bounds[1]
+        d = Drawing(size_mm * mm, size_mm * mm, transform=[
+            (size_mm * mm) / w, 0, 0, (size_mm * mm) / h, 0, 0
+        ])
+        d.add(qr)
+        return d
+    except Exception:
+        return None
 
 
 def _bank_details_string(company, bank_idx=None):
@@ -77,6 +157,28 @@ def _bank_details_string(company, bank_idx=None):
     if company.get('swift'):       parts.append(f"SWIFT / BIC: {company.get('swift')}")
     if company.get('corrBank'):    parts.append(f"Correspondent bank: {company.get('corrBank')}")
     return '\n'.join(parts)
+
+
+def _extract_bank_iban_bic(company, bank_idx=None):
+    """Vraća (iban, bic) tuple iz izabranog banka računa; koristi za SEPA QR.
+    Format IBAN se normalizuje (bez razmaka), BIC uppercase."""
+    if not isinstance(company, dict):
+        return (None, None)
+    bank_accounts = company.get('bankAccounts') or []
+    if isinstance(bank_accounts, list) and bank_accounts:
+        try:
+            idx = int(bank_idx) if bank_idx is not None else 0
+        except (TypeError, ValueError):
+            idx = 0
+        if idx < 0 or idx >= len(bank_accounts): idx = 0
+        b = bank_accounts[idx]
+        if isinstance(b, dict):
+            iban = str(b.get('accountNumber') or '').replace(' ', '').upper()
+            bic = str(b.get('swiftCode') or '').replace(' ', '').upper()
+            return (iban or None, bic or None)
+    iban = str(company.get('accountNum') or '').replace(' ', '').upper()
+    bic = str(company.get('swift') or '').replace(' ', '').upper()
+    return (iban or None, bic or None)
 
 
 def _make_verification_hash(offer_id, offer_no):
@@ -566,15 +668,56 @@ def build_offer_pdf(offer, company=None, settings=None):
     bank_details = offer.get('bankDetails') or _bank_details_string(company, offer.get('paymentBankIdx'))
     if bank_details:
         story.append(_para("<b>Bank Instructions</b>", styles['h2']))
-        bank_tbl = Table([[_para(_esc(bank_details), styles['body'])]], colWidths=[180*mm])
-        bank_tbl.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f4f6f9')),
-            ('BOX', (0,0), (-1,-1), 0.4, colors.HexColor('#e7eaef')),
-            ('LEFTPADDING', (0,0), (-1,-1), 10),
-            ('RIGHTPADDING', (0,0), (-1,-1), 10),
-            ('TOPPADDING', (0,0), (-1,-1), 8),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-        ]))
+        # SEPA EPC069-12 QR: bank pripada firmi, iznos je total ponude u EUR
+        # (ako valuta nije EUR, QR ne generišemo — banka app ne podržava non-EUR).
+        iban, bic = _extract_bank_iban_bic(company, offer.get('paymentBankIdx'))
+        qr_drawing = None
+        # Za offer/invoice: fetch total i currency
+        total_val = offer.get('grandTotal') or offer.get('totalWithTax') or offer.get('total') or 0
+        currency = str(offer.get('currency') or 'USD').upper()
+        if iban and currency == 'EUR':
+            beneficiary = company.get('name', '') or 'Company'
+            remit = f"Offer {offer.get('offerNo', '')}" if offer.get('offerNo') else ''
+            qr_drawing = _build_epc_qr_drawing(
+                beneficiary=beneficiary,
+                iban=iban,
+                amount_eur=total_val,
+                remittance=remit[:140],
+                bic=bic or '',
+                size_mm=26,
+            )
+        if qr_drawing is not None:
+            # Split u 2 kolone: bank text levo, QR desno sa 'Scan to Pay' label
+            qr_label = _para(
+                "<b><font size='8' color='#065f46'>📱 SEPA Scan to Pay</font></b><br/>"
+                "<font size='7' color='#6b7280'>Open your banking app and scan this QR to auto-fill the transfer.</font>",
+                styles['center']
+            )
+            bank_tbl = Table(
+                [[_para(_esc(bank_details), styles['body']), [qr_drawing, qr_label]]],
+                colWidths=[140*mm, 40*mm]
+            )
+            bank_tbl.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f4f6f9')),
+                ('BOX', (0,0), (-1,-1), 0.4, colors.HexColor('#e7eaef')),
+                ('LINEBEFORE', (1,0), (1,-1), 0.4, colors.HexColor('#e7eaef')),
+                ('LEFTPADDING', (0,0), (-1,-1), 10),
+                ('RIGHTPADDING', (0,0), (-1,-1), 10),
+                ('TOPPADDING', (0,0), (-1,-1), 8),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('ALIGN', (1,0), (1,-1), 'CENTER'),
+            ]))
+        else:
+            bank_tbl = Table([[_para(_esc(bank_details), styles['body'])]], colWidths=[180*mm])
+            bank_tbl.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f4f6f9')),
+                ('BOX', (0,0), (-1,-1), 0.4, colors.HexColor('#e7eaef')),
+                ('LEFTPADDING', (0,0), (-1,-1), 10),
+                ('RIGHTPADDING', (0,0), (-1,-1), 10),
+                ('TOPPADDING', (0,0), (-1,-1), 8),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+            ]))
         story.append(bank_tbl)
         story.append(Spacer(1, 5*mm))
 
@@ -626,11 +769,31 @@ def build_offer_pdf(offer, company=None, settings=None):
         canvas.setFillColor(primary)
         canvas.drawString(15*mm, 16.5*mm, f"VERIFICATION HASH: {ver_hash}")
 
+        # QR koji vodi na public verify stranicu — klijent skenira, dobije stranicu
+        # sa svim ključnim podacima dokumenta i statusom "authentic" ili "modified".
+        # Public host je izvučen iz company config (fallback default).
+        try:
+            verify_host = (company.get('portalHost') or company.get('publicHost') or 'https://aspidus.io').rstrip('/')
+            verify_url = f'{verify_host}/verify/{ver_hash}'
+            qr = QrCodeWidget(verify_url, barLevel='L')
+            b = qr.getBounds()
+            w, h = b[2] - b[0], b[3] - b[1]
+            size = 16 * mm
+            d = Drawing(size, size, transform=[size / w, 0, 0, size / h, 0, 0])
+            d.add(qr)
+            from reportlab.graphics import renderPDF
+            renderPDF.draw(d, canvas, A4[0] - 15*mm - size, 15*mm - 4*mm)
+            canvas.setFont('Helvetica', 5)
+            canvas.setFillColor(colors.HexColor('#98a2b3'))
+            canvas.drawRightString(A4[0] - 15*mm, 15*mm - 6.5*mm, "Scan to verify")
+        except Exception:
+            logger.debug('verify QR failed', exc_info=True)
+
         # Confidentiality line
         canvas.setFont('Helvetica-Oblique', 6)
         canvas.setFillColor(colors.HexColor('#667085'))
         canvas.drawString(15*mm, 12.5*mm,
-                          "This document is electronically generated. Verify authenticity by hash above.")
+                          "This document is electronically generated. Verify authenticity by scanning the QR or the hash above.")
 
         # Company address (bold, centrirano dole)
         canvas.setFont('Helvetica-Bold', 7)

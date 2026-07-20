@@ -430,21 +430,65 @@
         }
 
         function animatePlan(plan) {
-            let stageIdx = 0, pointIdx = 0;
+            // POSPORENA I ULEPŠANA ANIMACIJA:
+            // - Tempira se prema stvarnom broju tacaka po ETAP-u tako da svaki mode
+            //   putuje kroz svoju polyline za CILJ_MS ms (default 6s po ETAP-u).
+            // - Koristi requestAnimationFrame + interpoliranu tacku za glatko kretanje
+            //   nezavisno od gustine tacaka polyline (gde nekad ima 5, nekad 300).
+            // - Dodaje "trail" segment koji prati vozilo — vidljiv trag pređene rute.
+            const TARGET_MS_PER_LEG = 6500;  // ~6.5s po ETAP-u — dovoljno da se vidi lepo
+            const MIN_TOTAL_MS = 8000;       // minimalno 8s celokupna animacija ne dozvoli suvise brzo
+
             const first = plan.legs[0];
             const moving = L.marker([first.polyline[0][0], first.polyline[0][1]], { icon: iconFor(first.kind) }).addTo(map);
             mapLayers.push(moving);
-            function step() {
+
+            const totalLegs = plan.legs.length;
+            const perLeg = Math.max(TARGET_MS_PER_LEG, Math.floor(MIN_TOTAL_MS / totalLegs));
+
+            let stageIdx = 0;
+            let legStart = null;
+            let trail = null;
+
+            function interp(pts, t) {
+                // t ∈ [0,1] — vrati tacku duz polyline proporcionalno pređenoj razdaljini.
+                // Za jednostavnost koristi ravnomerno mapiranje kroz indekse tacaka
+                // (ne prava linearna udaljenost — dovoljno glatko za vizuelni utisak).
+                if (pts.length < 2) return pts[0];
+                const idxF = t * (pts.length - 1);
+                const i = Math.floor(idxF);
+                const frac = idxF - i;
+                if (i >= pts.length - 1) return pts[pts.length - 1];
+                const a = pts[i], b = pts[i + 1];
+                return [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
+            }
+
+            function step(now) {
                 const leg = plan.legs[stageIdx];
                 if (!leg) return;
-                const pts = leg.polyline;
-                if (pointIdx < pts.length) {
-                    moving.setLatLng(pts[pointIdx]);
-                    pointIdx += (leg.kind === 'sea' ? 1 : (leg.kind === 'air' ? 1 : 2));
+                if (legStart === null) {
+                    legStart = now;
+                    // Kreiraj svetleci trail za trenutni leg
+                    if (trail) { try { map.removeLayer(trail); } catch (_) {} }
+                    trail = L.polyline([], {
+                        color: leg.kind === 'sea' ? '#10b981' : (leg.kind === 'air' ? '#f59e0b' : '#3b82f6'),
+                        weight: 6, opacity: 0.55
+                    }).addTo(map);
+                    mapLayers.push(trail);
+                }
+                const elapsed = now - legStart;
+                const t = Math.min(1, elapsed / perLeg);
+                const p = interp(leg.polyline, t);
+                moving.setLatLng(p);
+                // Extend trail from start of leg do trenutne tačke
+                const idxUpTo = Math.max(1, Math.floor(t * (leg.polyline.length - 1)) + 1);
+                trail.setLatLngs(leg.polyline.slice(0, idxUpTo).concat([p]));
+
+                if (t < 1) {
                     animRequest = requestAnimationFrame(step);
                 } else {
                     stageIdx++;
-                    pointIdx = 0;
+                    legStart = null;
                     if (stageIdx < plan.legs.length) {
                         moving.setIcon(iconFor(plan.legs[stageIdx].kind));
                         animRequest = requestAnimationFrame(step);
@@ -453,7 +497,7 @@
                     }
                 }
             }
-            step();
+            animRequest = requestAnimationFrame(step);
         }
 
         // -------- PODNI DEO: RENDER REZULTATA --------
@@ -579,44 +623,110 @@
                 return `<span style="display:inline-block;padding:1px 6px;border-radius:999px;background:${c}20;color:${c};font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;margin-left:6px;">${T(tier.replace('_',' '), tier.replace('_',' '))}</span>`;
             };
 
+            // Helper — render kompaktan cost-item breakdown ispod nekog stavka.
+            const money = v => '$' + Number(v || 0).toLocaleString('en-US', {maximumFractionDigits: 0});
+            const renderCostItems = (title, items, totalUsd) => {
+                if (!items || !items.length) return '';
+                const rows = items.map(it => `
+                    <tr>
+                      <td style="padding:2px 6px 2px 0;color:#4b5563;font-size:11px;">${escapeHtml(it.label)}</td>
+                      <td style="padding:2px 6px;color:#9ca3af;font-size:10px;">${it.hours ? Number(it.hours).toFixed(1)+' h' : ''}</td>
+                      <td style="padding:2px 0;text-align:right;color:#111827;font-size:11px;font-weight:600;">${money(it.cost_usd)}</td>
+                    </tr>`).join('');
+                return `
+                <details style="margin-top:6px;padding:6px 8px;background:#f9fafb;border-left:3px solid #cbd5e1;border-radius:4px;">
+                  <summary style="cursor:pointer;font-size:11px;font-weight:700;color:#374151;">
+                    ${title} <span style="float:right;color:#059669;">${money(totalUsd)}</span>
+                  </summary>
+                  <table style="width:100%;margin-top:6px;border-collapse:collapse;">
+                    <tbody>${rows}</tbody>
+                    <tfoot>
+                      <tr style="border-top:1px solid #e5e7eb;">
+                        <td colspan="2" style="padding-top:4px;font-size:11px;font-weight:800;color:#111827;">${T('Ukupno','Subtotal')}</td>
+                        <td style="padding-top:4px;text-align:right;font-size:11px;font-weight:800;color:#059669;">${money(totalUsd)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </details>`;
+            };
+
             const items = plan.legs.map((leg, i) => {
                 const color = leg.kind === 'sea' ? '#10b981' : (leg.kind === 'air' ? '#f59e0b' : '#3b82f6');
                 const icon = leg.kind === 'sea' ? 'fa-ship' : (leg.kind === 'air' ? 'fa-plane' : 'fa-truck');
 
                 let extras = '';
-                // Truck etapa: prikaži broj kamiona, border-crossing
+                // ---------- ROAD etapa ----------
                 if (leg.kind === 'road') {
-                    if (leg.trucks_needed && leg.trucks_needed > 1) {
-                        extras += `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">🚛 ${leg.trucks_needed}× ${T('kamiona (24t FTL)','trucks (24t FTL)')}</div>`;
+                    if (leg.trailer_type) {
+                        extras += `<div style="font-size:11px;color:#4b5563;margin-top:4px;padding:4px 8px;background:#eff6ff;border-radius:6px;border-left:3px solid #3b82f6;">
+                            🚛 <b>${escapeHtml(leg.trailer_type.display_name)}</b> · ${leg.trailer_type.capacity_tons} t cap.
+                            ${leg.trucks_needed && leg.trucks_needed > 1 ? `<span style="color:#dc2626;font-weight:700;"> × ${leg.trucks_needed}</span>` : ''}
+                            <div style="margin-top:2px;color:#9ca3af;font-size:10px;font-style:italic;">${escapeHtml(leg.trailer_type.notes || '')}</div>
+                        </div>`;
                     }
                     if (leg.border_crossing_hours) {
                         extras += `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">🛂 + ${leg.border_crossing_hours}h ${T('carina/granica','border crossing')}</div>`;
                     }
+                    if (leg.cost_breakdown_items) {
+                        extras += renderCostItems(
+                            `<i class="fa-solid fa-truck-fast"></i> ${T('Detalji drumskih troškova','Road cost detail')}`,
+                            leg.cost_breakdown_items, leg.cost_breakdown_total);
+                    }
                 }
-                // Sea etapa: raspored dwell-a po luci
+                // ---------- SEA etapa ----------
                 if (leg.kind === 'sea') {
                     if (leg.origin_port) {
-                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f9fafb;border-radius:6px;">
-                            <b>${escapeHtml(leg.origin_port.name)}</b> (${escapeHtml(leg.origin_port.unlocode || '')})${tierBadge(leg.origin_port.tier)}
-                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${leg.origin_port.dwell_hours}h ${T('utovar + carina','loading + customs')}</div>
-                            ${leg.origin_port.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(leg.origin_port.notes)}</div>` : ''}
+                        const op = leg.origin_port;
+                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f0fdf4;border-radius:6px;border-left:3px solid #10b981;">
+                            🚢 <b>${escapeHtml(op.name)}</b> (${escapeHtml(op.unlocode || '')})${tierBadge(op.tier)}
+                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${op.dwell_hours}h · 💵 ${money(op.charges_usd)} ${T('port fees','port fees')}</div>
+                            ${op.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(op.notes)}</div>` : ''}
+                            ${renderCostItems(`${T('Detalji naknada u polaznoj luci','Origin port fee detail')}`, op.charges_breakdown, op.charges_usd)}
                         </div>`;
+                    }
+                    // Canal passages
+                    if (leg.canal_passages && leg.canal_passages.length) {
+                        const cRows = leg.canal_passages.map(cp => `
+                          <div style="padding:6px 8px;margin-top:4px;background:#fef9c3;border-left:3px solid #eab308;border-radius:6px;">
+                            <div style="font-size:11px;color:#713f12;font-weight:800;">
+                              ⚓ ${escapeHtml(cp.display_name)} (${escapeHtml(cp.country)})
+                              <span style="float:right;color:#059669;">${money(cp.fee_usd)}</span>
+                            </div>
+                            <div style="font-size:10px;color:#78350f;margin-top:2px;">
+                              🕒 ${cp.transit_hours}h ${T('tranzit','transit')} + ${cp.wait_hours}h ${T('čekanje konvoja','convoy wait')}
+                            </div>
+                            <div style="font-size:10px;color:#a16207;margin-top:2px;font-style:italic;">${escapeHtml(cp.notes || '')}</div>
+                          </div>`).join('');
+                        extras += `<div style="margin-top:4px;">
+                            <div style="font-size:11px;font-weight:800;color:#713f12;">${T('Kanali i tesnaci na ruti','Canals & straits on route')}</div>
+                            ${cRows}
+                          </div>`;
                     }
                     if (leg.destination_port) {
-                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f9fafb;border-radius:6px;">
-                            <b>${escapeHtml(leg.destination_port.name)}</b> (${escapeHtml(leg.destination_port.unlocode || '')})${tierBadge(leg.destination_port.tier)}
-                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${leg.destination_port.dwell_hours}h ${T('istovar + carina','discharge + customs')}</div>
-                            ${leg.destination_port.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(leg.destination_port.notes)}</div>` : ''}
+                        const dp = leg.destination_port;
+                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:4px;padding:6px 8px;background:#f0fdf4;border-radius:6px;border-left:3px solid #10b981;">
+                            🚢 <b>${escapeHtml(dp.name)}</b> (${escapeHtml(dp.unlocode || '')})${tierBadge(dp.tier)}
+                            <div style="margin-top:2px;color:#9ca3af;">⏱ ${dp.dwell_hours}h · 💵 ${money(dp.charges_usd)} ${T('port fees','port fees')}</div>
+                            ${dp.notes ? `<div style="margin-top:2px;color:#78716c;font-style:italic;">${escapeHtml(dp.notes)}</div>` : ''}
+                            ${renderCostItems(`${T('Detalji naknada u odredišnoj luci','Destination port fee detail')}`, dp.charges_breakdown, dp.charges_usd)}
                         </div>`;
                     }
-                    if (leg.via_waypoints && leg.via_waypoints.length) {
-                        extras += `<div style="font-size:11px;color:#6b7280;margin-top:3px;">${T('Preko','Via')}: ${leg.via_waypoints.map(w => escapeHtml(w)).join(' → ')}</div>`;
-                    }
                 }
-                // Air etapa
+                // ---------- AIR etapa ----------
                 if (leg.kind === 'air') {
+                    if (leg.aircraft_type) {
+                        extras += `<div style="font-size:11px;color:#4b5563;margin-top:4px;padding:4px 8px;background:#fff7ed;border-radius:6px;border-left:3px solid #f59e0b;">
+                            ✈️ <b>${escapeHtml(leg.aircraft_type.display_name)}</b> · ${leg.aircraft_type.capacity_tons} t cap.
+                            <div style="margin-top:2px;color:#9ca3af;font-size:10px;font-style:italic;">${escapeHtml(leg.aircraft_type.notes || '')}</div>
+                        </div>`;
+                    }
                     if (leg.airport_dwell_hours) {
                         extras += `<div style="font-size:11px;color:#9ca3af;margin-top:2px;">⏱ + ${leg.airport_dwell_hours}h ${T('cutoff/handling/carina','cutoff/handling/customs')}</div>`;
+                    }
+                    if (leg.cost_breakdown_items) {
+                        extras += renderCostItems(
+                            `<i class="fa-solid fa-plane-departure"></i> ${T('Detalji vazdušnih troškova','Air cost detail')}`,
+                            leg.cost_breakdown_items, leg.cost_breakdown_total);
                     }
                 }
 
@@ -628,6 +738,28 @@
                   ${extras}
                 </div>`;
             }).join('');
+
+            // Total cost breakdown block (summary of all cost buckets)
+            let costTotalsBlock = '';
+            if (plan.cost_breakdown_usd && Object.keys(plan.cost_breakdown_usd).length) {
+                const cbRows = Object.entries(plan.cost_breakdown_usd).map(([k,v]) => `
+                    <tr>
+                      <td style="padding:3px 8px 3px 0;color:#4b5563;font-size:12px;">${escapeHtml(k.replace(/_/g,' ').replace(/\\b(usd|Usd)$/,'').trim())}</td>
+                      <td style="padding:3px 0;text-align:right;color:#111827;font-size:12px;font-weight:700;">${money(v)}</td>
+                    </tr>`).join('');
+                costTotalsBlock = `
+                <div style="margin:16px 0 8px 0;padding:10px 12px;background:linear-gradient(135deg,#ecfdf5 0%,#d1fae5 100%);border:1px solid #6ee7b7;border-radius:10px;">
+                  <div style="font-size:11px;font-weight:800;color:#065f46;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;">
+                    <i class="fa-solid fa-receipt"></i> ${T('Ukupni troškovi po kategoriji','Total cost by category')}
+                  </div>
+                  <table style="width:100%;border-collapse:collapse;"><tbody>${cbRows}</tbody>
+                    <tfoot><tr style="border-top:2px solid #059669;">
+                      <td style="padding-top:6px;font-size:13px;font-weight:900;color:#065f46;">${T('SVE UKUPNO','GRAND TOTAL')}</td>
+                      <td style="padding-top:6px;text-align:right;font-size:14px;font-weight:900;color:#065f46;">${money(plan.estimated_cost_usd)}</td>
+                    </tr></tfoot>
+                  </table>
+                </div>`;
+            }
             // Vessel recommendations — samo za sea mod plan
             const seaLeg = plan.legs.find(l => l.kind === 'sea');
             const vessels = (plan.vessel_recommendations || []);
@@ -666,11 +798,102 @@
             }
 
             el.innerHTML = `
-              <h3 style="font-size:13px;font-weight:700;color:#111827;margin:0 0 12px 0;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid #e5e7eb;padding-bottom:8px;">
-                <i class="fa-solid fa-timeline"></i> ${T('Etape transporta','Transport timeline')}
-              </h3>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 12px 0;border-bottom:1px solid #e5e7eb;padding-bottom:8px;">
+                <h3 style="font-size:13px;font-weight:700;color:#111827;text-transform:uppercase;letter-spacing:.06em;margin:0;">
+                  <i class="fa-solid fa-timeline"></i> ${T('Etape transporta','Transport timeline')}
+                </h3>
+                <button id="logi-replay" type="button" title="${T('Ponovi animaciju','Replay animation')}"
+                  style="background:#3b82f6;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer;display:flex;align-items:center;gap:5px;">
+                  <i class="fa-solid fa-rotate-right"></i> ${T('Ponovi animaciju','Replay')}
+                </button>
+              </div>
               ${items}
+              <div id="logi-weather" style="margin-top:14px;"></div>
+              ${costTotalsBlock}
               ${vesselsBlock}`;
+            const replayBtn = el.querySelector('#logi-replay');
+            if (replayBtn) {
+                replayBtn.addEventListener('click', () => {
+                    if (animRequest) cancelAnimationFrame(animRequest);
+                    drawPlan(plan);
+                });
+            }
+            // Weather forecast at origin + destination (best-effort, async)
+            (async function loadWeather() {
+                const wxBox = el.querySelector('#logi-weather');
+                if (!wxBox) return;
+                const firstLeg = plan.legs[0];
+                const lastLeg = plan.legs[plan.legs.length - 1];
+                if (!firstLeg || !lastLeg) return;
+                const oLat = firstLeg.from[0], oLon = firstLeg.from[1];
+                const dLat = lastLeg.to[0], dLon = lastLeg.to[1];
+                const isPortal = (opts.apiBase || '').includes('/portal/');
+                const wxUrl = isPortal ? '/api/geo/portal/weather' : '/api/geo/weather';
+                wxBox.innerHTML = `<div style="font-size:11px;color:#94a3b8;">⛅ ${T('Učitavam vremensku prognozu…','Loading weather forecast…')}</div>`;
+                const wcodeIcon = c => {
+                    if (c == null) return '·';
+                    if (c === 0) return '☀️';
+                    if (c <= 3) return '⛅';
+                    if (c <= 48) return '🌫';
+                    if (c <= 67) return '🌧';
+                    if (c <= 77) return '❄️';
+                    if (c <= 82) return '🌧';
+                    if (c <= 86) return '🌨';
+                    if (c <= 99) return '⛈';
+                    return '·';
+                };
+                const wcodeText = c => {
+                    if (c == null) return '';
+                    if (c === 0) return T('Vedro','Clear');
+                    if (c <= 3) return T('Delimično oblačno','Partly cloudy');
+                    if (c <= 48) return T('Magla','Fog');
+                    if (c <= 67) return T('Kiša','Rain');
+                    if (c <= 77) return T('Sneg','Snow');
+                    if (c <= 82) return T('Pljusak','Showers');
+                    if (c <= 86) return T('Sneg pljuskovito','Snow showers');
+                    if (c <= 99) return T('Grmljavina','Thunderstorm');
+                    return '';
+                };
+                async function fetchAt(lat, lon) {
+                    try {
+                        const r = await fetch(`${wxUrl}?lat=${lat}&lon=${lon}&days=3`);
+                        if (!r.ok) return null;
+                        return await r.json();
+                    } catch (_) { return null; }
+                }
+                const [oWx, dWx] = await Promise.all([fetchAt(oLat, oLon), fetchAt(dLat, dLon)]);
+                const renderCard = (title, wx) => {
+                    if (!wx) return `<div style="padding:8px;font-size:11px;color:#9ca3af;background:#f9fafb;border-radius:6px;">${title}: ${T('nedostupno','unavailable')}</div>`;
+                    const c = wx.current || {};
+                    const daysHtml = (wx.daily || []).slice(0, 3).map(d => `
+                        <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;padding:2px 0;color:#4b5563;">
+                            <span>${d.date ? d.date.slice(5) : ''}</span>
+                            <span>${wcodeIcon(d.weather_code)}</span>
+                            <span>${d.tmin_c != null ? Math.round(d.tmin_c) : '?'}° / ${d.tmax_c != null ? Math.round(d.tmax_c) : '?'}°</span>
+                            <span style="color:#3b82f6;">${d.precip_mm != null ? d.precip_mm.toFixed(1) : '0.0'} mm</span>
+                            <span style="color:#f59e0b;">💨 ${d.wind_max_kmh != null ? Math.round(d.wind_max_kmh) : '?'} km/h</span>
+                        </div>`).join('');
+                    return `
+                        <div style="padding:8px 10px;background:#f0f9ff;border-left:3px solid #0ea5e9;border-radius:6px;">
+                            <div style="font-size:11px;font-weight:800;color:#0c4a6e;margin-bottom:4px;">${title}</div>
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                                <span style="font-size:24px;">${wcodeIcon(c.weather_code)}</span>
+                                <span style="font-size:20px;font-weight:800;color:#0c4a6e;">${c.temperature_c != null ? Math.round(c.temperature_c) : '?'}°C</span>
+                                <span style="font-size:11px;color:#0369a1;">${wcodeText(c.weather_code)}</span>
+                            </div>
+                            <div style="font-size:10px;color:#0369a1;margin-bottom:4px;">💨 ${c.wind_kmh != null ? Math.round(c.wind_kmh) : '?'} km/h${c.precipitation_mm ? ` · 🌧 ${c.precipitation_mm} mm` : ''}</div>
+                            <div style="border-top:1px dashed #bae6fd;margin-top:6px;padding-top:4px;">${daysHtml}</div>
+                        </div>`;
+                };
+                wxBox.innerHTML = `
+                    <h3 style="font-size:12px;font-weight:700;color:#111827;text-transform:uppercase;letter-spacing:.06em;margin:0 0 6px 0;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">
+                      <i class="fa-solid fa-cloud-sun"></i> ${T('Prognoza duž rute (open-meteo)','Weather along route (open-meteo)')}
+                    </h3>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                        ${renderCard(T('Polazište','Origin'), oWx)}
+                        ${renderCard(T('Odredište','Destination'), dWx)}
+                    </div>`;
+            })();
         }
 
         // -------- AUTOCOMPLETE + AUTO-DETECT --------
