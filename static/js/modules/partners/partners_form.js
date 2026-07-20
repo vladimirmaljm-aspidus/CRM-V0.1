@@ -49,7 +49,14 @@ function showPartnerForm(id=null){
       </div>
       
       <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div><label class="block text-sm font-bold text-main">${Utils.t('fields.taxId')}</label><input name="taxId" class="form-input mt-1" value="${Utils.escapeHtml(item.taxId || '')}" /></div>
+          <div>
+              <label class="block text-sm font-bold text-main">${Utils.t('fields.taxId')}</label>
+              <div class="flex gap-1 mt-1">
+                  <input name="taxId" id="partner-tax-id" class="form-input flex-1" value="${Utils.escapeHtml(item.taxId || '')}" placeholder="e.g. DE123456789" />
+                  <button type="button" id="partner-vies-check" class="bg-blue-500 hover:bg-blue-600 text-white text-xs font-bold px-2 py-1 rounded" title="Validate on EU VIES">🇪🇺</button>
+              </div>
+              <div id="partner-vies-status" class="text-xs mt-1" style="min-height:1em;"></div>
+          </div>
           <div><label class="block text-sm font-bold text-main">${Utils.t('fields.regNumber')}</label><input name="regNumber" class="form-input mt-1" value="${Utils.escapeHtml(item.regNumber || '')}" /></div>
           <div>
               <label class="block text-sm font-bold text-main">${tLang('Izvor / Preporuka', 'Lead Source')}</label>
@@ -167,6 +174,51 @@ function showPartnerForm(id=null){
     });
     
     const form = document.getElementById('partner-form');
+
+    // VIES VAT validation button
+    const viesBtn = document.getElementById('partner-vies-check');
+    const taxInp = document.getElementById('partner-tax-id');
+    const viesStatus = document.getElementById('partner-vies-status');
+    if (viesBtn && taxInp && viesStatus) {
+        viesBtn.addEventListener('click', async () => {
+            const raw = (taxInp.value || '').trim();
+            if (!raw) { viesStatus.textContent = 'Enter VAT number first (e.g. DE123456789)'; viesStatus.style.color = '#dc2626'; return; }
+            viesBtn.disabled = true;
+            viesStatus.textContent = '⏳ Querying VIES…';
+            viesStatus.style.color = '#6b7280';
+            try {
+                const res = await fetch('/api/geo/vat/validate', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({vat_number: raw}),
+                });
+                const j = await res.json();
+                if (j.valid) {
+                    viesStatus.innerHTML = `✓ <strong>Valid</strong> — ${Utils.escapeHtml(j.name || '')} · ${Utils.escapeHtml(j.address || '')}`;
+                    viesStatus.style.color = '#059669';
+                    // Auto-fill company name if empty
+                    const nameInp = form.querySelector('[name="companyName"]');
+                    if (nameInp && !nameInp.value && j.name) nameInp.value = j.name;
+                } else if (j.error === 'service_unavailable') {
+                    viesStatus.textContent = '⚠ VIES temporarily unreachable — try again in a moment';
+                    viesStatus.style.color = '#a16207';
+                } else if (j.reason === 'non_eu_country') {
+                    viesStatus.textContent = `ℹ ${j.message}`;
+                    viesStatus.style.color = '#a16207';
+                } else if (j.reason === 'bad_format') {
+                    viesStatus.textContent = `✗ ${j.message}`;
+                    viesStatus.style.color = '#dc2626';
+                } else {
+                    viesStatus.textContent = '✗ VAT number not found in VIES';
+                    viesStatus.style.color = '#dc2626';
+                }
+            } catch (e) {
+                viesStatus.textContent = '✗ Network error: ' + (e.message || e);
+                viesStatus.style.color = '#dc2626';
+            }
+            viesBtn.disabled = false;
+        });
+    }
+
     form.querySelectorAll('input[name="entityType"]').forEach(r => r.addEventListener('change', (e) => {
         if(e.target.value === 'person') {
             document.getElementById('linked-company-wrapper').classList.remove('hidden');
