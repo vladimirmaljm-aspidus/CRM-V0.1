@@ -1101,6 +1101,17 @@ class T16EmailQueue(BaseCase):
 
     def setUp(self):
         self._login_admin()
+        # Hermetic: wipe all queue rows so ordering of tests doesn't leak
+        # 'pending' rows between test methods.
+        import sqlite3
+        from config import DB_FILE
+        try:
+            conn = sqlite3.connect(DB_FILE, timeout=15)
+            conn.execute('CREATE TABLE IF NOT EXISTS email_queue (id TEXT PRIMARY KEY, recipient TEXT)')
+            conn.execute('DELETE FROM email_queue')
+            conn.commit(); conn.close()
+        except Exception:
+            pass
 
     def test_01_queue_endpoint(self):
         r = self.client.get('/api/comms/email_queue')
@@ -1129,6 +1140,194 @@ class T16EmailQueue(BaseCase):
         self.assertTrue(rows)
         self.assertEqual(rows[0][1], 3)   # attempts
         self.assertEqual(rows[0][2], 'pending')
+
+    def test_04_no_double_send_under_success(self):
+        """REGRESSION (v22): iako proces zove queue N puta u kratkom periodu,
+        svaki mejl se šalje TAČNO JEDNOM.
+
+        Pre v22 fix-a, uspesni sendovi su commit-ovani na kraju loop-a što je
+        pod DB lock-om moglo da ne prođe; sledeći tick ih je opet slao. Testom
+        forsiramo _send_email da vrati ok, pa zovemo process_email_queue 5x i
+        proveravamo da je poziv _send_email tačno 1 na testni red."""
+        import sqlite3
+        from unittest.mock import patch
+        import utils_email
+        from utils_email import _park_in_queue, process_email_queue
+        from config import DB_FILE
+
+        # čist state za ovaj test
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("DELETE FROM email_queue WHERE recipient='regression-once@example.com'")
+        conn.commit(); conn.close()
+
+        _park_in_queue('regression-once@example.com', 'once-only', 'body', '', None, 'setup')
+
+        call_count = {'n': 0}
+        def fake_send(*a, **kw):
+            call_count['n'] += 1
+            return (True, None)
+
+        with patch.object(utils_email, '_send', side_effect=fake_send):
+            for _ in range(5):
+                process_email_queue(max_batch=10)
+
+        # Očekivano: _send_email zvan tačno 1 put (ne 5, ne 50)
+        self.assertEqual(call_count['n'], 1, f'expected 1 send, got {call_count["n"]}')
+
+        # I red mora biti u status='sent'
+        conn = sqlite3.connect(DB_FILE)
+        row = conn.execute(
+            "SELECT status FROM email_queue WHERE recipient=?",
+            ('regression-once@example.com',)
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row[0], 'sent')
+
+    def test_05_stuck_sending_row_recovers(self):
+        """Ako je red zaključan u 'sending' status duže od 5 min (crash mid-send),
+        sledeći worker MORA da ga vrati u 'pending' i pokuša ponovo."""
+        import sqlite3, uuid
+        from datetime import datetime, timezone, timedelta
+        from unittest.mock import patch
+        import utils_email
+        from utils_email import process_email_queue, _ensure_queue_schema
+        from config import DB_FILE
+
+        # Ubaci direktno red u status='sending' sa starim timestamp-om
+        row_id = str(uuid.uuid4())
+        old_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat().replace('+00:00','Z')
+        now_ts = datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+
+        conn = sqlite3.connect(DB_FILE); _ensure_queue_schema(conn)
+        conn.execute("DELETE FROM email_queue WHERE recipient='stuck@example.com'")
+        conn.execute(
+            "INSERT INTO email_queue (id, recipient, subject, plain_body, html_body, "
+            "attachments_ref, attempts, queued_at, next_retry_at, status, "
+            "sending_started_at, worker_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (row_id, 'stuck@example.com', 'stuck', 'b', '', '[]',
+             0, old_ts, old_ts, 'sending', old_ts, 'w-crashed')
+        )
+        conn.commit(); conn.close()
+
+        sent = {'n': 0}
+        with patch.object(utils_email, '_send',
+                          side_effect=lambda *a, **kw: (sent.update(n=sent['n']+1) or (True, None))):
+            process_email_queue(max_batch=5)
+
+        # Red je bio 'sending' → recovery ga vratio na 'pending' → send se izvršio 1x
+        self.assertEqual(sent['n'], 1)
+        conn = sqlite3.connect(DB_FILE)
+        st = conn.execute("SELECT status FROM email_queue WHERE id=?", (row_id,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(st, 'sent')
+
+    def test_06_dead_after_max_attempts(self):
+        """Posle 8 neuspešnih pokušaja red mora ići u 'dead' status i cron ga
+        više ne pokušava (spec of _MAX_ATTEMPTS)."""
+        import sqlite3, uuid
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+        import utils_email
+        from utils_email import process_email_queue, _ensure_queue_schema
+        from config import DB_FILE
+
+        row_id = str(uuid.uuid4())
+        now_ts = datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+        conn = sqlite3.connect(DB_FILE); _ensure_queue_schema(conn)
+        conn.execute("DELETE FROM email_queue WHERE recipient='dying@example.com'")
+        conn.execute(
+            "INSERT INTO email_queue (id, recipient, subject, plain_body, html_body, "
+            "attachments_ref, attempts, queued_at, next_retry_at, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (row_id, 'dying@example.com', 's', 'b', '', '[]',
+             8, now_ts, now_ts, 'pending')   # već na 8 attempts
+        )
+        conn.commit(); conn.close()
+
+        with patch.object(utils_email, '_send',
+                          side_effect=lambda *a, **kw: (False, 'perma-fail')):
+            process_email_queue(max_batch=5)
+
+        conn = sqlite3.connect(DB_FILE)
+        st = conn.execute("SELECT status FROM email_queue WHERE id=?", (row_id,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(st, 'dead')
+
+    def test_07_parallel_workers_no_double_pickup(self):
+        """Dva paralelna poziva process_email_queue u istom procesu MORAJU da
+        obrade jedan red samo jednom (threading.Lock guard)."""
+        import sqlite3, threading
+        from unittest.mock import patch
+        import utils_email
+        from utils_email import _park_in_queue, process_email_queue
+        from config import DB_FILE
+
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("DELETE FROM email_queue WHERE recipient='parallel@example.com'")
+        conn.commit(); conn.close()
+        _park_in_queue('parallel@example.com', 's', 'b', '', None, 'setup')
+
+        sends = {'n': 0}
+        def slow_send(*a, **kw):
+            import time
+            time.sleep(0.4)
+            sends['n'] += 1
+            return (True, None)
+
+        with patch.object(utils_email, '_send', side_effect=slow_send):
+            t1 = threading.Thread(target=lambda: process_email_queue(max_batch=5))
+            t2 = threading.Thread(target=lambda: process_email_queue(max_batch=5))
+            t1.start(); t2.start(); t1.join(); t2.join()
+
+        self.assertEqual(sends['n'], 1)
+
+
+class T17MagicLink(BaseCase):
+    """Magic-link token minting + verify + single-use enforcement."""
+
+    def test_01_mint_and_verify_ok(self):
+        from magic_link import mint, verify, _ensure_jti_table
+        _ensure_jti_table()
+        tok = 'test-portal-token-abc'
+        ml = mint(tok, ttl_minutes=15)
+        ok, reason = verify(ml, expected_portal_token=tok, client_ip='1.2.3.4')
+        self.assertTrue(ok, f'Expected ok, got {reason}')
+
+    def test_02_single_use_rejects_replay(self):
+        from magic_link import mint, verify
+        tok = 'test-portal-token-single-use'
+        ml = mint(tok, ttl_minutes=15)
+        ok1, _ = verify(ml, expected_portal_token=tok, client_ip='1.2.3.4')
+        ok2, reason2 = verify(ml, expected_portal_token=tok, client_ip='1.2.3.4')
+        self.assertTrue(ok1)
+        self.assertFalse(ok2)
+        self.assertEqual(reason2, 'already_used')
+
+    def test_03_expired_rejected(self):
+        from magic_link import mint, verify
+        tok = 'test-portal-token-exp'
+        ml = mint(tok, ttl_minutes=-1)   # već istekao
+        ok, reason = verify(ml, expected_portal_token=tok)
+        self.assertFalse(ok)
+        self.assertEqual(reason, 'expired')
+
+    def test_04_wrong_token_rejected(self):
+        from magic_link import mint, verify
+        ml = mint('one-token', ttl_minutes=15)
+        ok, reason = verify(ml, expected_portal_token='different-token')
+        self.assertFalse(ok)
+        self.assertEqual(reason, 'token_mismatch')
+
+    def test_05_tampered_signature_rejected(self):
+        from magic_link import mint, verify
+        tok = 'test-portal-token-tamper'
+        ml = mint(tok, ttl_minutes=15)
+        p, s = ml.split('.', 1)
+        # Flipuj jedan char signature-a
+        tampered_s = ('B' if s[0] != 'B' else 'C') + s[1:]
+        ok, reason = verify(f'{p}.{tampered_s}', expected_portal_token=tok)
+        self.assertFalse(ok)
+        self.assertEqual(reason, 'bad_signature')
 
 
 def main():
