@@ -1,22 +1,29 @@
-"""Outbound chat webhooks — Slack + Microsoft Teams.
+"""Outbound chat notifications — Slack + Teams + Telegram + ntfy.sh + WhatsApp.
 
-Both platforms accept a simple JSON POST to a per-channel incoming
-webhook URL configured in their admin. This module posts consistent
-messages on interesting events (offer accepted, KYC submitted,
-document signed, sanctions flag, deal created).
+Every platform accepts a simple JSON POST. This module dispatches
+identical event messages to all configured channels so operator gets a
+notification wherever they read chat (Slack for team, Telegram for
+mobile push, ntfy for on-call, WhatsApp Cloud for external partners).
 
-Never blocks the main flow — every send is best-effort, network
-failures are logged but the caller does not see them.
+Never blocks the main flow — every send is best-effort in a background
+thread; failures are logged but do not surface to caller.
 
-Config source is settings.chatWebhooks:
+Config source is settings.chatWebhooks (encrypted):
     {
-        "slack": "https://hooks.slack.com/services/T00/B00/xxxx",
-        "teams": "https://outlook.office.com/webhook/...",
+        "slack":   "https://hooks.slack.com/services/T00/B00/xxxx",
+        "teams":   "https://outlook.office.com/webhook/...",
+        "telegram_bot_token": "1234567:AAxxxx",
+        "telegram_chat_id":   "-1001234567890",
+        "ntfy_url":           "https://ntfy.sh/aspidus-alerts-<secret>",
+        "whatsapp_phone_id":  "1234567890",   (Meta Business Cloud API)
+        "whatsapp_token":     "EAAxxxx...",
+        "whatsapp_to":        "+38160xxxxxxx",
         "events": ["offer_accepted","kyc_submitted","document_signed",
-                    "sanctions_flag","deal_created","offer_declined"]
+                   "sanctions_flag","deal_created","offer_declined"]
     }
 Only events listed in `events` array are delivered — admin can pick a
-subset (e.g. only sanctions_flag) via the Settings UI.
+subset (e.g. only sanctions_flag → Telegram for immediate personal push)
+via the Settings UI.
 """
 import json
 import logging
@@ -128,8 +135,108 @@ def _event_style(event):
     return styles.get(event, (event.replace('_', ' ').title(), '#6b7280', '📌'))
 
 
+def _format_plain(event, ctx):
+    """Plain-text format za Telegram/ntfy/WhatsApp — jedan blok, novi red po polju."""
+    title, _c, emoji = _event_style(event)
+    lines = [f'{emoji} {title}', '']
+    for k, v in (ctx or {}).items():
+        if v in (None, ''): continue
+        lines.append(f'{k}: {v}')
+    return '\n'.join(lines)
+
+
+def _post_telegram(cfg, event, context):
+    """Telegram Bot API — potpuno besplatno, bez limita za personalne botove.
+    Bot se pravi kod @BotFather, chat_id se dobija tako što se pošalje /start
+    botu pa GET https://api.telegram.org/bot<token>/getUpdates ."""
+    token = str(cfg.get('telegram_bot_token', '')).strip()
+    chat_id = str(cfg.get('telegram_chat_id', '')).strip()
+    if not token or not chat_id:
+        return
+    text = _format_plain(event, context)
+    _post(f'https://api.telegram.org/bot{token}/sendMessage', {
+        'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown',
+        'disable_web_page_preview': True,
+    })
+
+
+def _post_ntfy(cfg, event, context):
+    """ntfy.sh — jednostavan push notifikacijski servis. Besplatna javna
+    instanca ntfy.sh; može i self-host. Aplikacija na telefonu (Android/iOS)
+    subscribe-uje topic i dobija push."""
+    url = str(cfg.get('ntfy_url', '')).strip()
+    if not url or not url.startswith('http'):
+        return
+    title, color_hex, emoji = _event_style(event)
+    # ntfy koristi headere za title/priority/tags — telo je body poruke
+    body = _format_plain(event, context).encode('utf-8')
+    # 'sanctions_flag' i 'kyc_submitted' su prioritetni — telefon će zvoniti čak i u DND
+    priority = '5' if event in ('sanctions_flag',) else '4' if event in ('kyc_submitted','offer_accepted') else '3'
+    try:
+        req = urllib.request.Request(url, data=body, headers={
+            'Title': title[:180],
+            'Priority': priority,
+            'Tags': emoji,
+            'User-Agent': 'AspidusCRM/1.0 ntfy',
+        })
+        with urllib.request.urlopen(req, timeout=5) as _r:
+            pass
+    except Exception as e:
+        logger.warning('ntfy POST failed: %s', e)
+
+
+def _post_whatsapp(cfg, event, context):
+    """WhatsApp Business Cloud API (Meta) — 1000 razgovora/mesec besplatno.
+    phone_id i access_token se dobijaju iz developers.facebook.com > WhatsApp
+    setup. `to` je broj u E.164 formatu (npr. +38160xxxxxxx)."""
+    phone_id = str(cfg.get('whatsapp_phone_id', '')).strip()
+    token = str(cfg.get('whatsapp_token', '')).strip()
+    to = str(cfg.get('whatsapp_to', '')).strip().replace('+', '')
+    if not (phone_id and token and to):
+        return
+    text = _format_plain(event, context)
+    _post(f'https://graph.facebook.com/v18.0/{phone_id}/messages', {
+        'messaging_product': 'whatsapp',
+        'to': to,
+        'type': 'text',
+        'text': {'body': text[:4000]},
+    })
+    # Bearer header — na _post koji koristi urllib moramo custom
+    # ali _post ne pusta headere, pa direktan poziv:
+
+
+def _post_whatsapp_impl(cfg, event, context):
+    """Full impl sa Bearer autorizacijom (mora custom header)."""
+    phone_id = str(cfg.get('whatsapp_phone_id', '')).strip()
+    token = str(cfg.get('whatsapp_token', '')).strip()
+    to = str(cfg.get('whatsapp_to', '')).strip().replace('+', '')
+    if not (phone_id and token and to):
+        return
+    text = _format_plain(event, context)
+    body = json.dumps({
+        'messaging_product': 'whatsapp',
+        'to': to,
+        'type': 'text',
+        'text': {'body': text[:4000]},
+    }).encode('utf-8')
+    try:
+        req = urllib.request.Request(
+            f'https://graph.facebook.com/v18.0/{phone_id}/messages',
+            data=body,
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+                'User-Agent': 'AspidusCRM/1.0 whatsapp',
+            },
+        )
+        with urllib.request.urlopen(req, timeout=6):
+            pass
+    except Exception as e:
+        logger.warning('whatsapp POST failed: %s', e)
+
+
 def notify(event, context=None):
-    """Public API — pošalji obaveštenje o događaju na sve konfigurisane webhook-e.
+    """Public API — pošalji obaveštenje o događaju na sve konfigurisane kanale.
     Nikad ne diže — greške samo idu u log. Slanje se dešava u background thread-u
     da bi glavni HTTP odgovor bio brz."""
     def _worker():
@@ -144,6 +251,13 @@ def notify(event, context=None):
             _post(slack_url, _format_slack(event, context))
         if teams_url.startswith('http'):
             _post(teams_url, _format_teams(event, context))
+        # Novi kanali
+        try: _post_telegram(cfg, event, context)
+        except Exception as e: logger.warning('telegram push failed: %s', e)
+        try: _post_ntfy(cfg, event, context)
+        except Exception as e: logger.warning('ntfy push failed: %s', e)
+        try: _post_whatsapp_impl(cfg, event, context)
+        except Exception as e: logger.warning('whatsapp push failed: %s', e)
 
     try:
         threading.Thread(target=_worker, daemon=True).start()

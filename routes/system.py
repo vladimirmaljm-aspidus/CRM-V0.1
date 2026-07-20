@@ -255,6 +255,114 @@ def set_otp_delivery():
     return jsonify({"status": "success", "provider": provider})
 
 
+@system_bp.route('/chat_webhooks', methods=['GET'])
+@login_required
+def get_chat_webhooks():
+    """Redigovan pregled — API tokeni se ne otkrivaju."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    import sqlite3
+    from utils import decrypt_data
+    cfg = {}
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key='chatWebhooks'").fetchone()
+            if row and row[0]:
+                try: cfg = decrypt_data(row[0]) or {}
+                except Exception: cfg = {}
+    except Exception:
+        pass
+    def _mask(s):
+        s = str(s or '')
+        return (s[:8] + '…' + s[-4:]) if len(s) > 15 else ('•' * len(s))
+    return jsonify({
+        'slack': cfg.get('slack', ''),   # URL nije tajna, samo znak da je konfigurisano
+        'teams': cfg.get('teams', ''),
+        'telegram_bot_token': _mask(cfg.get('telegram_bot_token', '')) if cfg.get('telegram_bot_token') else '',
+        'telegram_chat_id': cfg.get('telegram_chat_id', ''),
+        'ntfy_url': cfg.get('ntfy_url', ''),
+        'whatsapp_phone_id': cfg.get('whatsapp_phone_id', ''),
+        'whatsapp_token': _mask(cfg.get('whatsapp_token', '')) if cfg.get('whatsapp_token') else '',
+        'whatsapp_to': cfg.get('whatsapp_to', ''),
+        'events': cfg.get('events', ['offer_accepted','offer_declined','kyc_submitted',
+                                     'sanctions_flag','deal_created','document_signed']),
+        'has_slack': bool(cfg.get('slack')),
+        'has_teams': bool(cfg.get('teams')),
+        'has_telegram': bool(cfg.get('telegram_bot_token') and cfg.get('telegram_chat_id')),
+        'has_ntfy': bool(cfg.get('ntfy_url')),
+        'has_whatsapp': bool(cfg.get('whatsapp_token') and cfg.get('whatsapp_phone_id')),
+    })
+
+
+@system_bp.route('/chat_webhooks', methods=['POST'])
+@login_required
+def set_chat_webhooks():
+    """Snima chat notifikacijsku konfiguraciju. Sve tajne se enkriptuju."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    import sqlite3
+    from utils import decrypt_data
+    from webhooks import clear_cache
+
+    payload = request.get_json(silent=True) or {}
+    existing = {}
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key='chatWebhooks'").fetchone()
+            if row and row[0]:
+                try: existing = decrypt_data(row[0]) or {}
+                except Exception: existing = {}
+    except Exception:
+        pass
+
+    # Za tajne (bot_token, whatsapp_token): sačuvaj postojeći ako je nova
+    # vrednost prazna ili maskirana (sadrži '…' ili samo '•')
+    def _preserve(new, old):
+        s = str(new or '').strip()
+        if not s or '…' in s or set(s) <= {'•'}: return str(old or '')
+        return s
+
+    new_cfg = {
+        'slack': str(payload.get('slack', '')).strip(),
+        'teams': str(payload.get('teams', '')).strip(),
+        'telegram_bot_token': _preserve(payload.get('telegram_bot_token'), existing.get('telegram_bot_token')),
+        'telegram_chat_id':   str(payload.get('telegram_chat_id', '')).strip(),
+        'ntfy_url':           str(payload.get('ntfy_url', '')).strip(),
+        'whatsapp_phone_id':  str(payload.get('whatsapp_phone_id', '')).strip(),
+        'whatsapp_token':     _preserve(payload.get('whatsapp_token'), existing.get('whatsapp_token')),
+        'whatsapp_to':        str(payload.get('whatsapp_to', '')).strip(),
+        'events':             list(payload.get('events') or []),
+    }
+    try:
+        with sqlite3.connect(DB_FILE, timeout=30) as conn:
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('chatWebhooks', ?)",
+                         (encrypt_data(new_cfg),))
+            conn.commit()
+    except Exception as e:
+        return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
+
+    clear_cache()
+    log_audit('SECURITY', 'system',
+              f'Chat webhooks reconfigured by {session.get("username","?")}',
+              is_suspicious=False)
+    return jsonify({"status": "success"})
+
+
+@system_bp.route('/chat_webhooks/test', methods=['POST'])
+@login_required
+def test_chat_webhooks():
+    """Šalje test poruku na sve konfigurisane kanale."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    from webhooks import notify
+    notify('offer_accepted', {  # koristimo poznat event tip za test
+        'Test': 'This is a test notification from Aspidus CRM',
+        'Triggered by': session.get('username', '?'),
+        'When': datetime.now(timezone.utc).isoformat().replace('+00:00','Z')[:19],
+    })
+    return jsonify({"status": "success", "message": "Test dispatched to all configured channels."})
+
+
 @system_bp.route('/otp_delivery/test', methods=['POST'])
 @login_required
 def test_otp_delivery():
