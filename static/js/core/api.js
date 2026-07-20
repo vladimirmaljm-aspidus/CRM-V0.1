@@ -339,95 +339,167 @@ function parseCSVLine(line) {
     return result;
 }
 
-function importPartnersFromCSV(file) {
-  if (!file) return; const reader = new FileReader();
-  reader.onload = async (e) => {
-      try {
-          const text = e.target.result; const rows = text.split('\n').slice(1); const headers = parseCSVLine(text.split('\n')[0]);
-          let addedCount = 0;
-          for(const rowStr of rows) {
-              if (rowStr.trim() === '') continue;
-              const values = parseCSVLine(rowStr);
-              const rowData = headers.reduce((obj, header, index) => { obj[header] = values[index]; return obj; }, {});
-              const newPartner = {
-                  id: Utils.generateId(), companyName: rowData.companyName || '', taxId: rowData.taxId || '', regNumber: rowData.regNumber || '',
-                  entityType: rowData.entityType || 'company', linkedCompanyId: null,
-                  address: { street: rowData.street || '', city: rowData.city || '', zip: rowData.zip || '', country: rowData.country || '' },
-                  contact: { person: rowData.contactPerson || '', email: rowData.contactEmail || '', phone: rowData.phone || '' },
-                  bank: { name: rowData.bankName || '', accountNumber: rowData.accountNumber || '', swift: rowData.swift || '' },
-                  types: rowData.types ? rowData.types.split(';').map(t => t.trim()) : [],
-                  notes: rowData.notes || '', documents: [], activities: [], lastModified: new Date().toISOString()
-              };
-              state.data.partners.push(newPartner);
-              addedCount++;
-          }
-          if (addedCount > 0) {
-              await saveToStorage('partners'); 
-              alert(Utils.t('misc.partnersImported') || 'Partners successfully imported.'); 
-              if (typeof render === 'function') { render(); } else { window.location.reload(); }
-          }
-      } catch(err) {
-          alert(Utils.t('misc.invalidCsv') || 'Invalid CSV format.');
+// Universal tabular loader — vraća Promise<Array<Object>> gde je svaki
+// objekat jedan red iz fajla, ključevi su headers iz prvog reda.
+// Podržava CSV, TSV, XLSX, XLS. XLSX/XLS koristi SheetJS koji se lazy-load-uje
+// sa CDN-a samo kada zaista treba (izbegavamo bespotrebnih 400KB na page load).
+async function loadTabularFile(file) {
+    if (!file) return [];
+    const name = String(file.name || '').toLowerCase();
+    const ext = name.split('.').pop();
+
+    if (ext === 'xlsx' || ext === 'xls' || ext === 'xlsm') {
+        // Lazy-load SheetJS iz CDN-a
+        if (typeof XLSX === 'undefined') {
+            await new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.full.min.js';
+                s.onload = () => resolve();
+                s.onerror = () => reject(new Error('SheetJS CDN unreachable'));
+                document.head.appendChild(s);
+            });
+        }
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: 'array' });
+        const first = wb.SheetNames[0];
+        if (!first) return [];
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[first], { defval: '', raw: false });
+        return rows;
+    }
+
+    // CSV / TSV — čitamo kao tekst
+    const text = await file.text();
+    const lines = text.split(/\r?\n/);
+    if (lines.length < 2) return [];
+    const sep = ext === 'tsv' ? '\t' : ',';
+    const parseLine = (line) => {
+        if (sep === '\t') return line.split('\t').map(s => s.trim());
+        return parseCSVLine(line);
+    };
+    const headers = parseLine(lines[0]);
+    const out = [];
+    for (let i = 1; i < lines.length; i++) {
+        if (lines[i].trim() === '') continue;
+        const values = parseLine(lines[i]);
+        const row = {};
+        headers.forEach((h, idx) => { row[h] = values[idx] != null ? values[idx] : ''; });
+        out.push(row);
+    }
+    return out;
+}
+window.loadTabularFile = loadTabularFile;
+
+async function importPartnersFromCSV(file) {
+  if (!file) return;
+  try {
+      const rows = await loadTabularFile(file);
+      let addedCount = 0;
+      for (const rowData of rows) {
+          const newPartner = {
+              id: Utils.generateId(), companyName: rowData.companyName || '', taxId: rowData.taxId || '', regNumber: rowData.regNumber || '',
+              entityType: rowData.entityType || 'company', linkedCompanyId: null,
+              address: { street: rowData.street || '', city: rowData.city || '', zip: rowData.zip || '', country: rowData.country || '' },
+              contact: { person: rowData.contactPerson || '', email: rowData.contactEmail || '', phone: rowData.phone || '' },
+              bank: { name: rowData.bankName || '', accountNumber: rowData.accountNumber || '', swift: rowData.swift || '' },
+              types: rowData.types ? String(rowData.types).split(';').map(t => t.trim()) : [],
+              notes: rowData.notes || '', documents: [], activities: [], lastModified: new Date().toISOString()
+          };
+          if (!newPartner.companyName) continue;
+          state.data.partners.push(newPartner);
+          addedCount++;
       }
-  };
-  reader.readAsText(file);
+      if (addedCount > 0) {
+          await saveToStorage('partners');
+          if (typeof showToast === 'function') showToast(`✓ Imported ${addedCount} partners.`, 'success');
+          else alert(Utils.t('misc.partnersImported') || 'Partners successfully imported.');
+          if (typeof render === 'function') { render(); } else { window.location.reload(); }
+      } else {
+          if (typeof showToast === 'function') showToast('No valid rows found — check that column headers include "companyName".', 'error');
+      }
+  } catch (err) {
+      console.error(err);
+      alert(Utils.t('misc.invalidCsv') || 'Invalid file format. Supported: CSV, TSV, XLSX, XLS.');
+  }
 }
 
-function importProductsFromCSV(file) {
-  if (!file) return; const reader = new FileReader();
-  reader.onload = async (e) => {
-      try {
-          const text = e.target.result; const rows = text.split('\n').slice(1); const headers = parseCSVLine(text.split('\n')[0]);
-          let addedCount = 0;
-          for(const rowStr of rows) {
-              if (rowStr.trim() === '') continue;
-              const values = parseCSVLine(rowStr);
-              const rowData = headers.reduce((obj, header, index) => { obj[header] = values[index]; return obj; }, {});
-              if(rowData.name) {
-                  const prod = {
-                      id: Utils.generateId(), name: rowData.name.trim(), category: rowData.category || 'other', hsCode: rowData.hsCode || '', description: rowData.description || '', detailedSpec: '', supplyOffers: [], lastModified: new Date().toISOString()
-                  };
-                  state.data.products.push(prod);
-                  addedCount++;
-              }
-          }
-          if(addedCount > 0) {
-              await saveToStorage('products');
-              alert(Utils.t('misc.productsImported') || 'Products successfully imported.'); 
-              if (typeof render === 'function') { render(); } else { window.location.reload(); }
-          }
-      } catch(err) { alert(Utils.t('misc.invalidCsv') || 'Invalid CSV format.'); }
-  };
-  reader.readAsText(file);
+async function importProductsFromCSV(file) {
+  if (!file) return;
+  try {
+      const rows = await loadTabularFile(file);
+      let addedCount = 0;
+      for (const rowData of rows) {
+          if (!rowData.name) continue;
+          const prod = {
+              id: Utils.generateId(),
+              name: String(rowData.name).trim(),
+              category: rowData.category || 'other',
+              hsCode: rowData.hsCode || '',
+              description: rowData.description || '',
+              detailedSpec: '',
+              supplyOffers: [],
+              lastModified: new Date().toISOString()
+          };
+          state.data.products.push(prod);
+          addedCount++;
+      }
+      if (addedCount > 0) {
+          await saveToStorage('products');
+          if (typeof showToast === 'function') showToast(`✓ Imported ${addedCount} products.`, 'success');
+          else alert(Utils.t('misc.productsImported') || 'Products successfully imported.');
+          if (typeof render === 'function') { render(); } else { window.location.reload(); }
+      } else {
+          if (typeof showToast === 'function') showToast('No valid rows — need at least a "name" column.', 'error');
+      }
+  } catch(err) {
+      console.error(err);
+      alert(Utils.t('misc.invalidCsv') || 'Invalid file format. Supported: CSV, TSV, XLSX, XLS.');
+  }
 }
 
-function importOffersFromCSV(file) {
-  if (!file) return; const reader = new FileReader();
-  reader.onload = async (e) => {
-      try {
-          const text = e.target.result; const rows = text.split('\n').slice(1); const headers = parseCSVLine(text.split('\n')[0]);
-          let changedProducts = false;
-          for(const rowStr of rows) {
-              if (rowStr.trim() === '') continue;
-              const values = parseCSVLine(rowStr);
-              const rowData = headers.reduce((obj, header, index) => { obj[header] = values[index]; return obj; }, {});
-              const targetProduct = state.data.products.find(p => p.name.toLowerCase() === (rowData.productName || '').toLowerCase().trim());
-              if (targetProduct) {
-                  targetProduct.supplyOffers = targetProduct.supplyOffers || [];
-                  targetProduct.supplyOffers.push({
-                      supplierId: rowData.supplierId || '', quantity: parseFloat(rowData.quantity) || 0, price: parseFloat(rowData.price) || 0, currency: rowData.currency || 'USD', unit: rowData.unit || 'MT - Metric Ton', country: rowData.country || '', incoterm: rowData.incoterm || 'FOB', certificates: rowData.certificates || '', history: []
-                  });
-                  changedProducts = true;
-              }
+async function importOffersFromCSV(file) {
+  if (!file) return;
+  try {
+      const rows = await loadTabularFile(file);
+      let changedProducts = false;
+      let matched = 0, missed = 0;
+      for (const rowData of rows) {
+          const targetProduct = state.data.products.find(
+              p => p.name.toLowerCase() === String(rowData.productName || '').toLowerCase().trim()
+          );
+          if (targetProduct) {
+              targetProduct.supplyOffers = targetProduct.supplyOffers || [];
+              targetProduct.supplyOffers.push({
+                  supplierId: rowData.supplierId || '',
+                  quantity: parseFloat(rowData.quantity) || 0,
+                  price: parseFloat(rowData.price) || 0,
+                  currency: rowData.currency || 'USD',
+                  unit: rowData.unit || 'MT - Metric Ton',
+                  country: rowData.country || '',
+                  incoterm: rowData.incoterm || 'FOB',
+                  certificates: rowData.certificates || '',
+                  history: []
+              });
+              changedProducts = true;
+              matched++;
+          } else if (rowData.productName) {
+              missed++;
           }
-          if (changedProducts) {
-              await saveToStorage('products');
-              alert(Utils.t('misc.offersImported') || 'Offers successfully imported.'); 
-              if (typeof render === 'function') { render(); } else { window.location.reload(); }
-          }
-      } catch(err) { alert(Utils.t('misc.invalidCsv') || 'Invalid CSV format.'); }
-  };
-  reader.readAsText(file);
+      }
+      if (changedProducts) {
+          await saveToStorage('products');
+          const msg = missed > 0
+            ? `✓ Imported ${matched} offers, ${missed} skipped (product name not found).`
+            : `✓ Imported ${matched} offers.`;
+          if (typeof showToast === 'function') showToast(msg, missed > 0 ? 'warning' : 'success');
+          else alert(msg);
+          if (typeof render === 'function') { render(); } else { window.location.reload(); }
+      } else {
+          if (typeof showToast === 'function') showToast('No matching products found — verify "productName" column matches existing products.', 'error');
+      }
+  } catch(err) {
+      console.error(err);
+      alert(Utils.t('misc.invalidCsv') || 'Invalid file format. Supported: CSV, TSV, XLSX, XLS.');
+  }
 }
 
 async function fetchUsers() {
