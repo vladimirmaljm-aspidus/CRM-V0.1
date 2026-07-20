@@ -363,6 +363,73 @@ def test_chat_webhooks():
     return jsonify({"status": "success", "message": "Test dispatched to all configured channels."})
 
 
+@system_bp.route('/hcaptcha', methods=['GET'])
+@login_required
+def get_hcaptcha_config():
+    """Redigovan pregled hCaptcha config-a."""
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    import sqlite3
+    from utils import decrypt_data
+    cfg = {}
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key='hcaptchaConfig'").fetchone()
+            if row and row[0]:
+                try: cfg = decrypt_data(row[0]) or {}
+                except Exception: cfg = {}
+    except Exception:
+        pass
+    secret = str(cfg.get('secret', ''))
+    return jsonify({
+        'sitekey': cfg.get('sitekey', ''),  # sitekey je public, otkriva se
+        'has_secret': bool(secret),
+        'secret_masked': (secret[:6] + '…' + secret[-4:]) if len(secret) > 12 else '',
+    })
+
+
+@system_bp.route('/hcaptcha', methods=['POST'])
+@login_required
+def set_hcaptcha_config():
+    if not _is_admin():
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    import sqlite3
+    from utils import decrypt_data
+    from security_ext import clear_hcaptcha_cache
+
+    payload = request.get_json(silent=True) or {}
+    existing = {}
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key='hcaptchaConfig'").fetchone()
+            if row and row[0]:
+                try: existing = decrypt_data(row[0]) or {}
+                except Exception: existing = {}
+    except Exception:
+        pass
+
+    new_secret = str(payload.get('secret', '')).strip()
+    if not new_secret or '…' in new_secret:
+        new_secret = str(existing.get('secret', ''))
+
+    cfg = {
+        'sitekey': str(payload.get('sitekey', '')).strip(),
+        'secret': new_secret,
+    }
+    try:
+        with sqlite3.connect(DB_FILE, timeout=30) as conn:
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('hcaptchaConfig', ?)",
+                         (encrypt_data(cfg),))
+            conn.commit()
+    except Exception as e:
+        return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
+
+    clear_hcaptcha_cache()
+    log_audit('SECURITY', 'system', f'hCaptcha reconfigured by {session.get("username","?")}',
+              is_suspicious=False)
+    return jsonify({"status": "success", "enabled": bool(cfg['sitekey']) and bool(cfg['secret'])})
+
+
 @system_bp.route('/otp_delivery/test', methods=['POST'])
 @login_required
 def test_otp_delivery():

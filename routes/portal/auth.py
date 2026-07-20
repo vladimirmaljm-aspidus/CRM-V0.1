@@ -118,6 +118,18 @@ def send_otp(token):
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if not check_portal_rate_limit(ip): abort(429)
 
+    # hCaptcha anti-bot gate (aktivan samo ako je admin konfigurisao secret).
+    # Fail-open ako captcha servis padne — legitiman klijent ne sme da bude blokiran.
+    body = request.get_json(silent=True) or {}
+    captcha_token = str(body.get('hcaptcha_token', '')).strip()
+    from security_ext import verify_hcaptcha, get_public_sitekey
+    if get_public_sitekey():  # captcha je aktivirana
+        ok, msg = verify_hcaptcha(captcha_token, remote_ip=ip)
+        if not ok:
+            log_audit('SECURITY', 'portal', f'OTP send blocked by hCaptcha: {msg}', is_suspicious=True)
+            return jsonify({"error": "CAPTCHA_REQUIRED",
+                            "message": "Please complete the human verification and try again."}), 400
+
     conn = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
@@ -208,6 +220,23 @@ def verify_otp(token):
         return jsonify({"status": "success", "auth_key": auth_key})
 
     return jsonify({"error": "Invalid or expired OTP"}), 401
+
+
+# ==========================================================
+#  PUBLIC CONFIG — portal frontend uses to decide which
+#  security features (hCaptcha widget) to render
+# ==========================================================
+
+@portal_bp.route('/api/portal/public_config', methods=['GET'])
+def portal_public_config():
+    """Non-secret config za portal frontend — sitekey za hCaptcha,
+    magic-link status. Nikad ne otkriva tajne."""
+    from security_ext import get_public_sitekey
+    from mail_providers import magic_link_config
+    return jsonify({
+        'hcaptcha_sitekey': get_public_sitekey(),
+        'magic_link_enabled': magic_link_config()['enabled'],
+    })
 
 
 # ==========================================================

@@ -981,6 +981,27 @@ def submit_kyc(token):
         # Best effort — ne blokiramo submit ako screening padne
         pass
 
+    # Open Ownership PEP register lookup — kompaniju + direktore/UBO poredimo
+    # protiv globalnog registra vlasničke strukture. Ako je kompanija/osoba u
+    # registru, dobijamo pravnu jurisdikciju i incorporation date što admin
+    # koristi za forenziku uz OpenSanctions signals.
+    try:
+        from security_ext import open_ownership_search
+        oo_hits = []
+        for nm in {clean_data.get('companyName')} | \
+                 {(d.get('name') if isinstance(d, dict) else str(d)) for d in (clean_data.get('directors') or [])} | \
+                 {(u.get('name') if isinstance(u, dict) else str(u)) for u in (clean_data.get('ubos') or [])}:
+            if not nm: continue
+            res = open_ownership_search(nm)
+            if res: oo_hits.append({'name': nm, 'entries': res})
+        if oo_hits:
+            clean_data['_openOwnershipHits'] = {
+                'ranAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                'hits': oo_hits,
+            }
+    except Exception:
+        pass
+
     conn = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     c = conn.cursor()
     c.execute('''INSERT INTO kyc_submissions (id, partner_id, token, data, submitted_at) VALUES (?, ?, ?, ?, ?)''',
