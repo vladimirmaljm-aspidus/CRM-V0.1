@@ -2,6 +2,7 @@
 
 // Čiste line-ikone (Heroicons stil) umesto emoji — profesionalniji, konzistentan izgled.
 const NAV_ICONS = {
+  dashboard: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
   deals: '<path d="M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z"/>',
   offers: '<path d="M12 3l2.09 4.26L19 8l-3.5 3.36L16.18 16 12 13.77 7.82 16l.68-4.64L5 8l4.91-.74L12 3z"/>',
   products: '<path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-14L4 7m8 4v10M4 7v10l8 4"/>',
@@ -19,6 +20,7 @@ const NAV_ICONS = {
 };
 
 let fullNavigationItems = [
+  { view:'dashboard', icon:'dashboard', labelPath:'nav.dashboard', group: 'sales' },
   { view:'deals', icon:'deals', labelPath:'nav.deals', group: 'sales' },
   { view:'offers', icon:'offers', labelPath:'nav.offers', group: 'sales' },
   { view:'products', icon:'products', labelPath:'nav.products', group: 'sales' },
