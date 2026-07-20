@@ -93,13 +93,92 @@ def _html_wrap(subject_line, body_html, company, cta_url=None, cta_label=None):
 </body></html>"""
 
 
+
+# Circuit breaker: broji SMTP failure-e u sliding window. Ako je bilo N failova
+# u zadnjih M sekundi, sledeći SMTP send preskačemo (odmah park ili odbij).
+# Bez ovoga: PythonAnywhere free tier blokira outbound SMTP → svaki send radi
+# 4× retry sa exponential backoff (1+2+4+8 = 15s) → ako klijent klikne "Send"
+# 5 puta, gubimo 75s CPU i punimo email_queue duplikatima.
+_SMTP_CB_LOCK = threading.Lock() if 'threading' in dir() else None
+_SMTP_FAILURES = []  # list of unix timestamps of recent failures
+_SMTP_CB_THRESHOLD = 3       # failure count to trip
+_SMTP_CB_WINDOW_S = 300      # 5 min sliding window
+_SMTP_CB_OPEN_UNTIL = [0]    # unix ts; while now < this → circuit open, skip SMTP
+
+
+def _smtp_circuit_open():
+    """Vraća True ako smo trenutno u 'open' stanju (skip SMTP)."""
+    import time as _t
+    now = _t.time()
+    if now < _SMTP_CB_OPEN_UNTIL[0]:
+        return True
+    return False
+
+
+def _smtp_record_failure():
+    """Beleži failure i eventualno otvara circuit breaker."""
+    import time as _t
+    now = _t.time()
+    _SMTP_FAILURES.append(now)
+    cutoff = now - _SMTP_CB_WINDOW_S
+    while _SMTP_FAILURES and _SMTP_FAILURES[0] < cutoff:
+        _SMTP_FAILURES.pop(0)
+    if len(_SMTP_FAILURES) >= _SMTP_CB_THRESHOLD:
+        # Trip: block SMTP for full window from last failure
+        _SMTP_CB_OPEN_UNTIL[0] = now + _SMTP_CB_WINDOW_S
+        _SMTP_FAILURES.clear()
+        logger.error(f'SMTP circuit breaker TRIPPED — blocking SMTP for {_SMTP_CB_WINDOW_S}s. '
+                     f'Configure Resend/SendGrid/Postmark in Settings > OTP Delivery to bypass.')
+
+
+def _smtp_record_success():
+    """Uspešan send resetuje failure counter."""
+    _SMTP_FAILURES.clear()
+    _SMTP_CB_OPEN_UNTIL[0] = 0
+
+
 def _send(recipient, subject, html_body, plain_body, attachments=None):
     """Šalje mejl. Vraća (ok, error_msg).
 
     attachments: opciona lista dict-ova [{'filename': str, 'data': bytes}].
     Podržava PDF-ove i druge binarne fajlove — koristi se iz admin-ovog
     'Send Email' modala za slanje ponuda/faktura klijentu.
+
+    v22 FIX: pre bilo kakvog SMTP pokušaja pokušava:
+      1. Resend/SendGrid/Postmark preko mail_providers (ako je konfigurisan)
+      2. Ako je SMTP circuit breaker otvoren (previše skorih fail-ova) → park odmah
+      3. Inače: SMTP sa 4× retry (kao ranije)
     """
+    # STEP 1 — pluggable transactional provider (Resend/SendGrid/Postmark)
+    # Ovi API-ji rade nezavisno od SMTP-a; PythonAnywhere ih ne blokira jer
+    # koriste HTTPS na standardne portove. Deliverability je uvek veći nego
+    # SMTP sa personalnog naloga.
+    try:
+        from mail_providers import _load_config as _mp_cfg
+        _cfg = _mp_cfg()
+        _provider = str(_cfg.get('provider', 'smtp')).lower()
+        if _provider in ('resend', 'sendgrid', 'postmark'):
+            from mail_providers import send_transactional
+            ok, info = send_transactional(recipient, subject, html_body, plain_body or '')
+            if ok:
+                logger.info(f'{_provider} send OK to {recipient}')
+                _smtp_record_success()
+                return True, None
+            # Provider fail — proceed to SMTP fallback (ne park odmah — SMTP može uspeti)
+            logger.warning(f'{_provider} send failed for {recipient}: {info}; trying SMTP fallback')
+    except Exception as e:
+        logger.debug(f'mail_providers not available: {e}')
+
+    # STEP 2 — circuit breaker: ako je SMTP nedavno uzastopno padao (npr.
+    # network unreachable na PythonAnywhere free tier), NE pokušavaj ponovo —
+    # park direktno u queue i return. Bez ovoga svaki OTP send košta 15s CPU.
+    if _smtp_circuit_open():
+        try:
+            _park_in_queue(recipient, subject, plain_body, html_body, attachments,
+                           'SMTP circuit breaker open — skipped direct attempt')
+        except Exception: pass
+        return False, "SMTP_CIRCUIT_OPEN"
+
     smtp, company = _get_smtp_settings()
     if not smtp:
         return False, "SMTP_NOT_CONFIGURED"
@@ -164,6 +243,7 @@ def _send(recipient, subject, html_body, plain_body, attachments=None):
             server.send_message(msg)
             server.quit()
             logger.info(f"SMTP send OK to {recipient} (attempt {attempt+1})")
+            _smtp_record_success()
             return True, None
         except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError,
                 smtplib.SMTPResponseException, TimeoutError, OSError) as e:
@@ -176,6 +256,7 @@ def _send(recipient, subject, html_body, plain_body, attachments=None):
                 _time.sleep(2 ** attempt)  # 1, 2, 4 s
                 continue
             # Poslednji pokušaj propao — parkiraj u queue umesto da nestane
+            _smtp_record_failure()  # dokumentuje failure — circuit breaker može trip-nuti
             try: _park_in_queue(recipient, subject, plain_body, html_body,
                                 attachments, last_err)
             except Exception as qerr:

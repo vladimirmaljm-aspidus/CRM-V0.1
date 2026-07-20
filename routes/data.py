@@ -11,11 +11,40 @@ logger = logging.getLogger(__name__)
 data_bp = Blueprint('data', __name__)
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_FILE, timeout=60.0) 
-    conn.execute('PRAGMA journal_mode=WAL;') 
+    conn = sqlite3.connect(DB_FILE, timeout=60.0)
+    conn.execute('PRAGMA journal_mode=WAL;')
     conn.execute('PRAGMA synchronous=NORMAL;')
     conn.execute('PRAGMA busy_timeout=60000;')
     return conn
+
+
+def _retry_on_lock(fn, *args, max_attempts=6, **kwargs):
+    """Wraps a callable so that transient 'database is locked' errors trigger
+    retry with exponential backoff instead of bubbling up as 500.
+
+    Root cause of the production symptoms 20/07/2026:
+      - PythonAnywhere shared filesystem → SQLite locks propagate slowly
+      - Background backup thread holds DB briefly during snapshot
+      - Two concurrent uWSGI workers writing to same table race for lock
+
+    Retry pattern: 100ms, 200ms, 400ms, 800ms, 1600ms, 3200ms — total up to
+    6.3s before giving up. In practice locks resolve inside 500ms.
+    """
+    import time as _t
+    import sqlite3 as _sq3
+    for attempt in range(max_attempts):
+        try:
+            return fn(*args, **kwargs)
+        except _sq3.OperationalError as e:
+            msg = str(e).lower()
+            if 'database is locked' not in msg and 'database is busy' not in msg:
+                raise
+            if attempt == max_attempts - 1:
+                logger.error(f'DB lock persisted after {max_attempts} retries — giving up: {e}')
+                raise
+            wait = 0.1 * (2 ** attempt)
+            logger.warning(f'DB locked (attempt {attempt+1}/{max_attempts}) — retrying in {wait:.2f}s')
+            _t.sleep(wait)
 
 # Moduli koji podrzavaju ownerId/sharedWith model vlasnistva.
 # NAPOMENA: ranije je ownership filtriranje bilo hardkodirano samo za 'partners' i
@@ -194,8 +223,12 @@ def save_single_item(key):
                     if key == 'products' and not perms.get('products_view_prices', False):
                         item['supplyOffers'] = existing.get('supplyOffers', [])
 
-            # OPTIMIZACIJA: Čist JSON upis za maksimalnu brzinu baze
-            c.execute(f'INSERT OR REPLACE INTO {key} (id, data) VALUES (?, ?)', (item_id, json.dumps(item)))
+            # OPTIMIZACIJA: Čist JSON upis za maksimalnu brzinu baze.
+            # v22 FIX: wrap u retry helper — pod PythonAnywhere SQLite lock je čest,
+            # bez retry-ja svaki lock = izgubljen zapis + 500 error klijentu.
+            _retry_on_lock(c.execute,
+                           f'INSERT OR REPLACE INTO {key} (id, data) VALUES (?, ?)',
+                           (item_id, json.dumps(item)))
             action_log_msg = (action, key, f'Updated item ID: {item_id}', False)
         
         elif key == 'settings' or key == 'company' or key == 'firewall' or key in SENSITIVE_SETTINGS_KEYS:
@@ -557,7 +590,7 @@ def create_deal_from_offer(offer_id):
                     if comp.get('corrBank'):    parts.append(f"Correspondent: {comp['corrBank']}")
                     if parts: deal['bankDetails'] = '\n'.join(parts)
 
-        c.execute("INSERT INTO deals (id, data) VALUES (?, ?)", (deal_id, json.dumps(deal)))
+        _retry_on_lock(c.execute, "INSERT INTO deals (id, data) VALUES (?, ?)", (deal_id, json.dumps(deal)))
 
         # Označi ponudu kao konvertovanu
         offer['convertedDealId'] = deal_id
