@@ -1695,6 +1695,14 @@ def portal_accept_offer(token, offer_id):
             log_audit('SECURITY', 'portal', f'Blocked cross-partner offer accept attempt: offer {offer_id} by {partner_id}', is_suspicious=True)
             return jsonify({"error": "FORBIDDEN"}), 403
 
+        # OFFER VERSIONING: pre snimanja novog stanja, zapamti stari snapshot.
+        # Prihvatanje/odbijanje od strane klijenta je bitan događaj — mora u istoriju.
+        try:
+            import copy as _copy
+            _old_offer_ver = _copy.deepcopy(offer)
+        except Exception:
+            _old_offer_ver = None
+
         now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         if action == 'accept':
             offer['clientStatus'] = 'accepted'
@@ -1718,6 +1726,19 @@ def portal_accept_offer(token, offer_id):
         # 'Client responded to offer X' dok admin ne otvori i klikne 'Mark seen'.
         offer['adminReviewedByClient'] = False
         offer['clientResponseAt'] = now_iso
+
+        # Snapshot pre upisa — pratimo šta je klijent uradio.
+        if _old_offer_ver:
+            try:
+                from offer_versions import snapshot_if_changed as _snap
+                _snap(
+                    conn, offer_id, _old_offer_ver, offer,
+                    changed_by=partner_id, changed_by_role='partner',
+                    origin='portal',
+                    change_reason=(f'Client {action}' + (f': {note[:200]}' if note else '')),
+                )
+            except Exception:
+                pass
 
         c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(offer), offer_id))
         conn.commit()

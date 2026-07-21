@@ -957,6 +957,7 @@ function renderOffersView() {
                           : `<button class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-send-offer="${offer.id}" title="Pošalji dokument klijentu u portal">📤 ${Utils.t('offer.sendPdf') || 'Pošalji klijentu'}</button>`}
                       <button class="bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-logistics-offer="${offer.id}" title="${Utils.t('logistics.plannerTitle') || 'Multimodalni logistički planer'}">🌍 ${Utils.t('logistics.plan') || 'Ruta'}</button>
                       <button class="bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" onclick="document.dispatchEvent(new CustomEvent('createCustomerOffer', {detail: {savedOfferId: '${offer.id}'}}))">${Utils.t('actions.openEdit') || 'Otvori / Uredi'}</button>
+                      <button class="bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-all mr-2" data-history-offer="${offer.id}" title="View version history">📜 History</button>
                       <button class="bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors offer-delete-btn" data-offer-id="${offer.id}">🗑️</button>
                   </td>
                 </tr>${clientNoteRow}`;
@@ -995,6 +996,142 @@ function renderOffersView() {
     installOfferConvertDelegatedHandler();
     installOfferLogisticsDelegatedHandler();
     installOfferPdfDelegatedHandler();
+    installOfferHistoryDelegatedHandler();
+}
+
+// ==========================================================
+// OFFER VERSION HISTORY — modal koji čita /api/offers/<id>/versions
+// ==========================================================
+// Cilj: kada admin (ili radnik) klikne 📜 History na redu ponude, prikaži
+// timeline svake izmene: KO, KADA, ŠTA se promenilo (lista polja) i ZAŠTO.
+// Iz timeline-a admin može da otvori pun snapshot verzije i da vrati staru
+// verziju u aktivnu ponudu (samo admin/offers_edit permisija).
+
+let __offerHistoryHandlerInstalled = false;
+function installOfferHistoryDelegatedHandler() {
+    if (__offerHistoryHandlerInstalled) return;
+    __offerHistoryHandlerInstalled = true;
+    document.addEventListener('click', async (ev) => {
+        const btn = ev.target && ev.target.closest ? ev.target.closest('[data-history-offer]') : null;
+        if (!btn) return;
+        ev.preventDefault(); ev.stopPropagation();
+        const offerId = btn.getAttribute('data-history-offer');
+        if (!offerId) return;
+        await openOfferHistoryModal(offerId);
+    });
+}
+
+async function openOfferHistoryModal(offerId) {
+    // Skini istoriju
+    let versions = [];
+    try {
+        const res = await fetch(`/api/offers/${encodeURIComponent(offerId)}/versions`, { credentials: 'same-origin' });
+        if (!res.ok) {
+            if (typeof showToast === 'function') showToast(`✗ History load failed (${res.status})`, 'error');
+            return;
+        }
+        const j = await res.json();
+        versions = j.versions || [];
+    } catch (e) {
+        if (typeof showToast === 'function') showToast(`✗ ${e.message || e}`, 'error');
+        return;
+    }
+
+    const offer = (state.data.offers || []).find(o => o.id === offerId) || {};
+    const offerNo = offer.offerNo || offerId;
+    const canRestore = state.user?.role === 'admin' || (state.user?.permissions && state.user.permissions.offers_edit);
+
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 z-[9998] flex items-start justify-center bg-black/50 p-6 overflow-y-auto';
+    modal.setAttribute('data-offer-history-modal', offerId);
+    modal.innerHTML = `
+      <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl my-6" style="max-height:90vh;display:flex;flex-direction:column;">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 rounded-t-2xl">
+          <div>
+            <div class="text-[10px] font-black uppercase tracking-widest text-slate-500">Version history</div>
+            <h3 class="text-xl font-black text-slate-900">Offer ${Utils.escapeHtml(offerNo)}</h3>
+          </div>
+          <button type="button" class="text-slate-500 hover:text-slate-900 text-2xl font-bold px-3" data-close-history>×</button>
+        </div>
+        <div class="p-6 overflow-y-auto flex-1" data-history-body>
+          ${versions.length === 0
+            ? `<div class="text-center text-slate-500 italic py-10">No prior versions yet — every future edit will appear here.</div>`
+            : `<div class="text-xs text-slate-500 mb-4">Showing <strong>${versions.length}</strong> version${versions.length === 1 ? '' : 's'} (most recent first). Each row is the state BEFORE the change.</div>
+               <div class="space-y-3">
+                 ${versions.map(v => `
+                   <div class="border border-slate-200 rounded-xl p-4 hover:shadow-md transition-shadow">
+                     <div class="flex items-center justify-between mb-2">
+                       <div class="flex items-center gap-3">
+                         <span class="text-xs font-black px-2.5 py-1 rounded-md bg-slate-900 text-white">v${v.version}</span>
+                         <span class="text-xs font-bold text-slate-700">${v.changedAt ? new Date(v.changedAt).toLocaleString() : '—'}</span>
+                         <span class="text-[10px] uppercase px-2 py-0.5 rounded-full font-bold ${v.origin === 'portal' ? 'bg-blue-100 text-blue-800' : 'bg-emerald-100 text-emerald-800'}">${v.origin || 'crm'}</span>
+                         <span class="text-[10px] text-slate-500">by ${Utils.escapeHtml(v.changedBy || 'system')} (${Utils.escapeHtml(v.changedByRole || '')})</span>
+                       </div>
+                       <div class="flex items-center gap-2">
+                         <button class="bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-800 font-bold px-3 py-1.5 rounded-md text-[11px]" data-view-version="${v.id}">🔍 View snapshot</button>
+                         ${canRestore ? `<button class="bg-amber-100 hover:bg-amber-200 border border-amber-300 text-amber-900 font-bold px-3 py-1.5 rounded-md text-[11px]" data-restore-version="${v.id}" data-version-number="${v.version}">↩ Restore</button>` : ''}
+                       </div>
+                     </div>
+                     ${(v.changedFields || []).length > 0 ? `
+                       <div class="text-[11px] text-slate-600 mt-1">
+                         <strong class="uppercase tracking-wider text-slate-500">Changed fields:</strong>
+                         <span class="ml-1">${v.changedFields.map(f => `<code class="bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 mr-1 text-[10px]">${Utils.escapeHtml(f)}</code>`).join('')}</span>
+                       </div>` : ''}
+                     ${v.changeReason ? `<div class="text-[11px] text-slate-700 mt-2 italic bg-slate-50 border-l-4 border-slate-300 pl-3 py-1">"${Utils.escapeHtml(v.changeReason)}"</div>` : ''}
+                   </div>`).join('')}
+               </div>`}
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    modal.addEventListener('click', async (e) => {
+        if (e.target === modal || (e.target.closest && e.target.closest('[data-close-history]'))) {
+            modal.remove();
+            return;
+        }
+        const viewBtn = e.target.closest && e.target.closest('[data-view-version]');
+        const restoreBtn = e.target.closest && e.target.closest('[data-restore-version]');
+        if (viewBtn) {
+            const vid = viewBtn.getAttribute('data-view-version');
+            try {
+                const res = await fetch(`/api/offers/${encodeURIComponent(offerId)}/versions/${encodeURIComponent(vid)}`, { credentials: 'same-origin' });
+                if (!res.ok) { if (typeof showToast === 'function') showToast(`Snapshot load failed (${res.status})`, 'error'); return; }
+                const j = await res.json();
+                const pre = document.createElement('pre');
+                pre.textContent = JSON.stringify(j.snapshot || {}, null, 2);
+                pre.style.cssText = 'font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px;overflow:auto;max-height:60vh;white-space:pre-wrap;word-break:break-word;';
+                const wrap = document.createElement('div');
+                wrap.className = 'fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 p-6';
+                wrap.innerHTML = `<div class="bg-white rounded-2xl w-full max-w-3xl shadow-2xl p-6"><div class="flex items-center justify-between mb-3"><h4 class="font-black">Snapshot — v${j.version || '?'}</h4><button class="text-2xl font-bold text-slate-500 hover:text-slate-900" data-close-snap>×</button></div></div>`;
+                wrap.querySelector('.bg-white').appendChild(pre);
+                document.body.appendChild(wrap);
+                wrap.addEventListener('click', ee => { if (ee.target === wrap || ee.target.closest('[data-close-snap]')) wrap.remove(); });
+            } catch (er) { if (typeof showToast === 'function') showToast(er.message || 'Snapshot load failed', 'error'); }
+        } else if (restoreBtn) {
+            const vid = restoreBtn.getAttribute('data-restore-version');
+            const vnum = restoreBtn.getAttribute('data-version-number');
+            const yes = await (window.askConfirm
+                ? askConfirm('Restore this version?', `The current offer state will first be saved as a new version (v${(versions[0]?.version || 0) + 1}), then v${vnum} will become the active offer.`, { danger: false, confirmText: 'Restore' })
+                : confirm(`Restore v${vnum} to active?`));
+            if (!yes) return;
+            const reason = prompt('Optional reason for the restore (audit trail):', '') || '';
+            try {
+                const csrf = (typeof getCsrfToken === 'function') ? await getCsrfToken() : '';
+                const res = await fetch(`/api/offers/${encodeURIComponent(offerId)}/versions/${encodeURIComponent(vid)}/restore`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ reason }),
+                });
+                const j = await res.json();
+                if (!res.ok) { if (typeof showToast === 'function') showToast(j.error || `Restore failed (${res.status})`, 'error'); return; }
+                if (typeof showToast === 'function') showToast(`✓ Restored to v${j.restoredToVersion || vnum}. Refresh to see changes.`, 'success', 6000);
+                modal.remove();
+                // Refresh in-memory offer + view
+                try { await loadDataFromServer(); if (typeof renderOffersView === 'function') renderOffersView(); } catch (_) {}
+            } catch (er) { if (typeof showToast === 'function') showToast(er.message || 'Restore failed', 'error'); }
+        }
+    });
 }
 
 // Delegirani handler za dva dugmeta u tabeli ponuda:

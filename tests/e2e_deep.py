@@ -25,10 +25,13 @@ Pokretanje: python -m tests.e2e_deep
 import io
 import json
 import os
+import random
 import sys
 import tempfile
+import time
 import unittest
 import uuid
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -660,6 +663,91 @@ class J_FullBackup(Base):
         self.assertIn(r.status_code, (401, 403), msg=f'unauth backup allowed: {r.status_code}')
         # Restore login za ostale testove
         self._do_login()
+
+
+# ==========================================================
+# BLOK K: OFFER VERSIONING — snapshot na svaki edit, list, restore
+# ==========================================================
+
+class K_OfferVersioning(Base):
+    def _create_offer(self):
+        oid = f'ver-off-{int(time.time())}-{random.randint(1000,9999)}'
+        payload = {
+            'id': oid, 'offerNo': f'V{int(time.time())}',
+            'date': datetime.utcnow().isoformat() + 'Z',
+            'customerId': 'test-cust', 'productName': 'Original Product',
+            'quantity': 10, 'unit': 't', 'sellingPrice': 1000, 'currency': 'USD',
+            'incoterm': 'FOB',
+        }
+        r = self._post('/api/data/save_item/offers', payload)
+        self.assertEqual(r.status_code, 200, msg=f'create offer failed: {r.data[:200]}')
+        return oid, payload
+
+    def test_01_first_save_creates_no_version(self):
+        """Prvi upis nema staru verziju — versions lista mora biti prazna."""
+        oid, _ = self._create_offer()
+        r = self.client.get(f'/api/offers/{oid}/versions')
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json() or {}
+        self.assertEqual(j.get('count'), 0, msg=f'expected empty history, got {j}')
+
+    def test_02_price_change_creates_version(self):
+        """Izmena cene mora da napravi 1 verziju (staro stanje)."""
+        oid, payload = self._create_offer()
+        payload['sellingPrice'] = 1500  # promena
+        r = self._post('/api/data/save_item/offers', payload)
+        self.assertEqual(r.status_code, 200)
+        r = self.client.get(f'/api/offers/{oid}/versions')
+        j = r.get_json() or {}
+        self.assertEqual(j.get('count'), 1, msg=f'expected 1 version, got {j}')
+        v = (j.get('versions') or [{}])[0]
+        self.assertIn('sellingPrice', v.get('changedFields') or [],
+                      msg=f'sellingPrice not tracked: {v}')
+
+    def test_03_no_change_no_version(self):
+        """Ponovni save identičnog payload-a ne pravi novu verziju."""
+        oid, payload = self._create_offer()
+        r = self._post('/api/data/save_item/offers', payload)  # identično
+        self.assertEqual(r.status_code, 200)
+        r = self.client.get(f'/api/offers/{oid}/versions')
+        j = r.get_json() or {}
+        self.assertEqual(j.get('count'), 0, msg=f'unchanged save produced version: {j}')
+
+    def test_04_restore_reverts_field(self):
+        """Restore mora vratiti staro stanje polja (i sam po sebi napraviti novu verziju)."""
+        oid, payload = self._create_offer()
+        # promena
+        payload['sellingPrice'] = 2000
+        self._post('/api/data/save_item/offers', payload)
+        r = self.client.get(f'/api/offers/{oid}/versions')
+        j = r.get_json() or {}
+        self.assertEqual(j.get('count'), 1)
+        version_id = j['versions'][0]['id']
+        # restore
+        r = self._post(f'/api/offers/{oid}/versions/{version_id}/restore', {'reason': 'test rollback'})
+        self.assertEqual(r.status_code, 200, msg=f'restore failed: {r.data[:200]}')
+        # After restore, sellingPrice mora biti 1000 (originalno), i mora postojati nova verzija (2 total)
+        r = self.client.get(f'/api/data/offers')
+        offers = (r.get_json() or {}).get('value') or []
+        my_offer = next((o for o in offers if o.get('id') == oid), None)
+        self.assertIsNotNone(my_offer, 'offer disappeared after restore')
+        self.assertEqual(my_offer.get('sellingPrice'), 1000, msg=f'restore did not revert price: {my_offer}')
+        r = self.client.get(f'/api/offers/{oid}/versions')
+        j = r.get_json() or {}
+        self.assertEqual(j.get('count'), 2, msg=f'restore should have produced a new snapshot: {j}')
+
+    def test_05_snapshot_endpoint_returns_full_json(self):
+        """GET /versions/<id> mora vratiti pun snapshot za PDF regen."""
+        oid, payload = self._create_offer()
+        payload['quantity'] = 25
+        self._post('/api/data/save_item/offers', payload)
+        r = self.client.get(f'/api/offers/{oid}/versions')
+        version_id = (r.get_json() or {})['versions'][0]['id']
+        r = self.client.get(f'/api/offers/{oid}/versions/{version_id}')
+        self.assertEqual(r.status_code, 200)
+        j = r.get_json() or {}
+        snap = j.get('snapshot') or {}
+        self.assertEqual(snap.get('quantity'), 10, msg=f'snapshot lost original: {snap}')
 
 
 if __name__ == '__main__':
