@@ -72,3 +72,40 @@ async function exportDatabase() {
   }
 }
 window._exportDatabaseImpl = exportDatabase;
+
+/**
+ * Preuzima kompletan .tar.gz backup (baze + fajlovi + ključevi).
+ * Endpoint /api/system/backup/full streamuje binarni sadržaj — samo ga
+ * upisujemo u Blob i triggerujemo browser download.
+ */
+async function downloadFullBackup(btn) {
+    const originalText = btn ? btn.textContent : '';
+    try {
+        if (btn) { btn.disabled = true; btn.textContent = 'Preparing backup…'; }
+        const res = await fetch('/api/system/backup/full', {
+            method: 'GET',
+            credentials: 'same-origin',
+        });
+        if (!res.ok) {
+            let msg = `HTTP ${res.status}`;
+            try { const j = await res.json(); if (j.error) msg = `${j.error}${j.detail ? ': ' + j.detail : ''}`; } catch(_) {}
+            if (typeof showToast === 'function') showToast(`✗ Backup neuspešan: ${msg}`, 'error', 8000);
+            return;
+        }
+        const blob = await res.blob();
+        // Ime iz Content-Disposition, fallback na datum.
+        const cd = res.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename="?([^"]+)"?/);
+        const filename = m ? m[1] : `ASPIDUS_FULL_BACKUP_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.tar.gz`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+        if (typeof logClientEvent === 'function') logClientEvent('DOWNLOAD', 'database', `Full backup ${(blob.size/1024/1024).toFixed(2)} MB`);
+        if (typeof showToast === 'function') showToast(`✓ Full backup preuzet (${(blob.size/1024/1024).toFixed(2)} MB)`, 'success', 5000);
+    } catch (e) {
+        if (typeof showToast === 'function') showToast(`✗ Backup neuspešan: ${e.message || e}`, 'error', 8000);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = originalText; }
+    }
+}
+window.downloadFullBackup = downloadFullBackup;
