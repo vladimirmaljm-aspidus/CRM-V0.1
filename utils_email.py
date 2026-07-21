@@ -6,9 +6,12 @@ sa confidentiality disclaimerom. Ako SMTP nije podešen ili poziv padne,
 funkcija se blago vraća bez izuzetka i loguje razlog u audit."""
 
 import base64
+import json
 import logging
 import smtplib
 import sqlite3
+import threading
+import urllib.request
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -99,7 +102,6 @@ def _html_wrap(subject_line, body_html, company, cta_url=None, cta_label=None):
 # Bez ovoga: PythonAnywhere free tier blokira outbound SMTP → svaki send radi
 # 4× retry sa exponential backoff (1+2+4+8 = 15s) → ako klijent klikne "Send"
 # 5 puta, gubimo 75s CPU i punimo email_queue duplikatima.
-_SMTP_CB_LOCK = threading.Lock() if 'threading' in dir() else None
 _SMTP_FAILURES = []  # list of unix timestamps of recent failures
 _SMTP_CB_THRESHOLD = 3       # failure count to trip
 _SMTP_CB_WINDOW_S = 300      # 5 min sliding window
@@ -194,6 +196,67 @@ def _send(recipient, subject, html_body, plain_body, attachments=None):
     if not (server_host and user and pw and recipient):
         return False, "SMTP_INCOMPLETE_OR_NO_RECIPIENT"
 
+    # ==========================================================
+    # POSTMARK HTTP TUNNEL — zaobilaženje SMTP firewall-a (PA free/starter)
+    # ==========================================================
+    # Ako je admin konfigurisao Postmark SMTP (smtp.postmarkapp.com) i platforma
+    # blokira SMTP odlazni saobraćaj (25/465/587), i dalje možemo da šaljemo
+    # preko standardnog HTTPS-a (443) direktno na Postmark API. Isti server token
+    # (smtpPass) služi kao X-Postmark-Server-Token. Podržava attachments preko
+    # base64 enkodiranja. Ovo je "zlatna" opcija za PythonAnywhere free tier
+    # jer HTTP outbound uvek radi.
+    if "postmarkapp" in str(server_host).lower():
+        payload = {
+            "From": f"{sender_name} <{sender_email}>",
+            "To": recipient,
+            "Subject": subject,
+            "HtmlBody": html_body,
+            "TextBody": plain_body or subject,
+            "MessageStream": "outbound",
+        }
+        if attachments:
+            postmark_atts = []
+            for att in attachments:
+                data = att.get("data")
+                filename = att.get("filename", "document.pdf")
+                if data:
+                    postmark_atts.append({
+                        "Name": filename,
+                        "Content": base64.b64encode(data).decode('utf-8'),
+                        "ContentType": "application/octet-stream",
+                    })
+            if postmark_atts:
+                payload["Attachments"] = postmark_atts
+
+        req = urllib.request.Request(
+            "https://api.postmarkapp.com/email",
+            data=json.dumps(payload).encode('utf-8'),
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-Postmark-Server-Token": pw.strip(),
+            }
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                logger.info(f"Postmark HTTP TUNNEL send OK to {recipient}")
+                _smtp_record_success()
+                return True, None
+        except Exception as e:
+            err_msg = str(e)
+            if hasattr(e, 'read'):
+                try:
+                    err_msg += " " + e.read().decode('utf-8', 'ignore')
+                except Exception:
+                    pass
+            logger.error(f"Postmark HTTP TUNNEL error: {err_msg}")
+            _smtp_record_failure()
+            try:
+                _park_in_queue(recipient, subject, plain_body, html_body, attachments, err_msg)
+            except Exception:
+                pass
+            return False, err_msg
+
     # Ako ima priloga → koristimo "mixed" outer + "alternative" za text/html.
     # Ovo je RFC-preporučen redosled za HTML mejl sa attachmentima.
     if attachments:
@@ -277,8 +340,6 @@ def _send(recipient, subject, html_body, plain_body, attachments=None):
             return False, str(e)
     return False, last_err
 
-
-import threading
 
 # Process-level lock — sprečava da paralelni pozivi process_email_queue
 # (npr. background thread + manual /api/comms/retry_now klik) pokupe iste
