@@ -241,6 +241,34 @@ def log_portal_activity(partner_id, action, details, ip=None, user_agent=None):
         pass
 
 
+def is_partner_premium(cursor_or_data):
+    """Vraća True ako je partner PREMIUM klijent — dobija poseban tretman:
+      • GPS lokacija NIJE obavezna za OTP login
+      • KYC status ne blokira pristup portalu (uvek 'approved' na svojoj strani)
+      • KYC forma sva polja opciona (nema IBAN/BIC/VIES hard-block-ova)
+      • Poseban vizuelni prikaz (Premium tema)
+
+    Parametar može biti partner dict (već učitan) ili tuple (partner_id, partner_dict)
+    ili samo partner_id string (u tom slučaju učitavamo iz baze)."""
+    if isinstance(cursor_or_data, dict):
+        return bool(cursor_or_data.get('isPremium'))
+    if isinstance(cursor_or_data, tuple) and len(cursor_or_data) >= 2:
+        return bool((cursor_or_data[1] or {}).get('isPremium'))
+    # string ID case — učitaj iz baze
+    pid = str(cursor_or_data or '').strip()
+    if not pid:
+        return False
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
+            row = conn.execute("SELECT data FROM partners WHERE id=?", (pid,)).fetchone()
+        if row:
+            p = safe_parse(row[0])
+            return bool(isinstance(p, dict) and p.get('isPremium'))
+    except Exception:
+        pass
+    return False
+
+
 def find_partner_by_email(email):
     if not email:
         return None, None

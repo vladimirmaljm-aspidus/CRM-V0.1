@@ -202,21 +202,29 @@ def verify_otp(token):
     payload = request.get_json(silent=True) or {}
     user_otp = payload.get('otp')
     location = str(payload.get('location', '')).strip()
-    # GPS OBAVEZAN — isti standard kao CRM login. Blokira automated bots i
-    # forsira klijenta da odobri deljenje lokacije preko browsera.
-    if not location or ',' not in location:
+
+    # PREMIUM check — Premium klijenti su izuzeti od GPS obaveze (isPremium flag
+    # postavlja admin u CRM Partner formi). Za standardne klijente GPS je i dalje
+    # obavezan kao anti-bot mera. Partner podatak se vadi PRE OTP verify jer
+    # ako je bez GPS-a i nije premium, blokiramo pre nego što potrošimo OTP attempt.
+    from . import is_partner_premium
+    conn_check = sqlite3.connect(DB_FILE, timeout=15.0)
+    try:
+        _pid, _pdata = find_partner_by_token(conn_check.cursor(), token, enforce_active=False)
+    finally:
+        conn_check.close()
+    is_premium = is_partner_premium(_pdata)
+
+    if not is_premium and (not location or ',' not in location):
         log_audit('SECURITY', 'portal', f'Portal login blocked: missing GPS location for token {token[:8]}...', is_suspicious=True)
         return jsonify({"error": "LOCATION_REQUIRED",
                         "message": "Precise location must be shared to access the portal."}), 403
 
     auth_key = verify_portal_otp(token, user_otp)
     if auth_key:
-        conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        c = conn.cursor()
-        partner_id, _ = find_partner_by_token(c, token, enforce_active=False)
-        conn.close()
-        # log_portal_activity već ubacuje IP geo; dodajemo GPS koordinate u details.
-        log_portal_activity(partner_id, 'LOGIN_SUCCESS', f'OTP login (GPS: {location})')
+        # log_portal_activity već ubacuje IP geo; dodajemo GPS koordinate ako ih imamo.
+        gps_note = f'GPS: {location}' if location else 'no GPS (premium)'
+        log_portal_activity(_pid, 'LOGIN_SUCCESS', f'OTP login ({gps_note})')
         return jsonify({"status": "success", "auth_key": auth_key})
 
     return jsonify({"error": "Invalid or expired OTP"}), 401
@@ -256,9 +264,6 @@ def consume_magic_link(token):
     payload = request.get_json(silent=True) or {}
     ml = str(payload.get('ml', '')).strip()
     location = str(payload.get('location', '')).strip()
-    if not location or ',' not in location:
-        return jsonify({"error": "LOCATION_REQUIRED",
-                        "message": "Precise location must be shared to access the portal."}), 403
 
     # Osnovna partner + kill-switch provera pre magic-link verifikacije
     conn = sqlite3.connect(DB_FILE, timeout=15)
@@ -272,6 +277,12 @@ def consume_magic_link(token):
             return jsonify({"error": "Access Revoked. Contact administrator."}), 403
     finally:
         conn.close()
+
+    # PREMIUM izuzetak od GPS obaveze (isti mehanizam kao OTP verify)
+    from . import is_partner_premium
+    if not is_partner_premium(partner) and (not location or ',' not in location):
+        return jsonify({"error": "LOCATION_REQUIRED",
+                        "message": "Precise location must be shared to access the portal."}), 403
 
     from magic_link import verify
     ok, reason = verify(ml, expected_portal_token=token, client_ip=ip)
@@ -293,7 +304,8 @@ def consume_magic_link(token):
     import secrets as _sec
     auth_key = _sec.token_urlsafe(32)
     portal_auth_sessions[token] = {'auth_key': auth_key, 'issued_at': datetime.now(timezone.utc).timestamp()}
-    log_portal_activity(partner_id, 'LOGIN_SUCCESS', f'Magic-link login (GPS: {location})')
+    gps_note = f'GPS: {location}' if location else 'no GPS (premium)'
+    log_portal_activity(partner_id, 'LOGIN_SUCCESS', f'Magic-link login ({gps_note})')
     return jsonify({"status": "success", "auth_key": auth_key})
 
 
@@ -374,23 +386,30 @@ def portal_login_verify():
     session_id = data.get('session_id')
     user_otp = data.get('otp')
     location = str(data.get('location', '')).strip()
-    if not location or ',' not in location:
-        log_audit('SECURITY', 'portal', 'Portal login blocked: missing GPS location', is_suspicious=True)
-        return jsonify({"error": "LOCATION_REQUIRED",
-                        "message": "Precise location must be shared to access the portal."}), 403
 
     pending = pending_email_sessions.get(session_id)
     if not pending or pending.get('expires', 0) < time.time():
         pending_email_sessions.pop(session_id, None)
         return jsonify({"error": "Session expired. Please request a new code."}), 401
 
+    # PREMIUM izuzetak od GPS obaveze (email login flow)
+    from . import is_partner_premium
+    is_premium = is_partner_premium(pending.get('partner_id'))
+
+    if not is_premium and (not location or ',' not in location):
+        log_audit('SECURITY', 'portal', 'Portal login blocked: missing GPS location', is_suspicious=True)
+        return jsonify({"error": "LOCATION_REQUIRED",
+                        "message": "Precise location must be shared to access the portal."}), 403
+
     token = pending['token']
     auth_key = verify_portal_otp(token, user_otp)
     if auth_key:
         pending_email_sessions.pop(session_id, None)
-        log_portal_activity(pending['partner_id'], 'LOGIN_SUCCESS', f'Email login from {pending["email"]} (GPS: {location})')
-        log_audit('LOGIN', 'portal', f'Portal email login: {pending["email"]} (GPS: {location})', is_suspicious=False)
-        return jsonify({"status": "success", "auth_key": auth_key, "token": token})
+        gps_note = f'GPS: {location}' if location else 'no GPS (premium)'
+        log_portal_activity(pending['partner_id'], 'LOGIN_SUCCESS', f'Email login from {pending["email"]} ({gps_note})')
+        log_audit('LOGIN', 'portal', f'Portal email login: {pending["email"]} ({gps_note})', is_suspicious=False)
+        return jsonify({"status": "success", "auth_key": auth_key, "token": token,
+                        "isPremium": is_premium})
 
     return jsonify({"error": "Invalid or expired verification code."}), 401
 

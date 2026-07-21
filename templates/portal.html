@@ -94,6 +94,60 @@
         .timeline-stage { flex: 1; position: relative; text-align: center; }
         .timeline-stage .dot { width: 22px; height: 22px; border-radius: 50%; background: var(--p-border-strong); margin: 0 auto 6px; border: 3px solid var(--p-panel); position: relative; z-index: 1; transition: all 0.2s ease; }
         .timeline-stage.active .dot { background: var(--p-accent); box-shadow: 0 0 0 4px var(--p-accent-soft); }
+
+        /* ==========================================================
+           PREMIUM MODE — luksuzniji tretman za VIP klijente.
+           Aktivira se dodavanjem klase 'premium-mode' na <body> iz
+           portal/api.js kada backend vrati partner.isPremium=true.
+           ========================================================== */
+        body.premium-mode {
+            background:
+              radial-gradient(circle at top left, rgba(184,137,46,0.06) 0%, transparent 45%),
+              radial-gradient(circle at bottom right, rgba(184,137,46,0.05) 0%, transparent 55%),
+              linear-gradient(180deg, #fbfaf7 0%, #f5f0e6 100%);
+        }
+        body.premium-mode .panel {
+            border-color: #e8dcc4;
+            box-shadow: 0 4px 24px rgba(184,137,46,0.10), 0 1px 3px rgba(90,60,10,0.04);
+            background: linear-gradient(180deg, #ffffff 0%, #fefdf9 100%);
+        }
+        body.premium-mode .btn.btn-primary {
+            background: linear-gradient(135deg, #d4a94c 0%, #b8892e 100%);
+            color: #ffffff;
+            border: none;
+            box-shadow: 0 3px 10px rgba(184,137,46,0.30);
+        }
+        body.premium-mode .btn.btn-primary:hover {
+            background: linear-gradient(135deg, #b8892e 0%, #96701d 100%);
+        }
+        body.premium-mode .badge-success {
+            background: linear-gradient(135deg,#e8b34a,#b8892e);
+            color: #3d2f00;
+        }
+        body.premium-mode .tab-btn.active {
+            background: linear-gradient(135deg, #fdf6e3 0%, #f5e8c8 100%);
+            color: #6b4c0f;
+            border-bottom: 2px solid #b8892e;
+            font-weight: 700;
+        }
+        body.premium-mode nav#portal-nav {
+            background: linear-gradient(90deg, #ffffff 0%, #fbfaf7 100%);
+            border-bottom: 1px solid #e8dcc4;
+        }
+        body.premium-mode h1, body.premium-mode h2, body.premium-mode h3 {
+            letter-spacing: -0.015em;
+        }
+        body.premium-mode .stat-card {
+            background: linear-gradient(135deg, #ffffff 0%, #fdfaf3 100%);
+            border-color: #e8dcc4;
+        }
+        body.premium-mode .stat-card .value {
+            background: linear-gradient(135deg, #b8892e 0%, #6b4c0f 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            font-weight: 800;
+        }
         .timeline-stage.done .dot { background: var(--p-success); }
         .timeline-stage.done .dot::after { content: '\2713'; color: #fff; font-size: 12px; font-weight: bold; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
         .timeline-stage .lbl { font-size: 10px; font-weight: 600; color: var(--p-muted); text-transform: uppercase; letter-spacing: 0.05em; }
