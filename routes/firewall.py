@@ -205,6 +205,122 @@ def get_firewall_settings():
     })
 
 
+@firewall_bp.route('/config', methods=['POST'])
+@login_required
+def save_firewall_config():
+    """Frontend Settings modal poziva ovaj endpoint da zameni CELE
+    whitelist i blacklist liste jednim POST-om, plus max_login i max_portal
+    parametre. Interno: mapiramo na FirewallCache + settings tabelu."""
+    if not is_admin():
+        return jsonify({"error": "ACCESS_DENIED"}), 403
+
+    payload = request.get_json(silent=True) or {}
+
+    # 1. WHITELIST — zameni celu listu
+    new_wl = payload.get('whitelist') or []
+    cleaned_wl = set()
+    for ip in new_wl:
+        s = str(ip or '').strip()
+        if not s:
+            continue
+        try:
+            ipaddress.ip_address(s)
+            cleaned_wl.add(s)
+        except ValueError:
+            # loše formatirana IP — preskoči tiho da parcijalna greška
+            # ne zaustavi save cele konfiguracije
+            pass
+    FirewallCache.whitelist = cleaned_wl
+
+    # 2. BLACKLIST — zameni celu listu
+    new_bl = payload.get('blacklist') or []
+    cleaned_bl = set()
+    for ip in new_bl:
+        s = str(ip or '').strip()
+        if not s:
+            continue
+        try:
+            ipaddress.ip_address(s)
+            cleaned_bl.add(s)
+        except ValueError:
+            pass
+    # IP koji je i u whitelist i blacklist — whitelist ima prednost
+    cleaned_bl -= cleaned_wl
+    FirewallCache.blacklist = cleaned_bl
+
+    # 3. Rate limits (max_login, max_portal) — snimi u settings tabelu i primeni
+    fw_settings = {}
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            c = conn.cursor()
+            c.execute("SELECT value FROM settings WHERE key='firewall'")
+            row = c.fetchone()
+        if row and row[0]:
+            existing = decrypt_data(row[0]) or {}
+            if isinstance(existing, dict):
+                fw_settings = existing
+    except Exception:
+        pass
+
+    for src_key, dest_key in [('max_login', 'max_login_attempts'),
+                              ('max_portal', 'max_portal_requests_per_min')]:
+        if src_key in payload:
+            try:
+                v = int(payload[src_key])
+                if 1 <= v <= 10_000_000:
+                    fw_settings[dest_key] = v
+            except (TypeError, ValueError):
+                pass
+
+    # 4. Snimi ceo blok — settings + lista whitelist/blacklist
+    try:
+        fw_settings['whitelist'] = sorted(cleaned_wl)
+        fw_settings['blacklist'] = sorted(cleaned_bl)
+        with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('firewall', ?)",
+                         (encrypt_data(fw_settings),))
+            conn.commit()
+    except Exception as e:
+        return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
+
+    applied = load_firewall_settings()
+    log_audit('FIREWALL_MANAGE', 'firewall',
+              f'Admin bulk-saved firewall config: {len(cleaned_wl)} whitelist, {len(cleaned_bl)} blacklist')
+    return jsonify({
+        "status": "success",
+        "whitelist_count": len(cleaned_wl),
+        "blacklist_count": len(cleaned_bl),
+        "applied": applied,
+    })
+
+
+@firewall_bp.route('/unblock', methods=['POST'])
+@login_required
+def unblock_ip():
+    """Alias za /blacklist/remove — frontend Settings modal ga koristi
+    kada admin klikne UNBLOCK dugme pored blokirane IP adrese."""
+    if not is_admin():
+        return jsonify({"error": "ACCESS_DENIED"}), 403
+
+    data = request.get_json(silent=True) or {}
+    ip = str(data.get('ip') or '').strip()
+    if not ip:
+        return jsonify({"error": "MISSING_IP"}), 400
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return jsonify({"error": "INVALID_IP_FORMAT"}), 400
+
+    was_blocked = ip in FirewallCache.blacklist
+    FirewallCache.blacklist.discard(ip)
+    if ip in FirewallCache.login_attempts:
+        del FirewallCache.login_attempts[ip]
+
+    log_audit('FIREWALL_MANAGE', 'firewall',
+              f'Admin unblocked IP {ip} ({"was in blacklist" if was_blocked else "not blocked"})')
+    return jsonify({"status": "success", "ip": ip, "was_blocked": was_blocked})
+
+
 @firewall_bp.route('/settings', methods=['POST'])
 @login_required
 def save_firewall_settings():
