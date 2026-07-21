@@ -25,6 +25,7 @@ from routes.logistics import logistics_bp
 from routes.geo import geo_bp
 from routes.sanctions import sanctions_bp, screen_batch as sanctions_screen_batch
 from routes.documents_register import documents_register_bp
+from routes.verify_public import verify_bp
 
 # Konfiguracija sistemskog logovanja (sprečava ispisivanje osetljivih grešaka korisnicima)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -100,6 +101,9 @@ app.register_blueprint(logistics_bp)
 app.register_blueprint(geo_bp)
 app.register_blueprint(sanctions_bp)
 app.register_blueprint(documents_register_bp)
+# /verify/<VER-hash> — javni endpoint koji vodi na potvrdu dokumenta iz QR koda
+# na ponudi/fakturi. Bez registracije ovog bp-a, QR na PDF-u vodi u 404.
+app.register_blueprint(verify_bp)
 
 @app.before_request
 def enforce_csrf():
