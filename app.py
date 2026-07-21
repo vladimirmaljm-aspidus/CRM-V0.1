@@ -231,24 +231,41 @@ def apply_brutal_security_headers(response):
     if request.path.startswith('/portal') or request.path.startswith('/api/portal'):
         response.headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive, nosnippet'
     
-    # Sadržajna polisa (CSP) je pooštrena
-    # Ograničeni su izvori slika na tačno definisane sigurne lokacije, umesto divljeg "http://*"
+    # Sadržajna polisa (CSP) — dozvoljeni izvori za skripte/style/API
     #
-    # connect-src mora dozvoliti:
-    #  - http://ip-api.com — geo lookup za detekciju anomalije prijave po zemlji
-    #  - https://open.er-api.com — dnevni kursevi za deal profit kalkulacije
-    #  - https://nominatim.openstreetmap.org — geokodiranje adresa u logistics planner-u
-    #  - https://router.project-osrm.org — kopneno rutiranje u logistics planner-u
-    #  - https://{a,b,c,d}.basemaps.cartocdn.com — Leaflet tile-ovi
-    #  - https://unpkg.com i https://cdnjs.cloudflare.com — CSS/JS za Leaflet i Font Awesome
+    # script-src:
+    #  - cdn.tailwindcss.com          — Tailwind runtime (utility CSS)
+    #  - cdn.jsdelivr.net             — Chart.js (dashboard) + SheetJS (XLSX import), lazy-loaded
+    #  - cdnjs.cloudflare.com         — jsPDF fallback + Leaflet + Font Awesome
+    #  - unpkg.com                    — Leaflet
+    #  - hcaptcha.com + *.hcaptcha.com — portal anti-bot widget
+    #
+    # connect-src (XHR/fetch iz browser-a):
+    #  - Sopstveni /api/*             — 'self'
+    #  - ip-api.com                   — geo lookup pri login-u
+    #  - open.er-api.com              — legacy FX (deal profit calc)
+    #  - exchangerate.host            — nove FX rate (v22 dashboard)
+    #  - nominatim.openstreetmap.org  — geocode adresa
+    #  - router.project-osrm.org      — kopneno rutiranje (logistics)
+    #  - hcaptcha.com                 — portal captcha verify
+    #  - *.basemaps.cartocdn.com      — Leaflet tile-ovi (u img-src ispod)
     csp = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://unpkg.com; "
-        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://unpkg.com; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
+        "https://cdn.tailwindcss.com https://cdn.jsdelivr.net "
+        "https://cdnjs.cloudflare.com https://unpkg.com "
+        "https://hcaptcha.com https://*.hcaptcha.com; "
+        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
+        "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
+        "https://unpkg.com https://hcaptcha.com https://*.hcaptcha.com; "
         "font-src 'self' data: https://cdnjs.cloudflare.com; "
-        "img-src 'self' data: blob: https://googleusercontent.com https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; "
-        "frame-src 'self' blob:; "
-        "connect-src 'self' http://ip-api.com https://open.er-api.com https://nominatim.openstreetmap.org https://router.project-osrm.org https://www.trading-economics.com;"
+        "img-src 'self' data: blob: https://googleusercontent.com "
+        "https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; "
+        "frame-src 'self' blob: https://hcaptcha.com https://*.hcaptcha.com; "
+        "connect-src 'self' http://ip-api.com https://open.er-api.com "
+        "https://api.exchangerate.host https://nominatim.openstreetmap.org "
+        "https://router.project-osrm.org https://www.trading-economics.com "
+        "https://hcaptcha.com https://*.hcaptcha.com;"
     )
     response.headers['Content-Security-Policy'] = csp
     
