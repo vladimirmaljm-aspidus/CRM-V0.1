@@ -118,6 +118,26 @@ def init_db():
             )''')
             c.execute('CREATE INDEX IF NOT EXISTS idx_docrev_number ON document_revisions(docNumber)')
 
+            # OFFER VERSIONS — svaki put kada se ponuda menja (cena, količina,
+            # incoterm, stavke…) prethodna verzija se snima ovde. Ovo daje admin-u
+            # potpunu istoriju "šta je bilo, šta je klijent video pre pregovora,
+            # ko je i kada šta izmenio i zašto". Snapshot je pun JSON stare
+            # ponude — tako se svaka verzija može ponovo generisati kao PDF.
+            c.execute('''CREATE TABLE IF NOT EXISTS offer_versions (
+                id TEXT PRIMARY KEY,
+                offerId TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                snapshot TEXT NOT NULL,
+                changedFields TEXT,
+                changeReason TEXT,
+                changedBy TEXT,
+                changedByRole TEXT,
+                changedAt TEXT NOT NULL,
+                origin TEXT
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_offerver_offer ON offer_versions(offerId)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_offerver_at ON offer_versions(changedAt)')
+
 ########## --- NOVA LINIJA KODA ZA EMAIL RED ČEKANJA ---
             c.execute('''CREATE TABLE IF NOT EXISTS email_queue (
                 id TEXT PRIMARY KEY, recipient TEXT NOT NULL, subject TEXT,
