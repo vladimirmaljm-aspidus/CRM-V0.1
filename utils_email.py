@@ -503,6 +503,22 @@ def process_email_queue(max_batch=10):
             _recover_stuck_sending(conn, worker_id)
             conn.commit()
             conn.close()
+        except sqlite3.DatabaseError as db_err:
+            # "database disk image is malformed" — ne spamuj log svakih 30s.
+            # Loguj JEDNOM po worker-ID-u pa ućuti; admin mora ručno pokrenuti
+            # scripts/db_recover.py da vrati bazu.
+            msg = str(db_err).lower()
+            if 'malformed' in msg or 'corrupt' in msg:
+                if not getattr(process_email_queue, '_reported_corruption', False):
+                    logger.critical(
+                        f'[{worker_id}] DATABASE CORRUPTION detected: {db_err}. '
+                        f'Email queue disabled until admin runs scripts/db_recover.py. '
+                        f'Ovaj log neće se ponavljati dok se aplikacija ne restartuje.'
+                    )
+                    process_email_queue._reported_corruption = True
+            else:
+                logger.error(f'[{worker_id}] recovery pass failed: {db_err}')
+            return stats
         except Exception as e:
             logger.error(f'[{worker_id}] recovery pass failed: {e}')
             return stats
