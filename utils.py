@@ -181,7 +181,6 @@ def log_audit(action, module, details, is_suspicious=False, location="N/A"):
 
     try:
         with sqlite3.connect(AUDIT_DB_FILE, timeout=30.0) as conn:
-            conn.execute('PRAGMA journal_mode=WAL;')
             conn.execute('PRAGMA busy_timeout=30000;')
             c = conn.cursor()
             c.execute('''INSERT INTO audit_logs
@@ -189,7 +188,11 @@ def log_audit(action, module, details, is_suspicious=False, location="N/A"):
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                         (str(uuid.uuid4()), user_id, username, action, module, extended_details, ip_addr, formatted_user_agent, timestamp, is_suspicious, location))
             conn.commit()
-    except sqlite3.OperationalError:
+    except Exception:
+        # KRITIČNO: log_audit se zove na SVAKOM requestu (login, akcije...).
+        # Ako audit baza padne (locked ILI "database disk image is malformed" =
+        # sqlite3.DatabaseError, koji NIJE OperationalError!), NIKAD ne smemo
+        # da obučemo request koji je pozvao log_audit. Zato hvatamo sve.
         pass
 
 def login_required(f):
@@ -386,7 +389,7 @@ def _housekeeping_loop():
                 cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat().replace('+00:00', 'Z')
                 try:
                     with sqlite3.connect(AUDIT_DB_FILE, timeout=30.0) as conn:
-                        conn.execute('PRAGMA journal_mode=WAL;')
+                        conn.execute('PRAGMA busy_timeout=30000;')
                         c = conn.cursor()
                         c.execute('DELETE FROM audit_logs WHERE timestamp < ? AND is_suspicious = 0', (cutoff,))
                         deleted = c.rowcount

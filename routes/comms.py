@@ -15,7 +15,7 @@ def get_smtp_settings():
     row = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute('PRAGMA busy_timeout=30000;')
         c = conn.cursor()
         c.execute("SELECT value FROM settings WHERE key='comms_settings'")
         row = c.fetchone()

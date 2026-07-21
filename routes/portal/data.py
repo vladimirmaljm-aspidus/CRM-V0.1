@@ -57,7 +57,7 @@ def get_portal_data(token):
     conn = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute('PRAGMA busy_timeout=30000;')
         c = conn.cursor()
 
         # find_partner_by_token sprovodi Kill Switch (opozvan portal -> None)
@@ -330,7 +330,7 @@ def submit_profile_change_request(token):
 
     conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
     try:
-        conn_p.execute('PRAGMA journal_mode=WAL;')
+        conn_p.execute('PRAGMA busy_timeout=30000;')
         conn_p.execute(
             "INSERT INTO profile_change_requests (id, partner_id, data, status, submitted_at) VALUES (?, ?, ?, ?, ?)",
             (req_id, partner_id, json.dumps(changes), 'pending', now_iso)
