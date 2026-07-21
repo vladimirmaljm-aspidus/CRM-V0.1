@@ -17,7 +17,6 @@ def generate_portal_link(partner_id):
     action_log = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA journal_mode=WAL;')
         conn.execute('PRAGMA busy_timeout=30000;')
         c = conn.cursor()
 
@@ -85,7 +84,6 @@ def set_portal_access(partner_id):
     conn = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA journal_mode=WAL;')
         conn.execute('PRAGMA busy_timeout=30000;')
         c = conn.cursor()
         c.execute('SELECT data FROM partners WHERE id=?', (partner_id,))
@@ -133,7 +131,7 @@ def send_otp(token):
     conn = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute('PRAGMA busy_timeout=30000;')
         c = conn.cursor()
 
         # Nađi partnera bez kill-switch filtera da bismo mogli da logujemo opoziv.
