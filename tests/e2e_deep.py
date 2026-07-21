@@ -679,7 +679,7 @@ class K_OfferVersioning(Base):
             'quantity': 10, 'unit': 't', 'sellingPrice': 1000, 'currency': 'USD',
             'incoterm': 'FOB',
         }
-        r = self._post('/api/data/save_item/offers', payload)
+        r = self._post('/api/item/offers', payload)
         self.assertEqual(r.status_code, 200, msg=f'create offer failed: {r.data[:200]}')
         return oid, payload
 
@@ -695,7 +695,7 @@ class K_OfferVersioning(Base):
         """Izmena cene mora da napravi 1 verziju (staro stanje)."""
         oid, payload = self._create_offer()
         payload['sellingPrice'] = 1500  # promena
-        r = self._post('/api/data/save_item/offers', payload)
+        r = self._post('/api/item/offers', payload)
         self.assertEqual(r.status_code, 200)
         r = self.client.get(f'/api/offers/{oid}/versions')
         j = r.get_json() or {}
@@ -707,7 +707,7 @@ class K_OfferVersioning(Base):
     def test_03_no_change_no_version(self):
         """Ponovni save identičnog payload-a ne pravi novu verziju."""
         oid, payload = self._create_offer()
-        r = self._post('/api/data/save_item/offers', payload)  # identično
+        r = self._post('/api/item/offers', payload)  # identično
         self.assertEqual(r.status_code, 200)
         r = self.client.get(f'/api/offers/{oid}/versions')
         j = r.get_json() or {}
@@ -718,7 +718,7 @@ class K_OfferVersioning(Base):
         oid, payload = self._create_offer()
         # promena
         payload['sellingPrice'] = 2000
-        self._post('/api/data/save_item/offers', payload)
+        self._post('/api/item/offers', payload)
         r = self.client.get(f'/api/offers/{oid}/versions')
         j = r.get_json() or {}
         self.assertEqual(j.get('count'), 1)
@@ -740,7 +740,7 @@ class K_OfferVersioning(Base):
         """GET /versions/<id> mora vratiti pun snapshot za PDF regen."""
         oid, payload = self._create_offer()
         payload['quantity'] = 25
-        self._post('/api/data/save_item/offers', payload)
+        self._post('/api/item/offers', payload)
         r = self.client.get(f'/api/offers/{oid}/versions')
         version_id = (r.get_json() or {})['versions'][0]['id']
         r = self.client.get(f'/api/offers/{oid}/versions/{version_id}')
