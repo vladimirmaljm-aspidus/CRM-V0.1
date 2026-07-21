@@ -18,9 +18,22 @@ function showPartnerForm(id=null){
     }).join('');
     
     const entityTypeHtml = `
-      <div class="flex gap-4 mb-4 border-b border-[var(--border)] pb-4">
+      <div class="flex gap-4 mb-4 border-b border-[var(--border)] pb-4 items-center flex-wrap">
         <label class="inline-flex items-center cursor-pointer p-2 bg-[var(--panel)] rounded border border-[var(--border)] hover:bg-[var(--hover-bg)]"><input type="radio" name="entityType" value="company" ${item.entityType !== 'person' ? 'checked' : ''} class="mr-2 w-4 h-4 text-blue-600"> <span class="text-main font-bold">🏢 ${Utils.t('fields.company')}</span></label>
         <label class="inline-flex items-center cursor-pointer p-2 bg-[var(--panel)] rounded border border-[var(--border)] hover:bg-[var(--hover-bg)]"><input type="radio" name="entityType" value="person" ${item.entityType === 'person' ? 'checked' : ''} class="mr-2 w-4 h-4 text-blue-600"> <span class="text-main font-bold">👤 ${Utils.t('fields.person')}</span></label>
+
+        <!-- PREMIUM klijent toggle — postavlja isPremium na partneru.
+             Kada je uključeno, portal ovog klijenta:
+              • Ne traži GPS lokaciju za login
+              • Ne blokira ga KYC gate (pristup svemu odmah)
+              • KYC forma prihvata prazna polja (nema IBAN/BIC hard-check-a)
+              • Ima poseban "gold" premium vizuelni prikaz -->
+        <label class="inline-flex items-center cursor-pointer p-2 rounded border ml-auto"
+               style="background:linear-gradient(135deg,#fdf6e3,#f5e8c8);border-color:#e8dcc4;box-shadow:0 2px 6px rgba(184,137,46,0.15);"
+               title="Premium klijent: bez GPS zahteva, bez KYC approval-a, bez IBAN/BIC validacija, poseban vizuelni portal">
+            <input type="checkbox" name="isPremium" ${item.isPremium ? 'checked' : ''} class="mr-2 w-4 h-4">
+            <span class="font-bold" style="color:#6b4c0f;">★ ${Utils.t('fields.premiumClient') || 'PREMIUM Client'}</span>
+        </label>
       </div>
     `;
     const linkedCompanyOptions = `<option value="">${Utils.t('fields.noLink')}</option>` + state.data.partners.filter(p => p.entityType !== 'person' && p.id !== item.id).map(p => `<option value="${p.id}" ${item.linkedCompanyId === p.id ? 'selected' : ''}>${Utils.escapeHtml(p.companyName)}</option>`).join('');
@@ -139,6 +152,9 @@ function showPartnerForm(id=null){
             entityType: fd.get('entityType') || 'company',
             linkedCompanyId: fd.get('linkedCompanyId') || null,
             status: fd.get('status') || 'active',
+            // isPremium: VIP klijent — dobija portal bez GPS-a, KYC gate-a i
+            // IBAN/BIC validacije, plus zlatan premium vizuelni prikaz.
+            isPremium: fd.get('isPremium') === 'on',
             rating: parseInt(fd.get('rating') || 0, 10),
             taxId: fd.get('taxId'),
             regNumber: fd.get('regNumber'),

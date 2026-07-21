@@ -80,11 +80,20 @@ def get_portal_data(token):
         _contact_dict = _contact if isinstance(_contact, dict) else {}
         _kyc_dict = _kyc if isinstance(_kyc, dict) else {}
 
+        # PREMIUM klijent — auto-approve KYC gate (frontend ne blokira feature-e).
+        # Realan admin KYC review i dalje može biti "pending" u bazi, ali klijent
+        # sa isPremium=true vidi sve funkcije bez čekanja odobrenja. Ovo je
+        # namerno business rule za VIP kupce koje admin lično zna.
+        _is_premium = bool(partner.get('isPremium'))
+        _real_kyc_status = _kyc_dict.get("status", "pending")
+        _shown_kyc_status = 'approved' if _is_premium else _real_kyc_status
+
         safe_partner = {
             "id": partner_id,
             "companyName": partner.get("companyName") or partner.get("name") or "",
             "contactPerson": _contact_dict.get("person", "") or partner.get("contactPerson", ""),
-            "kycStatus": _kyc_dict.get("status", "pending"),
+            "kycStatus": _shown_kyc_status,
+            "kycStatusReal": _real_kyc_status,   # za admin-only prikaz u portalu (ako želi)
             "kycReviewNote": _kyc_dict.get("reviewNote", ""),
             "kycReviewedAt": _kyc_dict.get("reviewedAt", ""),
             "email": _contact_dict.get("email") or partner.get("email", "") or "",
@@ -94,7 +103,8 @@ def get_portal_data(token):
                 "city": _addr_dict.get("city", "") or partner.get("city", "") or "",
                 "country": _addr_dict.get("country", "") or partner.get("country", "") or "",
             },
-            "permissions": permissions
+            "permissions": permissions,
+            "isPremium": _is_premium,
         }
         
         c.execute("SELECT data FROM products")
