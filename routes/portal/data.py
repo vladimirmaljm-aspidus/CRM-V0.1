@@ -146,11 +146,20 @@ def get_portal_data(token):
             if isinstance(pd, dict) and pd.get('id'):
                 products_full_map[pd['id']] = pd
 
+        # Učitaj listu ponuda/dokumenata koje je klijent ranije sakrio ("hide from portal"
+        # dugme) — filtriramo ih iz odgovora. Zapisi ostaju u bazi i vidljivi su admin-u
+        # u CRM-u; klijent može da ih vrati preko "View hidden items" dugmeta u portal-u.
+        try:
+            from .actions import _load_hidden_ids_for_partner
+            _hidden = _load_hidden_ids_for_partner(partner_id)
+        except Exception:
+            _hidden = set()
+
         c.execute("SELECT data FROM offers")
         safe_offers = []
         for o_row in c.fetchall():
             off = safe_parse(o_row[0])
-            if off.get('customerId') == partner_id:
+            if off.get('customerId') == partner_id and ('offer', str(off.get('id') or '')) not in _hidden:
                 # Enrichment: iz proizvoda ubaci HS code, spec, origin - klijent vidi pun opis ponude.
                 pid = off.get("productId")
                 prod = products_full_map.get(pid, {}) if pid else {}
@@ -205,7 +214,7 @@ def get_portal_data(token):
         documents = []
         for doc_row in c.fetchall():
             d = safe_parse(doc_row[0])
-            if d.get('partnerId') == partner_id:
+            if d.get('partnerId') == partner_id and ('document', str(d.get('id') or '')) not in _hidden:
                 documents.append(d)
         documents.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
         

@@ -361,10 +361,16 @@
                         <h2 class="text-lg font-semibold text-slate-900" id="lbl-docs-title">Document Vault</h2>
                         <p class="text-sm text-slate-500 mt-0.5" id="lbl-docs-desc">Download your official offers, invoices and contracts. Every download is logged.</p>
                     </div>
-                    <button type="button" class="btn btn-ghost" onclick="exportDocumentsHistory()">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M12 3v14m-5-5l5 5 5-5M5 21h14"/></svg>
-                        <span>Export history (CSV)</span>
-                    </button>
+                    <div class="flex gap-2">
+                        <button type="button" class="btn btn-ghost" onclick="showHiddenItems()" title="Vidi ranije uklonjene ponude/dokumente">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><path d="M12 8v4l3 3"/></svg>
+                            <span>Hidden items</span>
+                        </button>
+                        <button type="button" class="btn btn-ghost" onclick="exportDocumentsHistory()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M12 3v14m-5-5l5 5 5-5M5 21h14"/></svg>
+                            <span>Export history (CSV)</span>
+                        </button>
+                    </div>
                 </div>
                 <div class="flex flex-col md:flex-row gap-3 md:items-center mb-4">
                     <div class="search-wrap flex-1 max-w-md">

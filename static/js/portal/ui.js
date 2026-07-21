@@ -920,11 +920,17 @@ async function respondToOffer(offerId, action) {
     }
 }
 
-// Detaljan prikaz ponude (modal)
+// Detaljan prikaz ponude (modal) — sa firm-branded letterheadom identičnim kao na PDF-u
 function showOfferDetail(offerId) {
     const o = (portalData?.offers || []).find(x => x.id === offerId);
     if (!o) return;
-    // Otvori u istom stilu kao product/RFQ modal
+    const co = portalData?.company || {};
+    const brand = co.brandColor || '#2563eb';
+    const compName = co.name || 'Aspidus';
+    const logoHtml = co.logoUrl
+        ? `<img src="${safeText(co.logoUrl)}" alt="${safeText(compName)}" style="height:44px;max-width:180px;object-fit:contain;background:#ffffff;padding:4px 8px;border-radius:6px;"/>`
+        : `<div style="color:#fff;font-size:22px;font-weight:800;letter-spacing:-0.02em;">${safeText(compName)}</div>`;
+
     let modal = document.getElementById('offer-detail-modal');
     if (!modal) {
         modal = document.createElement('div');
@@ -934,6 +940,19 @@ function showOfferDetail(offerId) {
     }
     modal.innerHTML = `
     <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-3xl w-full max-h-[92vh] overflow-hidden flex flex-col">
+      <!-- LETTERHEAD — identično kao na PDF verziji ponude (logo levo, meta desno, brand-color) -->
+      <div style="background:${brand};padding:18px 24px;display:flex;justify-content:space-between;align-items:center;">
+        <div>${logoHtml}</div>
+        <div style="text-align:right;color:#ffffff;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.15em;opacity:0.85;">Commercial Offer</div>
+          <div style="font-family:'Courier New',monospace;font-size:14px;font-weight:700;margin-top:2px;">${safeText(o.offerNo || 'N/A')}</div>
+        </div>
+      </div>
+      <div style="background:#f8fafc;border-bottom:1px solid #e2e8f0;padding:10px 24px;display:flex;justify-content:space-between;font-size:11px;color:#475569;">
+        <span>${safeText(compName)}${co.address ? ' · ' + safeText(String(co.address).replace(/\n/g,', ')) : ''}${co.taxId ? ' · Tax ID: ' + safeText(co.taxId) : ''}</span>
+        <span>${o.date ? new Date(o.date).toLocaleDateString() : ''}</span>
+      </div>
+
       <div class="flex justify-between items-center border-b border-slate-100 px-6 py-4">
         <div>
           <h3 class="text-lg font-semibold text-slate-900">${safeText(o.productName)}</h3>
@@ -957,13 +976,120 @@ function showOfferDetail(offerId) {
         ${o.detailedSpec || o.productSpec ? `<div><p class="label">${t('specification') || 'Specification'}</p><pre class="text-sm text-slate-700 whitespace-pre-wrap font-sans bg-slate-50 border border-slate-200 rounded-lg p-3">${safeText(o.detailedSpec || o.productSpec)}</pre></div>` : ''}
         ${o.notes ? `<div><p class="label">${t('notes') || 'Notes'}</p><p class="text-sm italic">${safeText(o.notes)}</p></div>` : ''}
       </div>
-      <div class="p-4 border-t border-slate-200 bg-slate-50 flex justify-end gap-2">
-        ${o.documentId ? `<button class="btn btn-ghost" onclick="downloadPortalDocument('${safeText(o.documentId)}'); closeOfferDetail();">${t('btn_download_pdf') || 'Download PDF'}</button>` : ''}
-        <button class="btn btn-ghost" onclick="closeOfferDetail()">${t('close') || 'Close'}</button>
+      <!-- Confidentiality footer — isti kao na PDF-u i mejlovima -->
+      <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:10px 24px;font-size:10px;color:#64748b;line-height:1.5;">
+        <strong style="color:#334155;">CONFIDENTIALITY NOTICE</strong> — This offer and any attached documents are strictly confidential and intended solely for the named recipient. Prices and terms are valid until the "Valid Until" date shown above.
+      </div>
+
+      <div class="p-4 border-t border-slate-200 bg-slate-50 flex justify-between items-center gap-2">
+        <button class="btn btn-ghost text-xs" style="color:#dc2626;" onclick="hidePortalItem('offer','${safeText(o.id)}','${safeText(o.offerNo || 'this offer')}')" title="Ukloni sa mog view-a (admin i dalje vidi u CRM-u)">🗑️ ${t('hide_from_view') || 'Hide from my view'}</button>
+        <div class="flex gap-2">
+          ${o.documentId ? `<button class="btn btn-ghost" onclick="downloadPortalDocument('${safeText(o.documentId)}'); closeOfferDetail();">${t('btn_download_pdf') || 'Download PDF'}</button>` : ''}
+          <button class="btn btn-ghost" onclick="closeOfferDetail()">${t('close') || 'Close'}</button>
+        </div>
       </div>
     </div>`;
     modal.classList.remove('hidden'); modal.classList.add('flex');
 }
+
+
+// ==========================================================
+//  HIDE FROM VIEW — client soft-delete (admin i dalje vidi u CRM-u)
+// ==========================================================
+async function hidePortalItem(entityType, entityId, humanLabel) {
+    if (!authKey || !TOKEN) {
+        showToast('Session expired. Please refresh and sign in again.', 'error');
+        return;
+    }
+    const label = humanLabel || entityId;
+    const ok = await askConfirm(
+        (t('hide_confirm_title') || 'Hide from my view?'),
+        (t('hide_confirm_body') || 'This will remove {label} from your portal view. Your account manager will still see it in the system. You can restore it later from "View hidden items".').replace('{label}', label),
+        { danger: true, confirmText: (t('hide') || 'Hide') }
+    );
+    if (!ok) return;
+
+    try {
+        const res = await fetch(`/api/portal/hide/${TOKEN}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
+            body: JSON.stringify({ entity_type: entityType, entity_id: entityId })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        showToast((t('hidden_ok') || 'Removed from your view.'), 'success');
+        closeOfferDetail();
+        if (typeof refreshPortalData === 'function') refreshPortalData();
+        else location.reload();
+    } catch (e) {
+        showToast('Could not hide: ' + (e.message || e), 'error');
+    }
+}
+
+async function showHiddenItems() {
+    if (!authKey || !TOKEN) return;
+    try {
+        const res = await fetch(`/api/portal/hidden/${TOKEN}`, {
+            headers: { 'X-Portal-Auth': authKey }
+        });
+        const data = await res.json();
+        const items = data.hidden || [];
+        if (items.length === 0) {
+            showToast(t('no_hidden_items') || 'No hidden items — your portal view is complete.', 'info');
+            return;
+        }
+        // Show a modal listing hidden items with "Restore" buttons
+        let m = document.getElementById('hidden-items-modal');
+        if (!m) {
+            m = document.createElement('div');
+            m.id = 'hidden-items-modal';
+            m.className = 'fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden items-center justify-center p-4';
+            document.body.appendChild(m);
+        }
+        m.innerHTML = `
+          <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] overflow-hidden flex flex-col">
+            <div class="flex justify-between items-center px-6 py-4 border-b border-slate-100">
+              <h3 class="text-base font-semibold text-slate-900">🗄️ ${t('hidden_items_title') || 'Hidden Items'}</h3>
+              <button class="icon-btn" onclick="document.getElementById('hidden-items-modal').classList.add('hidden')">✕</button>
+            </div>
+            <div class="p-4 overflow-y-auto flex-1 space-y-2">
+              ${items.map(it => `
+                <div class="flex justify-between items-center bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                  <div>
+                    <div class="text-xs font-semibold text-slate-700 uppercase tracking-widest">${safeText(it.entity_type)}</div>
+                    <div class="text-sm text-slate-900 font-mono">${safeText(it.entity_id)}</div>
+                    <div class="text-[10px] text-slate-400">Hidden ${new Date(it.hidden_at).toLocaleString()}</div>
+                  </div>
+                  <button class="btn btn-primary small text-xs" onclick="unhidePortalItem('${safeText(it.entity_type)}','${safeText(it.entity_id)}')">${t('restore') || 'Restore'}</button>
+                </div>
+              `).join('')}
+            </div>
+          </div>`;
+        m.classList.remove('hidden'); m.classList.add('flex');
+    } catch (e) {
+        showToast('Could not load hidden items: ' + (e.message || e), 'error');
+    }
+}
+
+async function unhidePortalItem(entityType, entityId) {
+    try {
+        const res = await fetch(`/api/portal/unhide/${TOKEN}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
+            body: JSON.stringify({ entity_type: entityType, entity_id: entityId })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        showToast((t('restored_ok') || 'Restored to your view.'), 'success');
+        const m = document.getElementById('hidden-items-modal');
+        if (m) m.classList.add('hidden');
+        if (typeof refreshPortalData === 'function') refreshPortalData();
+        else location.reload();
+    } catch (e) {
+        showToast('Restore failed: ' + (e.message || e), 'error');
+    }
+}
+window.hidePortalItem = hidePortalItem;
+window.showHiddenItems = showHiddenItems;
+window.unhidePortalItem = unhidePortalItem;
 function closeOfferDetail() { const m = document.getElementById('offer-detail-modal'); if (m) { m.classList.add('hidden'); m.classList.remove('flex'); } }
 
 // ==========================================================
@@ -1086,10 +1212,15 @@ function renderDocuments() {
             <td class="py-3 px-3"><span class="badge badge-muted">${safeText(d.docType || 'Document')}</span></td>
             <td class="py-3 px-3 text-sm font-medium text-slate-900">${safeText(d.fileName || 'Document.pdf')}</td>
             <td class="py-3 px-3 text-right">
-                <button class="btn btn-ghost small text-xs" onclick="downloadPortalDocument('${safeText(d.id)}')">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M12 3v14m-5-5l5 5 5-5M5 21h14"/></svg>
-                    ${t('btn_download')}
-                </button>
+                <div class="inline-flex gap-1">
+                    <button class="btn btn-ghost small text-xs" onclick="downloadPortalDocument('${safeText(d.id)}')" title="${t('btn_download') || 'Download'}">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-3.5 h-3.5"><path d="M12 3v14m-5-5l5 5 5-5M5 21h14"/></svg>
+                        ${t('btn_download') || 'Download'}
+                    </button>
+                    <button class="btn btn-ghost small text-xs" style="color:#dc2626;"
+                            onclick="hidePortalItem('document','${safeText(d.id)}','${safeText(d.fileName || d.docType || 'this document')}')"
+                            title="Ukloni sa mog view-a (admin i dalje vidi)">🗑️</button>
+                </div>
             </td>
         </tr>
     `).join('');
