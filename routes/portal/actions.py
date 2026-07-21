@@ -1984,3 +1984,249 @@ def admin_portal_pending_counts():
     counts["total"] = (counts["kyc"] + counts["products"] + counts["profile_requests"]
                        + counts["rfqs"] + counts["offer_responses"])
     return jsonify(counts)
+
+# ==========================================================
+#  PORTAL HIDE/UNHIDE — client-side "brisanje" iz njegovog view-a
+# ==========================================================
+# Klijent može da ukloni sa svog portal view-a: (a) starije ponude koje su
+# akceptovane/deklinirane, (b) dokumente koje više ne treba da vidi kada
+# se posao završi. Zapisi ostaju u CRM-u (admin ih uvek vidi + audit log
+# ima šta se dogodilo — ko je i kada sakrio). NE brišemo iz baze — samo
+# beležimo per-partner "hidden" listu u portal_hidden_items tabeli.
+
+def _ensure_hidden_items_schema():
+    """Kreira portal_hidden_items tabelu ako ne postoji. Idempotent."""
+    try:
+        with sqlite3.connect(PORTAL_DB_FILE, timeout=15.0) as conn:
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('''CREATE TABLE IF NOT EXISTS portal_hidden_items (
+                id TEXT PRIMARY KEY,
+                partner_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                hidden_at TEXT NOT NULL,
+                UNIQUE(partner_id, entity_type, entity_id)
+            )''')
+            conn.commit()
+    except Exception as e:
+        current_app.logger.warning(f'portal_hidden_items schema: {e}')
+
+
+@portal_bp.route('/api/portal/hide/<token>', methods=['POST'])
+def hide_portal_item(token):
+    """Klijent sakriva jedan zapis (ponudu ili dokument) iz svog view-a.
+    Payload: {entity_type: 'offer'|'document', entity_id: str}.
+    NIJE hard delete — CRM strana i dalje vidi zapis + audit log beleži
+    ko je i kada sakrio."""
+    auth_header = request.headers.get('X-Portal-Auth')
+    if not verify_portal_session(token, auth_header):
+        return jsonify({"error": "AUTH_REQUIRED"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    entity_type = str(payload.get('entity_type', '')).strip().lower()
+    entity_id = str(payload.get('entity_id', '')).strip()
+
+    if entity_type not in ('offer', 'document'):
+        return jsonify({"error": "INVALID_ENTITY_TYPE",
+                        "message": "entity_type mora biti 'offer' ili 'document'"}), 400
+    if not entity_id or len(entity_id) > 200:
+        return jsonify({"error": "INVALID_ENTITY_ID"}), 400
+
+    _ensure_hidden_items_schema()
+
+    conn = sqlite3.connect(DB_FILE, timeout=15.0)
+    try:
+        c = conn.cursor()
+        partner_id, partner = find_partner_by_token(c, token, enforce_active=True)
+        if not partner_id:
+            return jsonify({"error": "ACCESS_DENIED"}), 403
+    finally:
+        conn.close()
+
+    now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    try:
+        with sqlite3.connect(PORTAL_DB_FILE, timeout=15.0) as pconn:
+            pconn.execute(
+                "INSERT OR REPLACE INTO portal_hidden_items "
+                "(id, partner_id, entity_type, entity_id, hidden_at) VALUES (?, ?, ?, ?, ?)",
+                (uuid.uuid4().hex, partner_id, entity_type, entity_id, now_iso)
+            )
+            pconn.commit()
+    except Exception as e:
+        return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
+
+    log_audit('INFO', 'portal',
+              f'Client hid {entity_type} {entity_id} from portal view (partner {partner_id})',
+              is_suspicious=False)
+    log_portal_activity(partner_id, 'HIDE',
+                        f'Hid {entity_type} {entity_id} from client portal view')
+    return jsonify({"status": "success", "entity_type": entity_type, "entity_id": entity_id})
+
+
+@portal_bp.route('/api/portal/unhide/<token>', methods=['POST'])
+def unhide_portal_item(token):
+    """Klijent vraća prethodno sakrivenu ponudu/dokument u view.
+    Payload: {entity_type, entity_id}. Ako zapisa nema u hidden listi, no-op."""
+    auth_header = request.headers.get('X-Portal-Auth')
+    if not verify_portal_session(token, auth_header):
+        return jsonify({"error": "AUTH_REQUIRED"}), 401
+
+    payload = request.get_json(silent=True) or {}
+    entity_type = str(payload.get('entity_type', '')).strip().lower()
+    entity_id = str(payload.get('entity_id', '')).strip()
+
+    if entity_type not in ('offer', 'document') or not entity_id:
+        return jsonify({"error": "INVALID_PAYLOAD"}), 400
+
+    conn = sqlite3.connect(DB_FILE, timeout=15.0)
+    try:
+        c = conn.cursor()
+        partner_id, _ = find_partner_by_token(c, token, enforce_active=True)
+        if not partner_id:
+            return jsonify({"error": "ACCESS_DENIED"}), 403
+    finally:
+        conn.close()
+
+    _ensure_hidden_items_schema()
+    try:
+        with sqlite3.connect(PORTAL_DB_FILE, timeout=15.0) as pconn:
+            pconn.execute(
+                "DELETE FROM portal_hidden_items "
+                "WHERE partner_id=? AND entity_type=? AND entity_id=?",
+                (partner_id, entity_type, entity_id)
+            )
+            pconn.commit()
+    except Exception as e:
+        return jsonify({"error": "DELETE_FAILED", "message": str(e)}), 500
+
+    log_portal_activity(partner_id, 'UNHIDE',
+                        f'Restored {entity_type} {entity_id} to portal view')
+    return jsonify({"status": "success"})
+
+
+@portal_bp.route('/api/portal/hidden/<token>', methods=['GET'])
+def list_hidden_items(token):
+    """Vrati listu sakrivenih zapisa za trenutnog klijenta (koristi ga UI
+    za dugme 'View hidden items')."""
+    auth_header = request.headers.get('X-Portal-Auth')
+    if not verify_portal_session(token, auth_header):
+        return jsonify({"error": "AUTH_REQUIRED"}), 401
+
+    conn = sqlite3.connect(DB_FILE, timeout=15.0)
+    try:
+        c = conn.cursor()
+        partner_id, _ = find_partner_by_token(c, token, enforce_active=True)
+        if not partner_id:
+            return jsonify({"error": "ACCESS_DENIED"}), 403
+    finally:
+        conn.close()
+
+    _ensure_hidden_items_schema()
+    hidden = []
+    try:
+        with sqlite3.connect(PORTAL_DB_FILE, timeout=15.0) as pconn:
+            for r in pconn.execute(
+                "SELECT entity_type, entity_id, hidden_at FROM portal_hidden_items "
+                "WHERE partner_id=? ORDER BY hidden_at DESC",
+                (partner_id,)
+            ).fetchall():
+                hidden.append({
+                    "entity_type": r[0],
+                    "entity_id": r[1],
+                    "hidden_at": r[2],
+                })
+    except Exception:
+        pass
+    return jsonify({"hidden": hidden})
+
+
+def _load_hidden_ids_for_partner(partner_id):
+    """Interni helper — vraća set (entity_type, entity_id) tuple-ova koje je
+    ovaj partner sakrio. Koristi ga get_portal_data u data.py da filtrira."""
+    if not partner_id:
+        return set()
+    _ensure_hidden_items_schema()
+    try:
+        with sqlite3.connect(PORTAL_DB_FILE, timeout=15.0) as pconn:
+            rows = pconn.execute(
+                "SELECT entity_type, entity_id FROM portal_hidden_items WHERE partner_id=?",
+                (partner_id,)
+            ).fetchall()
+            return {(r[0], r[1]) for r in rows}
+    except Exception:
+        return set()
+
+
+@portal_bp.route('/api/portal/admin/hidden_items', methods=['GET'])
+@login_required
+def admin_list_hidden_items():
+    """Admin pregled — svi zapisi koje su klijenti sakrili sa svojih portal
+    view-ova. Uz svaki: partner_id, entity_type, entity_id, hidden_at, i
+    ime partnera (ako ga uspemo dobiti iz partners tabele).
+
+    Namena: admin ima potpunu vidljivost — čak i "sakrivene" ponude klijent
+    može da vidi kroz CRM ako mu admin pošalje ponovo email/notifikaciju."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+
+    _ensure_hidden_items_schema()
+
+    # Skupi imena partnera za enrichment (partner_id → companyName)
+    partner_names = {}
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as mconn:
+            for r in mconn.execute("SELECT id, data FROM partners").fetchall():
+                p = safe_parse(r[1])
+                if isinstance(p, dict):
+                    partner_names[r[0]] = p.get('companyName') or p.get('name') or 'Unknown'
+    except Exception:
+        pass
+
+    items = []
+    try:
+        with sqlite3.connect(PORTAL_DB_FILE, timeout=15.0) as pconn:
+            for r in pconn.execute(
+                "SELECT partner_id, entity_type, entity_id, hidden_at "
+                "FROM portal_hidden_items ORDER BY hidden_at DESC LIMIT 500"
+            ).fetchall():
+                items.append({
+                    "partner_id": r[0],
+                    "partner_name": partner_names.get(r[0], 'Unknown'),
+                    "entity_type": r[1],
+                    "entity_id": r[2],
+                    "hidden_at": r[3],
+                })
+    except Exception:
+        pass
+
+    return jsonify({"count": len(items), "items": items})
+
+
+@portal_bp.route('/api/portal/admin/hidden_items/restore', methods=['POST'])
+@login_required
+def admin_restore_hidden_item():
+    """Admin može da vrati ponudu/dokument u klijentov view (npr. ako je
+    klijent slučajno sakrio nešto važno). Payload: {partner_id, entity_type,
+    entity_id}."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "UNAUTHORIZED"}), 403
+    payload = request.get_json(silent=True) or {}
+    partner_id = str(payload.get('partner_id', '')).strip()
+    entity_type = str(payload.get('entity_type', '')).strip().lower()
+    entity_id = str(payload.get('entity_id', '')).strip()
+    if not (partner_id and entity_type in ('offer', 'document') and entity_id):
+        return jsonify({"error": "INVALID_PAYLOAD"}), 400
+    try:
+        with sqlite3.connect(PORTAL_DB_FILE, timeout=15.0) as pconn:
+            pconn.execute(
+                "DELETE FROM portal_hidden_items "
+                "WHERE partner_id=? AND entity_type=? AND entity_id=?",
+                (partner_id, entity_type, entity_id)
+            )
+            pconn.commit()
+    except Exception as e:
+        return jsonify({"error": "DELETE_FAILED", "message": str(e)}), 500
+    log_audit('INFO', 'portal',
+              f'Admin restored hidden {entity_type} {entity_id} for partner {partner_id}',
+              is_suspicious=False)
+    return jsonify({"status": "success"})
