@@ -310,22 +310,23 @@ async function requestOTP() {
 async function verifyOTP() {
     const code = document.getElementById('otp-code')?.value;
     if (!code || code.length !== 6) return showToast(t('enter_code'), 'error');
-    // GPS je obavezan (server će odbiti bez lokacije). Isti standard kao CRM.
-    let locData;
+    // GPS je obavezan za standardne klijente. Za PREMIUM klijente, backend
+    // dozvoljava prazan location — puštamo backend da odluči. Ne blokiramo
+    // klijenta na strani browsera ako odbije lokaciju.
+    let locData = '';
     try {
         locData = await new Promise((resolve, reject) => {
-            if (!navigator.geolocation) return reject('Browser does not support GPS.');
+            if (!navigator.geolocation) return reject('nogeo');
             navigator.geolocation.getCurrentPosition(
                 (pos) => resolve(`${pos.coords.latitude},${pos.coords.longitude}`),
-                (err) => {
-                    if (err.code === err.PERMISSION_DENIED) reject('Precise location is required to access the portal. Please allow location and try again.');
-                    else reject('Location error. Please try again.');
-                },
+                (err) => reject(err.code || 'err'),
                 { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
             );
         });
     } catch (gpsErr) {
-        return showToast(gpsErr, 'error');
+        // Nema GPS-a — probaj svejedno, backend će odbiti ako nije premium
+        console.info('Portal verifyOTP: GPS denied, letting server decide (premium?)', gpsErr);
+        locData = '';
     }
     try {
         const res = await fetch(`/api/portal/auth/verify_otp/${TOKEN}`, {
@@ -338,8 +339,10 @@ async function verifyOTP() {
             authKey = data.auth_key;
             sessionStorage.setItem(`portal_auth_${TOKEN}`, authKey);
             loadPortalData();
+        } else if (data.error === 'LOCATION_REQUIRED') {
+            showToast('Location access is required. Please allow precise location in your browser and try again.', 'error', 6000);
         } else {
-            showToast(data.error === 'LOCATION_REQUIRED' ? 'Precise location must be shared.' : t('err_bad_otp'), 'error');
+            showToast(t('err_bad_otp'), 'error');
         }
     } catch (e) { showToast(t('err_network'), 'error'); }
 }
@@ -410,10 +413,17 @@ if (kycForm) {
             const ibanRaw = (document.getElementById('kyc-bank-iban')?.value || '').trim();
             const swiftRaw = (document.getElementById('kyc-bank-swift')?.value || '').trim();
 
+            // PREMIUM izuzetak — sva polja su opciona i sve validacije se preskaču.
+            // Klijent može čak i prazan KYC form da submit-uje. Admin obraduje offline.
+            const _isPremium = !!portalData?.partner?.isPremium;
+            if (_isPremium) {
+                console.info('Portal KYC submit u PREMIUM modu — preskačem IBAN/BIC validaciju');
+            }
+
             // Ako izgleda kao IBAN (počinje sa 2 slova), MORA da prođe mod-97 proveru.
             // Lokalni brojevi računa (npr. domaći) se propuštaju uz upozorenje na server
             // strani; SWIFT/BIC MORA da bude validan uvek jer se koristi za wire.
-            if (/^[A-Za-z]{2}/.test(ibanRaw) && typeof IBAN !== 'undefined') {
+            if (!_isPremium && /^[A-Za-z]{2}/.test(ibanRaw) && typeof IBAN !== 'undefined') {
                 const rIban = IBAN.validate(ibanRaw);
                 if (!rIban.valid) {
                     if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
@@ -426,29 +436,31 @@ if (kycForm) {
                 if (s) { s.textContent = '⚠ Local account (not IBAN) — SEPA/SWIFT wires may not work'; s.style.color = '#a16207'; }
             }
 
-            if (swiftRaw) {
-                if (typeof BIC === 'undefined') {
-                    // Ne bi trebalo da se desi ako je vendor/iban.js učitan, ali fallback
-                    // struktura provera da ne šalje očigledno pogrešan BIC.
-                    if (!/^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(swiftRaw.toUpperCase().replace(/\s/g,''))) {
-                        if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
-                        _highlight('kyc-bank-swift');
-                        return showToast('✗ SWIFT/BIC format is invalid.', 'error', 6000);
+            if (!_isPremium) {
+                if (swiftRaw) {
+                    if (typeof BIC === 'undefined') {
+                        // Ne bi trebalo da se desi ako je vendor/iban.js učitan, ali fallback
+                        // struktura provera da ne šalje očigledno pogrešan BIC.
+                        if (!/^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(swiftRaw.toUpperCase().replace(/\s/g,''))) {
+                            if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
+                            _highlight('kyc-bank-swift');
+                            return showToast('✗ SWIFT/BIC format is invalid.', 'error', 6000);
+                        }
+                    } else {
+                        // Cross-check protiv IBAN country code (ako IBAN validan)
+                        const expected = /^[A-Z]{2}/.test(ibanRaw.replace(/\s/g,'')) ? ibanRaw.replace(/\s/g,'').slice(0,2).toUpperCase() : null;
+                        const rBic = BIC.validate(swiftRaw, expected);
+                        if (!rBic.valid) {
+                            if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
+                            _highlight('kyc-bank-swift');
+                            return showToast(`✗ SWIFT/BIC: ${rBic.message}. Fix and submit again.`, 'error', 7000);
+                        }
                     }
                 } else {
-                    // Cross-check protiv IBAN country code (ako IBAN validan)
-                    const expected = /^[A-Z]{2}/.test(ibanRaw.replace(/\s/g,'')) ? ibanRaw.replace(/\s/g,'').slice(0,2).toUpperCase() : null;
-                    const rBic = BIC.validate(swiftRaw, expected);
-                    if (!rBic.valid) {
-                        if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
-                        _highlight('kyc-bank-swift');
-                        return showToast(`✗ SWIFT/BIC: ${rBic.message}. Fix and submit again.`, 'error', 7000);
-                    }
+                    if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
+                    _highlight('kyc-bank-swift');
+                    return showToast('✗ SWIFT/BIC is required.', 'error', 5000);
                 }
-            } else {
-                if (fl) { fl.classList.add('hidden'); fl.classList.remove('flex'); }
-                _highlight('kyc-bank-swift');
-                return showToast('✗ SWIFT/BIC is required.', 'error', 5000);
             }
 
             const uploadedFiles = {};
@@ -574,10 +586,44 @@ async function loadPortalData() {
             const bc = portalData.company.brandColor;
             const root = document.documentElement;
             root.style.setProperty('--p-accent', bc);
-            // Blago tamnija hover varijanta - approksimacija
             root.style.setProperty('--p-accent-hover', bc);
-            // Naslov browsera
             try { document.title = `${portalData.company.name || 'Aspidus'} — B2B Portal`; } catch(e) {}
+        }
+
+        // ==========================================================
+        //  PREMIUM MODE — poseban vizuelni tretman za VIP klijente
+        // ==========================================================
+        // Backend šalje isPremium=true u portal.partner objektu (postavlja admin
+        // u CRM Partner formi). Kada je true, primenjujemo:
+        //   • Zlatnu paletu (--p-accent postaje amber-gold umesto brand color)
+        //   • "PREMIUM" badge u header-u pored imena kompanije
+        //   • Gradient background na body-ju za osećaj luksuza
+        //   • Ambient CSS klasu 'premium-mode' na <body> koju koriste stilovi
+        //     u portal.html za bogatije pozadine, senke i tipografiju
+        //   • Skriva KYC alert banner (klijent je već "approved" iz backend-a)
+        if (portalData?.partner?.isPremium) {
+            document.body.classList.add('premium-mode');
+            const root = document.documentElement;
+            root.style.setProperty('--p-accent', '#b8892e');       // amber-gold
+            root.style.setProperty('--p-accent-hover', '#9c721e');
+            root.style.setProperty('--p-accent-soft', '#fdf6e3');
+            // Dodaj badge pored imena kompanije partnera
+            setTimeout(() => {
+                const nameEl = document.getElementById('partner-name');
+                if (nameEl && !document.getElementById('premium-badge')) {
+                    const badge = document.createElement('span');
+                    badge.id = 'premium-badge';
+                    badge.textContent = '★ PREMIUM';
+                    badge.style.cssText = 'display:inline-block;margin-left:10px;padding:2px 10px;background:linear-gradient(135deg,#f4d03f,#b8892e);color:#3d2f00;font-size:10px;font-weight:800;letter-spacing:0.12em;border-radius:20px;box-shadow:0 2px 6px rgba(184,137,46,0.35);vertical-align:middle;';
+                    nameEl.appendChild(badge);
+                }
+                // Skini KYC gate alert ako postoji (premium klijent ne treba to)
+                const kycAlert = document.querySelector('.kyc-required-alert, #kyc-alert-banner');
+                if (kycAlert) kycAlert.style.display = 'none';
+            }, 50);
+            console.info('Portal running in PREMIUM mode for', portalData.partner.companyName);
+        } else {
+            document.body.classList.remove('premium-mode');
         }
 
         // KYC form pre-fill from latest submission
@@ -685,8 +731,8 @@ updateStaticText();
     const params = new URLSearchParams(window.location.search);
     const ml = params.get('ml');
     if (!ml || typeof TOKEN === 'undefined') { loadPortalData(); return; }
-    // GPS obavezan i za magic-link (isti standard kao OTP)
-    let loc;
+    // GPS pokušamo — backend odlučuje da li je premium klijent i propušta bez lokacije
+    let loc = '';
     try {
         loc = await new Promise((resolve, reject) => {
             if (!navigator.geolocation) return reject('no-geo');
@@ -697,9 +743,8 @@ updateStaticText();
             );
         });
     } catch (e) {
-        // Bez GPS-a magic-link odbijamo; klijent ide na standardni OTP i tamo dobija poruku
-        loadPortalData();
-        return;
+        // GPS odbijen — probaj svejedno; standardni klijent će dobiti 403, premium prolazi.
+        loc = '';
     }
     try {
         const r = await fetch(`/api/portal/auth/consume_magic/${TOKEN}`, {
