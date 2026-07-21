@@ -520,5 +520,108 @@ class H_Portal(Base):
         self.assertIn('magic_link_enabled', data)
 
 
+# ==========================================================
+# BLOK I: PREMIUM KLIJENT — GPS bypass, KYC auto-approve
+# ==========================================================
+
+class I_PremiumClient(Base):
+    """PREMIUM klijenti (partner.isPremium=true) dobijaju izuzetak od:
+      • GPS location zahteva pri OTP login-u
+      • KYC approval gate-a (uvek 'approved' u portal response-u)
+      • IBAN/BIC hard-block-a u KYC submit-u
+    Ovaj blok testira sve tri gate-a."""
+
+    def _create_premium_partner(self, is_premium=True):
+        """Vraća (partner_id, portal_token) za novokreiranog partnera."""
+        pid = f'premium-test-{uuid.uuid4().hex[:6]}'
+        token = f'tok-{uuid.uuid4().hex}'
+        item = {
+            'id': pid,
+            'companyName': f'Premium Test {pid[-4:]}',
+            'entityType': 'company',
+            'isPremium': is_premium,
+            'isPortalActive': True,
+            'portalToken': token,
+            'contact': {'email': f'{pid}@example.com'},
+            'lastModified': '2026-07-21T10:00:00Z',
+        }
+        r = self._post(f'/api/item/partners', item)
+        self.assertIn(r.status_code, (200, 201))
+        return pid, token
+
+    def test_01_is_partner_premium_helper(self):
+        from routes.portal import is_partner_premium
+        self.assertTrue(is_partner_premium({'isPremium': True}))
+        self.assertFalse(is_partner_premium({'isPremium': False}))
+        self.assertFalse(is_partner_premium({}))
+        self.assertFalse(is_partner_premium(None))
+
+    def test_02_premium_can_verify_otp_without_gps(self):
+        """Premium klijent: OTP verify prolazi i bez location-a."""
+        pid, token = self._create_premium_partner(is_premium=True)
+        # Kreiraj OTP direktno preko internog helpera
+        from routes.portal import create_portal_otp
+        otp = create_portal_otp(token)
+        # POST bez location polja
+        r = self.client.post(f'/api/portal/auth/verify_otp/{token}',
+                             json={'otp': otp})   # bez 'location'
+        # NE sme biti LOCATION_REQUIRED — premium propušta
+        j = r.get_json() or {}
+        self.assertNotEqual(j.get('error'), 'LOCATION_REQUIRED',
+                            msg=f'Premium klijent zahtevao GPS: {j}')
+
+    def test_03_standard_cannot_verify_otp_without_gps(self):
+        """Standardni (ne-premium) klijent: OTP verify traži GPS."""
+        pid, token = self._create_premium_partner(is_premium=False)
+        from routes.portal import create_portal_otp
+        otp = create_portal_otp(token)
+        r = self.client.post(f'/api/portal/auth/verify_otp/{token}',
+                             json={'otp': otp})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual((r.get_json() or {}).get('error'), 'LOCATION_REQUIRED')
+
+    def test_04_premium_kyc_submit_accepts_empty_bank(self):
+        """Premium klijent: KYC submit prolazi i sa praznim IBAN/BIC.
+        Standard klijent: mora imati validan BIC."""
+        pid, token = self._create_premium_partner(is_premium=True)
+        # Prvo simuliramo portal auth
+        from routes.portal import portal_auth_sessions
+        import time as _t
+        portal_auth_sessions[token] = {
+            'key': 'testkey', 'expires': _t.time() + 3600,
+            'last_active': _t.time(), 'partner_id': pid,
+            'bound_ip': None,
+        }
+        # Empty KYC payload — premium mora da propusti
+        r = self.client.post(f'/api/portal/kyc/submit/{token}',
+                             json={'entityType': 'company', 'companyName': 'X'},
+                             headers={'X-Portal-Auth': 'testkey'})
+        # Ne sme biti BIC_REQUIRED / IBAN_INVALID
+        j = r.get_json() or {}
+        self.assertNotIn(j.get('error'), ('BIC_REQUIRED', 'BIC_INVALID',
+                                          'IBAN_INVALID', 'PROOF_OF_ADDRESS_REQUIRED'),
+                         msg=f'Premium KYC odbijen: {j}')
+
+    def test_05_portal_data_reports_premium_flag(self):
+        """Portal /data endpoint mora vratiti isPremium=true u partner objektu."""
+        pid, token = self._create_premium_partner(is_premium=True)
+        from routes.portal import portal_auth_sessions
+        import time as _t
+        portal_auth_sessions[token] = {
+            'key': 'testkey2', 'expires': _t.time() + 3600,
+            'last_active': _t.time(), 'partner_id': pid,
+            'bound_ip': None,
+        }
+        r = self.client.get(f'/api/portal/data/{token}',
+                             headers={'X-Portal-Auth': 'testkey2'})
+        self.assertEqual(r.status_code, 200, msg=r.data[:200])
+        data = r.get_json() or {}
+        partner = data.get('partner', {})
+        self.assertTrue(partner.get('isPremium'), 'isPremium nije prosledjen na frontend')
+        # KYC status mora biti 'approved' za premium (bez obzira na realno stanje)
+        self.assertEqual(partner.get('kycStatus'), 'approved',
+                         'Premium klijent nije auto-approved u portal response-u')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

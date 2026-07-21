@@ -893,40 +893,48 @@ def submit_kyc(token):
         conn_id.close()
     if not partner_id: abort(403)
 
+    # PREMIUM klijenti su izuzeti od svih hard-block validacija (proof of address,
+    # IBAN mod-97, BIC struktura, VIES). Admin ih obraduje offline; portal samo
+    # snima šta klijent unese. Bilo šta prazno ili pogrešno je OK — nije blokada.
+    from . import is_partner_premium
+    _is_premium = is_partner_premium(_partner)
+
     # 1. Osnovna sanitizacija kyc podataka
     entity_type = str(kyc_data.get('entityType', 'company')).strip().lower()
     if entity_type not in ('company', 'individual'):
         entity_type = 'company'
-    # Individualci moraju imati priložen proof of address
-    if entity_type == 'individual':
+    # Individualci moraju imati priložen proof of address (osim ako je PREMIUM)
+    if entity_type == 'individual' and not _is_premium:
         files_dict = kyc_data.get('files') or {}
         if not (isinstance(files_dict, dict) and files_dict.get('proofOfAddress')):
             return jsonify({"error": "PROOF_OF_ADDRESS_REQUIRED",
                             "message": "Individuals must upload proof of home address (utility bill or bank statement)."}), 400
 
-    # HARD BLOCK server-side: IBAN + BIC. Client može poslati bilo šta bypass-om
+    # HARD BLOCK server-side: IBAN + BIC. Klijent može poslati bilo šta bypass-om
     # UI validacije, zato ovde radimo istu proveru pre nego što uopšte upišemo
     # nešto u bazu ili tražimo dopunske skupe operacije (upload, sanctions, itd).
+    # PREMIUM klijenti su izuzeti — snima se kako je uneseno (može biti prazno).
     _iban_in = str(kyc_data.get('bankIban', '')).strip()
     _bic_in = str(kyc_data.get('bankSwift', '')).strip()
 
-    # BIC je uvek obavezan
-    if not _bic_in:
-        return jsonify({"error": "BIC_REQUIRED",
-                        "message": "SWIFT/BIC is required for KYC submission."}), 400
-    # Cross-check protiv IBAN country ako IBAN izgleda kao IBAN
-    _iban_prefix = _iban_in.replace(' ', '').upper()[:2]
-    _expected_country = _iban_prefix if _re_bv.match(r'^[A-Z]{2}$', _iban_prefix) else None
-    _bic_res = validate_bic(_bic_in, _expected_country)
-    if not _bic_res['valid']:
-        return jsonify({"error": "BIC_INVALID", "reason": _bic_res.get('reason'),
-                        "message": _bic_res.get('message', 'Invalid BIC/SWIFT')}), 400
-    # Ako IBAN ima 2-letter prefix, MORA da prođe mod-97
-    if _expected_country:
-        _iban_res = validate_iban(_iban_in)
-        if not _iban_res['valid']:
-            return jsonify({"error": "IBAN_INVALID", "reason": _iban_res.get('reason'),
-                            "message": _iban_res.get('message', 'Invalid IBAN')}), 400
+    if not _is_premium:
+        # BIC je uvek obavezan
+        if not _bic_in:
+            return jsonify({"error": "BIC_REQUIRED",
+                            "message": "SWIFT/BIC is required for KYC submission."}), 400
+        # Cross-check protiv IBAN country ako IBAN izgleda kao IBAN
+        _iban_prefix = _iban_in.replace(' ', '').upper()[:2]
+        _expected_country = _iban_prefix if _re_bv.match(r'^[A-Z]{2}$', _iban_prefix) else None
+        _bic_res = validate_bic(_bic_in, _expected_country)
+        if not _bic_res['valid']:
+            return jsonify({"error": "BIC_INVALID", "reason": _bic_res.get('reason'),
+                            "message": _bic_res.get('message', 'Invalid BIC/SWIFT')}), 400
+        # Ako IBAN ima 2-letter prefix, MORA da prođe mod-97
+        if _expected_country:
+            _iban_res = validate_iban(_iban_in)
+            if not _iban_res['valid']:
+                return jsonify({"error": "IBAN_INVALID", "reason": _iban_res.get('reason'),
+                                "message": _iban_res.get('message', 'Invalid IBAN')}), 400
 
     clean_data = {
         "entityType": entity_type,

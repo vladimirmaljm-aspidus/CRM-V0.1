@@ -79,7 +79,7 @@ function renderPartnersView() {
                 
                 return `
                 <tr class="table-row border-[var(--border)] transition-colors hover:bg-[var(--hover-bg)] ${p.status === 'blacklisted' ? 'bg-red-50/30 dark:bg-red-900/10' : ''}">
-                    <td class="px-4 py-4 text-base font-black text-main"><span class="mr-2 text-xl opacity-80">${icon}</span> ${Utils.escapeHtml(p.companyName)}<br>${linked}</td>
+                    <td class="px-4 py-4 text-base font-black text-main"><span class="mr-2 text-xl opacity-80">${icon}</span> ${Utils.escapeHtml(p.companyName)}${p.isPremium ? ' <span title="Premium klijent — portal bez GPS/KYC gate-a" style="display:inline-block;margin-left:6px;padding:1px 8px;background:linear-gradient(135deg,#f4d03f,#b8892e);color:#3d2f00;font-size:9px;font-weight:800;letter-spacing:0.12em;border-radius:20px;vertical-align:middle;">★ PREMIUM</span>' : ''}<br>${linked}</td>
                     <td class="px-4 py-4 text-sm"><div class="flex flex-col gap-1 items-start">${statusBadge} <span class="text-xs">${ratingStars}</span></div></td>
                     <td class="px-4 py-4 text-sm font-bold text-accent">${translatedTypes}</td>
                     <td class="px-4 py-4 text-sm text-[var(--muted)] font-medium">${Utils.escapeHtml(p.taxId || '-')}</td>

@@ -168,13 +168,19 @@
             const btn = document.getElementById('btn-verify-otp');
             btn.disabled = true; btn.textContent = 'Locating…';
             hideError('otp-error');
-            let locData;
+            // Pokušavamo GPS, ali ne prekidamo login ako korisnik odbije —
+            // backend odlučuje: standardni klijenti dobijaju 403 LOCATION_REQUIRED,
+            // PREMIUM klijenti prolaze bez GPS-a. Ovo omogućava premium-only
+            // korisnicima da završe login čak i sa isključenom lokacijom.
+            let locData = '';
             try {
                 locData = await getPreciseLocation();
             } catch (gpsErr) {
-                showError('otp-error', gpsErr);
-                btn.disabled = false; btn.textContent = 'Verify & Sign In';
-                return;
+                // Ne prikazujemo grešku — puštamo backend da odluči.
+                // Ako je klijent standard, backend će vratiti LOCATION_REQUIRED
+                // i onda pokazujemo poruku.
+                console.info('GPS denied — backend će odlučiti da li je premium:', gpsErr);
+                locData = '';
             }
             btn.textContent = 'Verifying…';
             try {
@@ -186,11 +192,17 @@
                 const data = await res.json();
                 if (res.ok && data.auth_key && data.token) {
                     sessionStorage.setItem('portal_auth_' + data.token, data.auth_key);
+                    if (data.isPremium) sessionStorage.setItem('portal_premium_' + data.token, '1');
                     document.getElementById('step-otp').classList.add('hidden');
                     document.getElementById('step-loading').classList.remove('hidden');
                     window.location.href = '/portal/' + data.token;
                 } else {
-                    showError('otp-error', data.error || 'Invalid code. Please try again.');
+                    // 403 LOCATION_REQUIRED znači standard client bez GPS-a — jasna poruka
+                    if (data.error === 'LOCATION_REQUIRED') {
+                        showError('otp-error', 'Location access is required. Please allow precise location in your browser and try again.');
+                    } else {
+                        showError('otp-error', data.error || 'Invalid code. Please try again.');
+                    }
                 }
             } catch (e) {
                 showError('otp-error', 'Network error. Please check your connection.');
