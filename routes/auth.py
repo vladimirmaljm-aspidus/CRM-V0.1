@@ -58,7 +58,7 @@ def login():
     user = None
     try:
         with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-            conn.execute('PRAGMA journal_mode=WAL;')
+            conn.execute('PRAGMA busy_timeout=30000;')
             c = conn.cursor()
             c.execute('SELECT id, username, password, role, permissions, signature, totp_secret, totp_enabled, totp_recovery FROM users WHERE LOWER(username)=LOWER(?)', (username,))
             user = c.fetchone()
@@ -192,7 +192,7 @@ def me():
         row = None
         try:
             with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-                conn.execute('PRAGMA journal_mode=WAL;')
+                conn.execute('PRAGMA busy_timeout=30000;')
                 c = conn.cursor()
                 c.execute('SELECT permissions, signature FROM users WHERE id=?', (session['user_id'],))
                 row = c.fetchone()
@@ -237,7 +237,6 @@ def change_password():
     try:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
         with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-            conn.execute('PRAGMA journal_mode=WAL;')
             conn.execute('PRAGMA busy_timeout=30000;')
             c = conn.cursor()
             pw_hash = generate_password_hash(new_password, method='scrypt:32768:8:1')
@@ -292,7 +291,6 @@ def set_signature():
 
     try:
         with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-            conn.execute('PRAGMA journal_mode=WAL;')
             conn.execute('PRAGMA busy_timeout=30000;')
             conn.execute('UPDATE users SET signature=? WHERE id=?', (sig, session['user_id']))
             conn.commit()

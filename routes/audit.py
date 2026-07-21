@@ -41,7 +41,7 @@ def get_audit_logs():
     logs = []
     try:
         conn = sqlite3.connect(AUDIT_DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute('PRAGMA busy_timeout=30000;')
         c = conn.cursor()
         c.execute('SELECT id, username, action, module, details, ip_address, user_agent, timestamp, is_suspicious, location FROM audit_logs ORDER BY timestamp DESC')
         logs = [{"id": r[0], "username": r[1], "action": r[2], "module": r[3], "details": r[4], "ip": r[5], "user_agent": r[6], "timestamp": r[7], "is_suspicious": bool(r[8]), "location": r[9] if r[9] else 'N/A'} for r in c.fetchall()]

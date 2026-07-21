@@ -158,21 +158,44 @@ def init_db():
         logger.error(f"CRITICAL: Greška pri inicijalizaciji portal baze - {e}")
 
     # 3. VOJNA AUDIT BAZA
-    try:
+    # SAMO-ISCELJENJE: ako je audit baza malformed (npr. prekinut upis tokom
+    # deploy-a), NE blokiramo ceo startup. Audit logovi su zamenljivi (istorija
+    # pristupa, ne poslovni podaci), pa oštećenu bazu premeštamo u
+    # .malformed.<ts> backup i pravimo novu. Ovo omogućava da se aplikacija
+    # sama oporavi na sledeći Reload umesto da klijenti stoje blokirani.
+    def _init_audit(recreate_on_corrupt=True):
         with sqlite3.connect(AUDIT_DB_FILE, timeout=30.0) as conn3:
             conn3.execute('PRAGMA journal_mode=WAL;')
             conn3.execute('PRAGMA synchronous=NORMAL;')
+            # integrity_check baca / vraća loše ako je fajl malformed
+            integ = conn3.execute('PRAGMA integrity_check').fetchone()
+            if integ and integ[0] != 'ok' and recreate_on_corrupt:
+                raise sqlite3.DatabaseError(f'audit integrity: {integ[0]}')
             c3 = conn3.cursor()
-            
-            # Kreiranje tabele
-            c3.execute('''CREATE TABLE IF NOT EXISTS audit_logs 
+            c3.execute('''CREATE TABLE IF NOT EXISTS audit_logs
                          (id TEXT PRIMARY KEY, user_id TEXT, username TEXT, action TEXT, module TEXT, details TEXT, ip_address TEXT, user_agent TEXT, timestamp TEXT, is_suspicious BOOLEAN, location TEXT)''')
-            
-            # Indeksi za ekstremno brzo učitavanje i filtriranje audit logova
             c3.execute('''CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp)''')
             c3.execute('''CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_logs(username)''')
             c3.execute('''CREATE INDEX IF NOT EXISTS idx_audit_suspicious ON audit_logs(is_suspicious)''')
-            
             conn3.commit()
+
+    try:
+        _init_audit()
     except Exception as e:
-        logger.error(f"CRITICAL: Greška pri inicijalizaciji audit baze - {e}")
+        # Malformed ili nedostupna audit baza — quarantine + fresh recreate
+        import time as _t
+        try:
+            if os.path.exists(AUDIT_DB_FILE):
+                quarantine = f'{AUDIT_DB_FILE}.malformed.{int(_t.time())}'
+                os.rename(AUDIT_DB_FILE, quarantine)
+                logger.error(f'AUDIT DB malformed ({e}) — premešten u {quarantine}, pravim novu praznu.')
+            # Ukloni WAL/SHM ostatke da nova baza krene čista
+            for suffix in ('-wal', '-shm'):
+                p = AUDIT_DB_FILE + suffix
+                if os.path.exists(p):
+                    try: os.remove(p)
+                    except Exception: pass
+            _init_audit(recreate_on_corrupt=False)
+            logger.warning('AUDIT DB uspešno rekreirana (prazna). Stara istorija je u .malformed backup fajlu.')
+        except Exception as e2:
+            logger.error(f"CRITICAL: Ne mogu ni da rekreiram audit bazu: {e2}")

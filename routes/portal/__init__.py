@@ -38,7 +38,11 @@ def init_portal_db():
     conn = None
     try:
         conn = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
+        # WAL se postavlja SAMO ovde (init, pri startu pre workera) — trajno na
+        # fajlu. Per-request konekcije koriste busy_timeout, ne diraju journal mode
+        # (menjanje journal mode-a traži ekskluzivni lock → "database is locked").
         conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute('PRAGMA busy_timeout=30000;')
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS kyc_submissions
                      (id TEXT PRIMARY KEY, partner_id TEXT, token TEXT, data JSON, submitted_at TEXT)''')
@@ -230,7 +234,7 @@ def log_portal_activity(partner_id, action, details, ip=None, user_agent=None):
     timestamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     try:
         conn = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute('PRAGMA busy_timeout=30000;')
         conn.execute(
             "INSERT INTO portal_activity_log (id, partner_id, action, details, ip_address, user_agent, location, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (entry_id, partner_id, action, details, ip, user_agent, location_str, timestamp)
