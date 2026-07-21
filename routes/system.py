@@ -185,6 +185,60 @@ def backup_now():
 
 
 # ==========================================================
+#  FULL BACKUP — sve baze + uploads + ključevi u jedan tar.gz
+# ==========================================================
+# Za razliku od /backup/now koji pravi šifrovane pojedinačne .fernet snapshote,
+# ovaj endpoint pravi KOMPLETAN prenosivi arhiv (tar.gz):
+#   • sve 3 baze (VACUUM-ovane, integrity-checked)
+#   • uploads/ i portal_uploads/
+#   • vault.key i secret.key (bez njih se šifrovane vrednosti ne mogu dešifrovati)
+#   • meta.json (row count po tabeli, SHA256, verzija)
+#   • RESTORE.md (uputstvo za oporavak — u samom arhivu)
+# Streamuje se direktno klijentu — ništa se ne piše na disk servera.
+
+@system_bp.route('/backup/full', methods=['GET'])
+@login_required
+def backup_full_download():
+    """Admin-only. Streamuje kompletan .tar.gz backup — baze + fajlovi + ključevi."""
+    if not _is_admin():
+        return jsonify({"error": "ACCESS_DENIED"}), 403
+    import io as _io
+    import sys as _sys
+    from flask import Response
+    # Ubaci scripts/ u sys.path i pozovi build_backup u streaming režimu.
+    _scripts = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts')
+    if _scripts not in _sys.path:
+        _sys.path.insert(0, _scripts)
+    try:
+        from db_export_full import build_backup
+    except Exception as e:
+        return jsonify({"error": "BACKUP_MODULE_MISSING", "detail": str(e)}), 500
+
+    buf = _io.BytesIO()
+    try:
+        build_backup(out_path=None, out_stream=buf, quiet=True)
+    except Exception as e:
+        log_audit('CREATE', 'system', f'Full backup failed: {e}', is_suspicious=False)
+        return jsonify({"error": "BACKUP_FAILED", "detail": str(e)}), 500
+
+    payload = buf.getvalue()
+    ts = datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S')
+    filename = f'ASPIDUS_FULL_BACKUP_{ts}.tar.gz'
+    log_audit('CREATE', 'system',
+              f'Admin downloaded full backup ({len(payload)/1024/1024:.2f} MB)',
+              is_suspicious=False)
+    return Response(
+        payload,
+        mimetype='application/gzip',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Content-Length': str(len(payload)),
+            'X-Backup-Format-Version': '1',
+        },
+    )
+
+
+# ==========================================================
 #  OTP DELIVERY CONFIG — transactional email provider + magic link
 # ==========================================================
 
