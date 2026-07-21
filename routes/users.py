@@ -69,19 +69,30 @@ def manage_users():
                 conn.rollback()
                 return jsonify({"error": "user_exists"}), 409
 
-            if not user_id:
+            # ISPRAVKA: ranije se pretpostavljalo da id → update. Ali ako klijent
+            # pošalje id koji NE POSTOJI (npr. reset baze ili zastarela lista),
+            # UPDATE tiho pogađa 0 redova → korisnik izgleda sačuvan a nije.
+            # Rešenje: SELECT provera; ako id postoji → update; ako ne → create
+            # sa TOM istom UUID vrednošću (klijentski ID se poštuje).
+            id_exists = False
+            if user_id:
+                c.execute('SELECT 1 FROM users WHERE id=?', (user_id,))
+                id_exists = c.fetchone() is not None
+
+            if not id_exists:
                 if not data.get('password'):
                     conn.rollback()
                     return jsonify({"error": "missing_password"}), 400
-                    
+
                 if not is_strong_password(data['password']):
                     conn.rollback()
                     return jsonify({"error": "Lozinka mora imati najmanje 10 karaktera, jedno veliko slovo i jedan broj."}), 400
-                    
-                user_id = str(uuid.uuid4())
+
+                if not user_id:
+                    user_id = str(uuid.uuid4())
                 # Korišćenje najjačeg SCRYPT algoritma
                 safe_hash = generate_password_hash(data['password'], method='scrypt:32768:8:1')
-                c.execute('INSERT INTO users (id, username, password, role, permissions) VALUES (?, ?, ?, ?, ?)', 
+                c.execute('INSERT INTO users (id, username, password, role, permissions) VALUES (?, ?, ?, ?, ?)',
                           (user_id, new_username, safe_hash, role, perms))
                 action_log = 'CREATE'
                 msg_log = f'Created user: {new_username}'
