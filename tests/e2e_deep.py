@@ -623,5 +623,44 @@ class I_PremiumClient(Base):
                          'Premium klijent nije auto-approved u portal response-u')
 
 
+# ==========================================================
+# BLOK J: FULL BACKUP (admin download .tar.gz)
+# ==========================================================
+
+class J_FullBackup(Base):
+    def test_01_full_backup_download(self):
+        """Endpoint mora da vrati validan gzip stream sa svim delovima."""
+        import gzip, tarfile, io as _io, json as _json
+        r = self.client.get('/api/system/backup/full')
+        self.assertEqual(r.status_code, 200, msg=f'status={r.status_code} body={r.data[:200]}')
+        self.assertEqual(r.mimetype, 'application/gzip', msg=f'wrong mime: {r.mimetype}')
+        self.assertGreater(len(r.data), 1024, msg='backup suspiciously small')
+
+        # Otvori tar.gz i validiraj strukturu
+        tar = tarfile.open(fileobj=_io.BytesIO(r.data), mode='r:gz')
+        names = tar.getnames()
+        # Baze
+        self.assertIn('databases/aspidus_crm.db', names, msg=f'nedostaje CRM baza; names={names[:15]}')
+        self.assertIn('databases/aspidus_portal.db', names)
+        # Meta + restore uputstvo (kritični za oporavak)
+        self.assertIn('meta.json', names)
+        self.assertIn('RESTORE.md', names)
+        # meta.json validan JSON sa row counts
+        meta_f = tar.extractfile('meta.json')
+        meta = _json.loads(meta_f.read().decode('utf-8'))
+        self.assertEqual(meta.get('backup_format_version'), 1)
+        crm_meta = meta.get('databases', {}).get('aspidus_crm.db', {})
+        self.assertEqual(crm_meta.get('integrity_check'), 'ok')
+        self.assertIn('users', crm_meta.get('tables', {}))
+
+    def test_02_full_backup_forbidden_without_auth(self):
+        """Non-admin sesija ne sme da preuzme backup."""
+        self._post('/api/auth/logout')
+        r = self.client.get('/api/system/backup/full')
+        self.assertIn(r.status_code, (401, 403), msg=f'unauth backup allowed: {r.status_code}')
+        # Restore login za ostale testove
+        self._do_login()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

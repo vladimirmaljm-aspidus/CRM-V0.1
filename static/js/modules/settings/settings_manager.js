@@ -252,24 +252,43 @@ const SettingsManager = {
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div class="bg-white border border-slate-200 p-8 rounded-xl text-center shadow-sm hover:shadow-md transition-shadow">
                                     <div class="text-4xl mb-4 text-slate-700">📤</div>
-                                    <h4 class="font-bold text-slate-800 text-sm uppercase tracking-widest mb-2">Export Full Database</h4>
-                                    <p class="text-[10px] text-slate-500 mb-6">Download a complete JSON backup of the CRM.</p>
-                                    <button type="button" class="bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold py-2.5 px-6 rounded-md uppercase tracking-wider transition-colors w-full" onclick="exportDatabase()">Download Backup</button>
+                                    <h4 class="font-bold text-slate-800 text-sm uppercase tracking-widest mb-2">Export JSON (Data Only)</h4>
+                                    <p class="text-[10px] text-slate-500 mb-6">Only rows from CRM tables in a JSON file.</p>
+                                    <button type="button" class="bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold py-2.5 px-6 rounded-md uppercase tracking-wider transition-colors w-full" onclick="exportDatabase()">Download JSON</button>
+                                </div>
+
+                                <div class="bg-white border-2 border-emerald-400 p-8 rounded-xl text-center shadow-md hover:shadow-lg transition-shadow" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);">
+                                    <div class="text-4xl mb-4 text-emerald-700">🛡️</div>
+                                    <h4 class="font-bold text-emerald-900 text-sm uppercase tracking-widest mb-2">FULL Backup (Recommended)</h4>
+                                    <p class="text-[10px] text-emerald-800 mb-6 leading-relaxed">Complete archive: all databases + uploaded files + encryption keys + RESTORE.md. Perfect for full disaster recovery or migration to another server.</p>
+                                    <button type="button" class="bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold py-2.5 px-6 rounded-md uppercase tracking-wider transition-colors w-full" onclick="downloadFullBackup(this)">Download Full Backup (.tar.gz)</button>
                                 </div>
 
                                 <div class="bg-white border border-slate-200 p-8 rounded-xl text-center shadow-sm hover:shadow-md transition-shadow">
                                     <div class="text-4xl mb-4 text-slate-700">📥</div>
                                     <h4 class="font-bold text-slate-800 text-sm uppercase tracking-widest mb-2">Import JSON Backup</h4>
-                                    <p class="text-[10px] text-slate-500 mb-6">Restore system from a previous JSON file.</p>
-                                    <button type="button" class="bg-white border border-slate-300 text-slate-800 hover:bg-slate-50 text-xs font-bold py-2.5 px-6 rounded-md uppercase tracking-wider transition-colors w-full" onclick="document.getElementById('import-file-input').click()">Upload Backup</button>
+                                    <p class="text-[10px] text-slate-500 mb-6">Restore data-only from a previous JSON file.</p>
+                                    <button type="button" class="bg-white border border-slate-300 text-slate-800 hover:bg-slate-50 text-xs font-bold py-2.5 px-6 rounded-md uppercase tracking-wider transition-colors w-full" onclick="document.getElementById('import-file-input').click()">Upload JSON</button>
                                 </div>
 
-                                <div class="bg-white border border-slate-200 p-8 rounded-xl text-center shadow-sm hover:shadow-md transition-shadow md:col-span-2">
+                                <div class="bg-white border border-slate-200 p-8 rounded-xl text-center shadow-sm hover:shadow-md transition-shadow">
                                     <div class="text-4xl mb-4 text-emerald-600">📊</div>
                                     <h4 class="font-bold text-slate-800 text-sm uppercase tracking-widest mb-2">Mass Import Partners (CSV)</h4>
                                     <p class="text-[10px] text-slate-500 mb-6">Import client list from Excel/CSV file.</p>
-                                    <button type="button" class="bg-white border border-slate-300 text-slate-800 hover:bg-slate-50 text-xs font-bold py-2.5 px-6 rounded-md uppercase tracking-wider transition-colors w-1/2 mx-auto" onclick="document.getElementById('import-csv-input').click()">Upload CSV</button>
+                                    <button type="button" class="bg-white border border-slate-300 text-slate-800 hover:bg-slate-50 text-xs font-bold py-2.5 px-6 rounded-md uppercase tracking-wider transition-colors w-full" onclick="document.getElementById('import-csv-input').click()">Upload CSV</button>
                                 </div>
+                            </div>
+
+                            <div class="bg-slate-50 border border-slate-200 rounded-xl p-6 mt-6">
+                                <h4 class="font-bold text-slate-800 text-sm uppercase tracking-widest mb-3">How to restore a FULL Backup</h4>
+                                <ol class="text-xs text-slate-700 space-y-2 leading-relaxed list-decimal ml-5">
+                                    <li>On the target server, download the CRM sources (same git repo).</li>
+                                    <li>Copy the <code class="bg-slate-200 px-1 rounded">.tar.gz</code> file to that server.</li>
+                                    <li>Stop the CRM app if it is running.</li>
+                                    <li>Run: <code class="bg-slate-200 px-1 rounded text-[11px]">python scripts/db_import_full.py --archive PATH.tar.gz --confirm</code></li>
+                                    <li>Start the CRM app. Login with your existing credentials — the encryption key is inside the backup so all encrypted settings work.</li>
+                                </ol>
+                                <p class="text-[10px] text-slate-500 mt-3 italic">A copy of these instructions (RESTORE.md) is also included inside every backup archive.</p>
                             </div>
                         </div>
 
