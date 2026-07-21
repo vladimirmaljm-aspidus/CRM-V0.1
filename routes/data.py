@@ -184,8 +184,19 @@ def save_single_item(key):
         if key in tables:
             c.execute(f'SELECT data FROM {key} WHERE id=?', (item_id,))
             existing_row = c.fetchone()
-            
-            if not existing_row: 
+
+            # OFFER VERSIONING: snapshot stare verzije PRE nego što je prepišemo.
+            # Radi se tek u fazi save-a jer ovde imamo i old i new state.
+            _old_offer_for_ver = None
+            if key == 'offers' and existing_row:
+                try:
+                    _old_offer_for_ver = decrypt_data(existing_row[0])
+                    if not isinstance(_old_offer_for_ver, dict):
+                        _old_offer_for_ver = json.loads(existing_row[0]) if isinstance(existing_row[0], str) else None
+                except Exception:
+                    _old_offer_for_ver = None
+
+            if not existing_row:
                 action = 'CREATE'
                 item['ownerId'] = session['user_id']
                 item['sharedWith'] = []
@@ -222,6 +233,31 @@ def save_single_item(key):
                         item['bankCosts'] = existing.get('bankCosts', 0)
                     if key == 'products' and not perms.get('products_view_prices', False):
                         item['supplyOffers'] = existing.get('supplyOffers', [])
+
+            # OFFER VERSIONING: snimi stari snapshot pre upisa novog stanja.
+            # Ovo se poziva između SELECT-a i INSERT OR REPLACE-a tako da imamo
+            # obe verzije istovremeno. `snapshot_if_changed` će sam odlučiti
+            # da li ima šta da se snimi (poredi TRACKED_FIELDS).
+            if key == 'offers' and _old_offer_for_ver:
+                try:
+                    from offer_versions import snapshot_if_changed as _snap
+                    _reason = ''
+                    try:
+                        _reason = (request.headers.get('X-Change-Reason') or item.get('_changeReason') or '').strip()
+                    except Exception:
+                        _reason = ''
+                    _snap(
+                        conn, item_id, _old_offer_for_ver, item,
+                        changed_by=session.get('user_id', 'SYSTEM'),
+                        changed_by_role=role or 'employee',
+                        origin='crm',
+                        change_reason=_reason,
+                    )
+                    # Ne persistuj _changeReason u samu ponudu — služi samo za log verzije
+                    if '_changeReason' in item:
+                        item.pop('_changeReason', None)
+                except Exception:
+                    logger.exception('offer version snapshot failed')
 
             # OPTIMIZACIJA: Čist JSON upis za maksimalnu brzinu baze.
             # v22 FIX: wrap u retry helper — pod PythonAnywhere SQLite lock je čest,
@@ -605,6 +641,146 @@ def create_deal_from_offer(offer_id):
         if conn: conn.rollback()
         logger.error(f"create_deal_from_offer({offer_id}) failed", exc_info=True)
         log_audit('ERROR', 'offers', 'offer→deal conversion failed', is_suspicious=True)
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
+    finally:
+        if conn: conn.close()
+
+
+# ==========================================================
+#  OFFER VERSIONS — istorija izmena ponude
+# ==========================================================
+# Svaka izmena bilo kog kritičnog polja ponude (cena, količina, incoterm,
+# stavke, valuta, itd.) automatski snima staru verziju u offer_versions
+# tabelu (vidi offer_versions.snapshot_if_changed). Ovaj endpoint prikazuje
+# istoriju koja je već upisana — read-only.
+
+@data_bp.route('/api/offers/<offer_id>/versions', methods=['GET'])
+@login_required
+def list_offer_versions(offer_id):
+    """Lista svih verzija (samo meta — nije velika)."""
+    # Autorizacija: svako sa offers_view može da čita istoriju "svog" offer-a.
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        # Ownership check — worker sme samo ako je vlasnik ILI ima permisiju
+        role = session.get('role')
+        if role != 'admin':
+            c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+            prow = c.fetchone()
+            perms = decrypt_data(prow[0]) if prow and prow[0] else {}
+            if not perms.get('offers_view', False):
+                return jsonify({"error": "UNAUTHORIZED"}), 403
+            c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
+            orow = c.fetchone()
+            if not orow:
+                return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+            od = decrypt_data(orow[0])
+            if isinstance(od, dict) and od.get('ownerId') and od['ownerId'] != session['user_id']:
+                if session['user_id'] not in (od.get('sharedWith') or []) and not perms.get('offers_view_all', False):
+                    return jsonify({"error": "UNAUTHORIZED"}), 403
+
+        from offer_versions import list_versions
+        versions = list_versions(conn, offer_id)
+        return jsonify({"offerId": offer_id, "count": len(versions), "versions": versions})
+    finally:
+        if conn: conn.close()
+
+
+@data_bp.route('/api/offers/<offer_id>/versions/<version_id>', methods=['GET'])
+@login_required
+def get_offer_version(offer_id, version_id):
+    """Vrati pun snapshot za jednu verziju (za diff/PDF-regen prikaz)."""
+    conn = get_db_connection()
+    try:
+        role = session.get('role')
+        if role != 'admin':
+            c = conn.cursor()
+            c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+            prow = c.fetchone()
+            perms = decrypt_data(prow[0]) if prow and prow[0] else {}
+            if not perms.get('offers_view', False):
+                return jsonify({"error": "UNAUTHORIZED"}), 403
+
+        from offer_versions import get_snapshot
+        snap = get_snapshot(conn, version_id)
+        if not snap:
+            return jsonify({"error": "VERSION_NOT_FOUND"}), 404
+        if snap.get('offerId') != offer_id:
+            # Sprečava enumeraciju version_id preko tuđeg offer_id
+            return jsonify({"error": "VERSION_NOT_FOUND"}), 404
+        return jsonify(snap)
+    finally:
+        if conn: conn.close()
+
+
+@data_bp.route('/api/offers/<offer_id>/versions/<version_id>/restore', methods=['POST'])
+@login_required
+def restore_offer_version(offer_id, version_id):
+    """Vrati staru verziju u aktivnu ponudu. Trenutna verzija se automatski
+    snima pre restore-a (kao i svaki edit), tako da je i restore reverzibilan.
+    Samo admin ili korisnik sa 'offers_edit' + 'offers_restore' sme."""
+    role = session.get('role')
+    perms = {}
+    if role != 'admin':
+        conn_p = get_db_connection()
+        try:
+            cp = conn_p.cursor()
+            cp.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
+            prow = cp.fetchone()
+        finally:
+            conn_p.close()
+        perms = decrypt_data(prow[0]) if prow and prow[0] else {}
+        if not perms.get('offers_edit', False):
+            return jsonify({"error": "UNAUTHORIZED"}), 403
+
+    from offer_versions import get_snapshot, snapshot_if_changed
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute('BEGIN TRANSACTION;')
+        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
+        row = c.fetchone()
+        if not row:
+            conn.rollback()
+            return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+        current_offer = decrypt_data(row[0]) or {}
+        if not isinstance(current_offer, dict):
+            current_offer = {}
+
+        snap = get_snapshot(conn, version_id)
+        if not snap or snap.get('offerId') != offer_id:
+            conn.rollback()
+            return jsonify({"error": "VERSION_NOT_FOUND"}), 404
+
+        target_offer = snap.get('snapshot') or {}
+        # PRESERVE non-versionable metapodatke (id ostaje, timestampi neće u istoriju)
+        target_offer['id'] = offer_id
+        # Očuvaj ownerId — restore ne menja vlasništvo
+        target_offer['ownerId'] = current_offer.get('ownerId')
+        target_offer['sharedWith'] = current_offer.get('sharedWith', [])
+
+        # Prvo snimi trenutni state kao verziju (da restore bude reverzibilan)
+        payload = request.get_json(silent=True) or {}
+        reason = str(payload.get('reason') or f'Restored to v{snap.get("version")}').strip()[:500]
+        snapshot_if_changed(
+            conn, offer_id, current_offer, target_offer,
+            changed_by=session.get('user_id', 'SYSTEM'),
+            changed_by_role=role or 'employee',
+            origin='crm',
+            change_reason=f'RESTORE: {reason}',
+        )
+
+        _retry_on_lock(c.execute, "UPDATE offers SET data=? WHERE id=?",
+                       (json.dumps(target_offer), offer_id))
+        conn.commit()
+        log_audit('EDIT', 'offers',
+                  f'Restored offer {offer_id} to version {snap.get("version")}',
+                  is_suspicious=False)
+        return jsonify({"status": "success", "restoredToVersion": snap.get('version'),
+                        "offer": target_offer})
+    except Exception:
+        if conn: conn.rollback()
+        logger.exception(f"restore_offer_version({offer_id}, {version_id}) failed")
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
     finally:
         if conn: conn.close()
