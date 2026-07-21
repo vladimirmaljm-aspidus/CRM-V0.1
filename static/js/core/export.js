@@ -48,15 +48,27 @@ function generateCashFlowReport() {
 
 async function exportDatabase() {
   const exportData = {};
+  const failed = [];
   for(const key of DATA_KEYS) {
-      const res = await fetch(`/api/data/${key}?t=${Date.now()}`);
-      const json = await res.json();
-      if(json.value !== null) exportData[key] = json.value;
+      try {
+          const res = await fetch(`/api/data/${key}?t=${Date.now()}`);
+          if (!res.ok) { failed.push(`${key} (HTTP ${res.status})`); continue; }
+          const json = await res.json();
+          if(json.value !== null && json.value !== undefined) exportData[key] = json.value;
+      } catch (e) {
+          failed.push(`${key} (${e.message || e})`);
+      }
   }
   const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; 
-  a.download = `ASPIDUS_Database_Backup_${new Date().toISOString().slice(0,10)}.json`; 
+  const a = document.createElement('a'); a.href = url;
+  a.download = `ASPIDUS_Database_Backup_${new Date().toISOString().slice(0,10)}.json`;
   document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-  if(typeof logClientEvent === 'function') logClientEvent('DOWNLOAD', 'database', 'Exported complete database archive (JSON)');
+  if(typeof logClientEvent === 'function') logClientEvent('DOWNLOAD', 'database', `Exported ${Object.keys(exportData).length} tables (${failed.length} failed)`);
+  if (failed.length && typeof showToast === 'function') {
+      showToast(`⚠ Backup preuzet, ali ${failed.length} tabela nije uspelo: ${failed.slice(0,3).join(', ')}${failed.length>3?'…':''}`, 'warning', 8000);
+  } else if (typeof showToast === 'function') {
+      showToast(`✓ Backup preuzet (${Object.keys(exportData).length} tabela)`, 'success');
+  }
 }
+window._exportDatabaseImpl = exportDatabase;

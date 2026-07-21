@@ -336,6 +336,22 @@ def load_firewall_settings():
                                 merged[k] = v
                         except (TypeError, ValueError):
                             pass
+                # restore whitelist/blacklist arrays (dodato u v22 P0 batch-u —
+                # ranije se gubilo posle restart-a servera jer se čuvalo samo u
+                # in-memory FirewallCache)
+                import ipaddress as _ip
+                for src_key, cache_set in (('whitelist', FirewallCache.whitelist),
+                                            ('blacklist', FirewallCache.blacklist)):
+                    lst = stored.get(src_key) or []
+                    if isinstance(lst, list):
+                        for ip in lst:
+                            s = str(ip or '').strip()
+                            if not s: continue
+                            try:
+                                _ip.ip_address(s)
+                                cache_set.add(s)
+                            except ValueError:
+                                pass
     except Exception:
         _util_logger.warning('load_firewall_settings: falling back to defaults', exc_info=True)
 

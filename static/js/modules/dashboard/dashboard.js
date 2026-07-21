@@ -91,21 +91,35 @@ window.renderDashboardView = async function() {
         </div>
     `;
 
-    // Load Chart.js from CDN if not already loaded
-    if (typeof Chart === 'undefined') {
-        await loadChartJs();
-    }
-
-    // Render KPI cards
+    // KPI kartice se renderuju ODMAH — ne zavise od Chart.js i moraju biti
+    // vidljive čak i ako je CDN blokiran (npr. korporativni firewall).
     renderKpiCards();
 
-    // Render all four charts
-    renderRevenueChart();
-    renderTopPartnersChart();
-    renderPipelineChart();
-    renderDealCountChart();
+    // Chart.js se učitava sa CDN-a — ako padne, grafovi ostaju prazni ali
+    // KPI kartice i live market widget-i i dalje rade.
+    let chartsAvailable = typeof Chart !== 'undefined';
+    if (!chartsAvailable) {
+        try {
+            await loadChartJs();
+            chartsAvailable = true;
+        } catch (e) {
+            console.warn('Chart.js CDN nedostupan — grafovi neće biti prikazani:', e.message);
+            // Ubaci vizuelan fallback u svaki canvas parent
+            document.querySelectorAll('canvas[id^="chart-"]').forEach(c => {
+                const p = c.parentElement;
+                if (p) c.outerHTML = '<div class="text-center py-8 text-amber-700 bg-amber-50 border border-amber-200 rounded-lg text-xs font-bold">⚠ Chart.js CDN blokiran<br><span class="font-normal opacity-80">Proverite mrežnu vezu ili konfigurišite offline bundle</span></div>';
+            });
+        }
+    }
 
-    // Load live market data async
+    if (chartsAvailable) {
+        try { renderRevenueChart(); } catch (e) { console.error('revenue chart:', e); }
+        try { renderTopPartnersChart(); } catch (e) { console.error('top partners chart:', e); }
+        try { renderPipelineChart(); } catch (e) { console.error('pipeline chart:', e); }
+        try { renderDealCountChart(); } catch (e) { console.error('deal count chart:', e); }
+    }
+
+    // Live market widget-i su nezavisni od Chart.js
     loadFxTable();
     loadCommodityTable();
 };

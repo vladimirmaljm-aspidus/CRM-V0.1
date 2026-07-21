@@ -1,5 +1,36 @@
 // static/js/core/pdf_generator.js
+//
+// LEGACY client-side PDF generator (jsPDF). Održavano samo kao fallback —
+// server-side ReportLab je primaran (v22+). jsPDF se sada LAZY-LOAD-uje
+// sa CDN-a samo kad se ova funkcija realno pozove, tako da app ne mora
+// da čeka 400KB skripta na svaki boot, i radi bez interneta osim ako
+// se korisnik svesno odluči za native PDF.
+async function _ensureJsPDF() {
+    if (window.jspdf) return true;
+    return new Promise((resolve, reject) => {
+        let loaded = 0;
+        const done = () => { if (++loaded === 2) resolve(true); };
+        const err = (name) => reject(new Error(`${name} CDN unreachable`));
+        [
+            'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
+            'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js',
+        ].forEach(src => {
+            const s = document.createElement('script');
+            s.src = src; s.onload = done;
+            s.onerror = () => err(src.split('/').pop());
+            document.head.appendChild(s);
+        });
+    });
+}
+
 async function generateNativePDF(data, filename, action = 'download') {
+    try {
+        await _ensureJsPDF();
+    } catch (e) {
+        alert('PDF biblioteka nije dostupna (offline ili blokiran CDN). Koristite server-side PDF preko dugmeta "Generate PDF" iz forme.');
+        console.error('jsPDF load failed:', e);
+        return;
+    }
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF('p', 'mm', 'a4');
 
