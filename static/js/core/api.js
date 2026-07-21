@@ -268,21 +268,12 @@ async function saveDocumentToVault(payload) {
     return res.json();
 }
 
+// exportDatabase() se definiše u core/export.js (učitava se posle ovog fajla i
+// override-uje ovaj stub); zadržan je stub ovde radi backward-compat sa
+// modulama koji ga zovu pre nego što export.js dođe na red.
 async function exportDatabase() {
-  const exportData = {};
-  for(const key of DATA_KEYS) {
-      try {
-          const res = await fetchWithRetry(`/api/data/${key}?t=${Date.now()}`);
-          if(res.ok) {
-              const json = await res.json();
-              if(json.value !== null) exportData[key] = json.value;
-          }
-      } catch(e) {}
-  }
-  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = `ASPIDUS_Database_${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-  if(typeof logClientEvent === 'function') logClientEvent('DOWNLOAD', 'database', 'Exported complete database archive (JSON)');
+  if (typeof window._exportDatabaseImpl === 'function') return window._exportDatabaseImpl();
+  console.warn('exportDatabase pozvano pre nego što je export.js učitan');
 }
 
 async function importDatabase(file) {
@@ -290,7 +281,12 @@ async function importDatabase(file) {
   reader.onload = async (e) => {
       try {
           const importedData = JSON.parse(e.target.result);
-          document.getElementById('import-btn-txt').innerText = `⏳ ${Utils.t('misc.loadingStatus')}`;
+          // import-btn-txt element ne mora postojati u svakoj tema-verziji navigacije;
+          // ranije je throw-ovao NULL error i abort-ovao ceo import pre nego što
+          // bi ijedan zapis stigao u bazu.
+          const _btnTxt = document.getElementById('import-btn-txt');
+          if (_btnTxt) _btnTxt.innerText = `⏳ ${Utils.t('misc.loadingStatus')}`;
+          if (typeof showLoader === 'function') showLoader(Utils.t('misc.loadingStatus') || 'Importing…');
           
           for (const key of Object.keys(importedData)) {
               if (!DATA_KEYS.includes(key)) continue;
@@ -316,13 +312,18 @@ async function importDatabase(file) {
               await saveToStorage(key);
           }
           
-          document.getElementById('import-btn-txt').innerHTML = `📥 <span class="text-xs ml-1">${Utils.t('misc.importLabel')}</span>`;
-          alert(Utils.t('misc.importSuccess')); 
-          await loadFromStorage(); 
+          const _btnTxt2 = document.getElementById('import-btn-txt');
+          if (_btnTxt2) _btnTxt2.innerHTML = `📥 <span class="text-xs ml-1">${Utils.t('misc.importLabel')}</span>`;
+          if (typeof hideLoader === 'function') hideLoader();
+          if (typeof showToast === 'function') showToast(Utils.t('misc.importSuccess') || 'Import success', 'success');
+          else alert(Utils.t('misc.importSuccess'));
+          await loadFromStorage();
           if (typeof render === 'function') { render(); } else { window.location.reload(); }
-      } catch (err) { 
-          alert(Utils.t('misc.importError') || 'Import error or corrupted file.'); 
-          console.error(err); 
+      } catch (err) {
+          if (typeof hideLoader === 'function') hideLoader();
+          if (typeof showToast === 'function') showToast((Utils.t('misc.importError') || 'Import error') + ': ' + (err.message || err), 'error');
+          else alert(Utils.t('misc.importError') || 'Import error or corrupted file.');
+          console.error(err);
       }
   };
   reader.readAsText(file);
