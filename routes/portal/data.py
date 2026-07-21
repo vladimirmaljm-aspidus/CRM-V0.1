@@ -1,10 +1,14 @@
 import sqlite3
 import json
+import traceback
+import logging
 from flask import request, jsonify, abort, render_template
 from config import DB_FILE, PORTAL_DB_FILE
 from utils import decrypt_data, log_audit
 from . import (portal_bp, safe_parse, check_portal_rate_limit,
                verify_portal_session, find_partner_by_token, log_portal_activity)
+
+logger = logging.getLogger(__name__)
 
 @portal_bp.route('/portal/login', methods=['GET'])
 @portal_bp.route('/portal/', methods=['GET'])
@@ -42,11 +46,14 @@ def get_portal_data(token):
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if ip and ',' in ip: ip = ip.split(',')[0].strip()
     if not check_portal_rate_limit(ip): abort(429)
-    
+
     auth_header = request.headers.get('X-Portal-Auth')
     if not verify_portal_session(token, auth_header):
         return jsonify({"error": "Authentication required", "require_otp": True}), 401
 
+    # Ceo handler u outer try/except — bilo koja neuhvaćena greška se
+    # loguje sa traceback-om umesto da klijent portala vidi šturu
+    # 500 grešku bez razloga.
     conn = None
     try:
         conn = sqlite3.connect(DB_FILE, timeout=30.0)
@@ -238,6 +245,14 @@ def get_portal_data(token):
             "my_products": my_products,
             "my_profile_requests": my_profile_requests
         })
+    except Exception as e:
+        # Loguj pun traceback za dijagnostiku (npr. malformed JSON u partneru,
+        # nedostajuća kolona u portal bazi nakon migracije, itd.). Klijent
+        # dobija kratku poruku bez interne detalje.
+        tb = traceback.format_exc()
+        logger.error(f"get_portal_data failed for token {token[:8]}...: {e}\n{tb}")
+        log_audit('ERROR', 'portal', f'get_portal_data crashed: {e}', is_suspicious=False)
+        return jsonify({"error": "PORTAL_DATA_ERROR", "message": str(e)}), 500
     finally:
         if conn: conn.close()
 
