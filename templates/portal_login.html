@@ -156,6 +156,39 @@
                 <div class="animate-spin rounded-full h-8 w-8 border-b-2 mx-auto mb-3" style="border-color: var(--brand);"></div>
                 <p class="text-sm text-slate-500 font-medium">Signing you in&hellip;</p>
             </div>
+
+            <!-- Set new password (posle klika na reset link ili invite) -->
+            <div id="step-set-password" class="hidden fade-in">
+                <h2 class="text-lg font-semibold text-slate-900 mb-1">Set your new password</h2>
+                <p class="text-sm text-slate-500 mb-6">Choose a strong password (min. 8 characters). You'll be signed in automatically.</p>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">New Password</label>
+                        <input type="password" id="sp-password" class="input-field" placeholder="••••••••" autocomplete="new-password" required>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Confirm Password</label>
+                        <input type="password" id="sp-password2" class="input-field" placeholder="••••••••" autocomplete="new-password" required>
+                    </div>
+                    <button onclick="setNewPassword()" id="sp-btn"
+                            class="brand-btn w-full py-3 rounded-xl font-semibold text-white text-sm transition-all">
+                        Save & Sign In
+                    </button>
+                </div>
+                <p id="sp-error" class="text-sm text-red-600 mt-3 hidden"></p>
+            </div>
+
+            <!-- Recovery link error (istekao/iskorišćen) -->
+            <div id="step-recovery-error" class="hidden fade-in">
+                <div class="rounded-xl bg-red-50 border border-red-200 p-4 mb-4">
+                    <h2 class="text-base font-semibold text-red-900 mb-1">Link expired or already used</h2>
+                    <p id="rec-error-msg" class="text-sm text-red-800">This password reset link is no longer valid.</p>
+                </div>
+                <button onclick="backToSupabaseLogin()"
+                        class="brand-btn w-full py-3 rounded-xl font-semibold text-white text-sm">
+                    Request a new link
+                </button>
+            </div>
         </div>
 
         <div class="text-center mt-6 space-y-1">
@@ -202,18 +235,68 @@
             }
         }
 
+        // Session koji smo dobili preko recovery link-a. Čuvamo ga na window
+        // scope-u jer supabase-js internal state ga ne peristira sa persistSession=false.
+        let recoverySession = null;
+
         async function consumeUrlHashSession() {
-            // Supabase magic-link i reset redirects sadrže #access_token=...&refresh_token=...
+            // Supabase magic-link i reset redirects sadrže:
+            //   #access_token=...&refresh_token=...&type=(recovery|magiclink|invite|signup)
+            // ILI (ako je Supabase odbio) #error=access_denied&error_code=otp_expired&error_description=...
             const hash = window.location.hash || '';
-            if (!hash.includes('access_token=')) return;
+            if (!hash || hash === '#') return;
+
             const params = new URLSearchParams(hash.replace(/^#/, ''));
+            const err = params.get('error');
+            const errCode = params.get('error_code');
+            const errDesc = params.get('error_description');
+
+            if (err) {
+                // Supabase je odbio verifikaciju (istekao token, već iskorišćen, itd.)
+                document.getElementById('step-supabase').classList.add('hidden');
+                document.getElementById('step-email').classList.add('hidden');
+                document.getElementById('step-recovery-error').classList.remove('hidden');
+                const msg = decodeURIComponent(errDesc || '').replace(/\+/g, ' ') || err;
+                document.getElementById('rec-error-msg').textContent =
+                    errCode === 'otp_expired'
+                        ? 'This password reset link has expired or was already used. Please request a new one.'
+                        : msg;
+                history.replaceState(null, '', window.location.pathname + window.location.search);
+                return;
+            }
+
             const accessToken = params.get('access_token');
+            const refreshToken = params.get('refresh_token');
+            const linkType = params.get('type') || '';
             if (!accessToken) return;
 
-            // GPS location pre exchange-a (isti policy kao OTP flow)
+            // Očisti hash odmah da token ne curi u browser history / referer
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+
+            // Recovery / invite / signup → prvo tražimo NOVU LOZINKU, tek posle exchange
+            if (linkType === 'recovery' || linkType === 'invite' || linkType === 'signup') {
+                recoverySession = { access_token: accessToken, refresh_token: refreshToken };
+                if (sbClient && refreshToken) {
+                    try {
+                        // supabase.auth.updateUser zahteva aktivnu sesiju u klijentu
+                        await sbClient.auth.setSession({
+                            access_token: accessToken,
+                            refresh_token: refreshToken,
+                        });
+                    } catch (e) {
+                        console.warn('setSession failed:', e);
+                    }
+                }
+                document.getElementById('step-supabase').classList.add('hidden');
+                document.getElementById('step-email').classList.add('hidden');
+                document.getElementById('step-set-password').classList.remove('hidden');
+                setTimeout(() => document.getElementById('sp-password').focus(), 50);
+                return;
+            }
+
+            // Magic-link (type=magiclink) — direct exchange
             let locData = '';
             try { locData = await getPreciseLocation(); } catch (_) {}
-
             showSupabaseLoading();
             try {
                 const res = await fetch('/api/portal/auth/supabase/exchange', {
@@ -232,9 +315,61 @@
             } catch (e) {
                 showSupabaseError('Network error while completing magic-link sign-in.');
             }
-            // Očisti hash da ne bi curio access_token u istoriji
-            history.replaceState(null, '', window.location.pathname + window.location.search);
         }
+
+        window.setNewPassword = async function() {
+            const p1 = document.getElementById('sp-password').value;
+            const p2 = document.getElementById('sp-password2').value;
+            const errEl = document.getElementById('sp-error');
+            errEl.classList.add('hidden');
+            if (!p1 || p1.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; errEl.classList.remove('hidden'); return; }
+            if (p1 !== p2) { errEl.textContent = 'Passwords do not match.'; errEl.classList.remove('hidden'); return; }
+            if (!sbClient || !recoverySession) {
+                errEl.textContent = 'Session expired. Please request a new reset link.';
+                errEl.classList.remove('hidden'); return;
+            }
+            const btn = document.getElementById('sp-btn');
+            btn.disabled = true; btn.textContent = 'Saving…';
+            try {
+                const { error } = await sbClient.auth.updateUser({ password: p1 });
+                if (error) {
+                    errEl.textContent = error.message || 'Could not save password.';
+                    errEl.classList.remove('hidden');
+                    btn.disabled = false; btn.textContent = 'Save & Sign In';
+                    return;
+                }
+                // Posle uspešnog set-a, uzimamo svež access_token iz aktivne sesije
+                // (updateUser vraća novu sesiju automatski) i onda exchange sa serverom.
+                btn.textContent = 'Signing in…';
+                let locData = '';
+                try { locData = await getPreciseLocation(); } catch (_) {}
+                const { data: sess } = await sbClient.auth.getSession();
+                const token = sess?.session?.access_token || recoverySession.access_token;
+                const res = await fetch('/api/portal/auth/supabase/exchange', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ access_token: token, location: locData })
+                });
+                const body = await res.json();
+                if (res.ok && body.auth_key && body.token) {
+                    finishSupabaseLogin(body);
+                    return;
+                }
+                errEl.textContent = body.error === 'LOCATION_REQUIRED'
+                    ? 'Location access is required. Please allow precise location and try again.'
+                    : (body.error || 'Password saved, but sign-in failed. Try signing in manually.');
+                errEl.classList.remove('hidden');
+            } catch (e) {
+                errEl.textContent = 'Network error. Try again.';
+                errEl.classList.remove('hidden');
+            }
+            btn.disabled = false; btn.textContent = 'Save & Sign In';
+        };
+
+        window.backToSupabaseLogin = function() {
+            document.getElementById('step-recovery-error').classList.add('hidden');
+            document.getElementById('step-supabase').classList.remove('hidden');
+        };
 
         window.switchSupabaseTab = function(tab) {
             const pw = document.getElementById('sb-pane-password');
