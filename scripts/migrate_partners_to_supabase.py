@@ -59,8 +59,10 @@ def parse_args():
     ap.add_argument("--dry-run", action="store_true", help="Samo pokaži šta bi radilo, ne dira Supabase")
     ap.add_argument("--send-emails", action="store_true", help="Pošalji reset-password email po nalogu")
     ap.add_argument("--only-active", action="store_true", help="Preskoči partnere sa isPortalActive=false")
+    ap.add_argument("--only-email", type=str, help="Obradi SAMO datog partnera (email substring match)")
+    ap.add_argument("--skip-create", action="store_true", help="Preskoči create_user, samo šalji reset (za postojeće naloge)")
     ap.add_argument("--limit", type=int, default=0, help="Ograniči broj partnera (0 = svi)")
-    ap.add_argument("--sleep", type=float, default=0.4, help="Pauza između poziva Supabase-u (sekunde), default 0.4")
+    ap.add_argument("--sleep", type=float, default=1.5, help="Pauza između poziva Supabase-u (sekunde), default 1.5")
     return ap.parse_args()
 
 
@@ -119,11 +121,19 @@ def main():
     if args.only_active:
         partners = [p for p in partners if p["isPortalActive"] is not False]
 
+    if args.only_email:
+        needle = args.only_email.lower()
+        partners = [p for p in partners if needle in p["email"].lower()]
+        if not partners:
+            print(f"Nijedan partner ne odgovara --only-email={args.only_email!r}.")
+            return 0
+
     if args.limit and args.limit > 0:
         partners = partners[: args.limit]
 
-    print(f"\nMigracija — {len(partners)} partner(a) sa email adresom.")
-    print(f"  dry_run={args.dry_run} send_emails={args.send_emails} only_active={args.only_active}\n")
+    print(f"\nMigracija — {len(partners)} partner(a).")
+    print(f"  dry_run={args.dry_run} send_emails={args.send_emails} only_active={args.only_active} "
+          f"skip_create={args.skip_create} sleep={args.sleep}s\n")
 
     stats = {"created": 0, "existing": 0, "errors": 0, "reset_sent": 0, "reset_failed": 0}
     log_lines = []
@@ -131,29 +141,34 @@ def main():
     for i, p in enumerate(partners, 1):
         prefix = f"[{i}/{len(partners)}] {p['email']:40s}"
         if args.dry_run:
-            print(f"{prefix}  (dry-run: create+reset)")
+            action = "reset-only" if args.skip_create else "create+reset"
+            print(f"{prefix}  (dry-run: {action})")
             continue
 
-        uid, status = create_or_get_auth_user(
-            p["email"],
-            partner_id=p["id"],
-            company_name=p["companyName"],
-            email_confirm=True,
-        )
-        if status == "created":
-            stats["created"] += 1
-            marker = "NEW "
-        elif status == "existing":
-            stats["existing"] += 1
-            marker = "EXST"
+        uid = None
+        if not args.skip_create:
+            uid, status = create_or_get_auth_user(
+                p["email"],
+                partner_id=p["id"],
+                company_name=p["companyName"],
+                email_confirm=True,
+            )
+            if status == "created":
+                stats["created"] += 1
+                marker = "NEW "
+            elif status == "existing":
+                stats["existing"] += 1
+                marker = "EXST"
+            else:
+                stats["errors"] += 1
+                print(f"{prefix}  ✗ {status}")
+                log_lines.append(f"{p['id']} {p['email']} auth_create_failed: {status}")
+                time.sleep(args.sleep)
+                continue
         else:
-            stats["errors"] += 1
-            marker = "ERR "
-            print(f"{prefix}  ✗ {status}")
-            log_lines.append(f"{p['id']} {p['email']} auth_create_failed: {status}")
-            continue
+            marker = "SKIP"
 
-        line = f"{prefix}  ✓ {marker} uid={(uid or '')[:8]}"
+        line = f"{prefix}  ✓ {marker} uid={(uid or '-')[:8]}"
         if args.send_emails:
             ok, detail = send_password_reset(p["email"])
             if ok:
@@ -163,7 +178,7 @@ def main():
                 stats["reset_failed"] += 1
                 line += f"  ✗ reset failed: {detail}"
         print(line)
-        log_lines.append(f"{p['id']} {p['email']} auth_{status} reset_sent={args.send_emails}")
+        log_lines.append(f"{p['id']} {p['email']} action=create_reset reset_sent={args.send_emails}")
         time.sleep(args.sleep)
 
     print("\n── Rezime ──")

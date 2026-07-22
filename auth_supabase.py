@@ -162,9 +162,10 @@ def create_or_get_auth_user(
 ) -> tuple[Optional[str], str]:
     """Idempotentno pravi Supabase Auth korisnika za dati email.
 
-    Ako korisnik već postoji, vraća njegov sub. Ako je novi, kreira ga sa
-    email_confirm=True (bez čekanja da klijent klikne link — pretpostavljamo
-    da je admin već potvrdio email u KYC procesu).
+    OPTIMIZACIJA: umesto `list_users` pre-check-a (koji trosi Cloudflare rate
+    limite i uzrokuje ES256 JWT parse greške), odmah pokušava CREATE i
+    ako Supabase vrati "email already registered" onda tek radi lookup.
+    Ovo znatno smanjuje broj admin-API poziva za novu populaciju.
 
     Vraća (user_id, status) gde status ∈ {"created", "existing", "error:<...>"}
     """
@@ -173,11 +174,6 @@ def create_or_get_auth_user(
     email_lower = email.strip().lower()
     client = admin_client()
 
-    existing = get_user_by_email(email_lower)
-    if existing:
-        uid = existing.get("id") if isinstance(existing, dict) else getattr(existing, "id", None)
-        return str(uid) if uid else None, "existing"
-
     metadata = {}
     if partner_id:
         metadata["partner_id"] = str(partner_id)
@@ -185,8 +181,6 @@ def create_or_get_auth_user(
         metadata["company_name"] = str(company_name)
 
     try:
-        # Supabase kreira korisnika BEZ lozinke — klijent postavlja svoju
-        # kroz reset-password flow koji šaljemo posebnim pozivom.
         resp = client.auth.admin.create_user({
             "email": email_lower,
             "email_confirm": bool(email_confirm),
@@ -198,6 +192,15 @@ def create_or_get_auth_user(
             return str(uid), "created"
         return None, "error:no_id_returned"
     except Exception as e:
+        msg = str(e).lower()
+        # Supabase vraća 422 "email address ... already been registered" ili
+        # "user already registered" — u tom slučaju uradi lookup.
+        if "already" in msg and ("registered" in msg or "exists" in msg):
+            existing = get_user_by_email(email_lower)
+            if existing:
+                uid = existing.get("id") if isinstance(existing, dict) else getattr(existing, "id", None)
+                return str(uid) if uid else None, "existing"
+            return None, "error:exists_but_lookup_failed"
         return None, f"error:{e.__class__.__name__}:{e}"
 
 
