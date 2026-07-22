@@ -239,10 +239,21 @@ def portal_public_config():
     magic-link status. Nikad ne otkriva tajne."""
     from security_ext import get_public_sitekey
     from mail_providers import magic_link_config
-    return jsonify({
+    from auth_supabase import use_supabase_auth
+    import os as _os
+    cfg = {
         'hcaptcha_sitekey': get_public_sitekey(),
         'magic_link_enabled': magic_link_config()['enabled'],
-    })
+        # Supabase Auth switch — kad je True, frontend prikazuje Supabase
+        # widget (email + password + magic link), kad je False koristi legacy OTP flow.
+        'supabase_auth_enabled': use_supabase_auth(),
+    }
+    if cfg['supabase_auth_enabled']:
+        # Frontend-u su potrebni URL i ANON key da inicijalizuje supabase-js
+        # klijent. Anon key je javno bezbedan (namenjen SPA-u).
+        cfg['supabase_url'] = _os.environ.get('SUPABASE_URL', '').strip()
+        cfg['supabase_anon_key'] = _os.environ.get('SUPABASE_ANON_KEY', '').strip()
+    return jsonify(cfg)
 
 
 # ==========================================================
