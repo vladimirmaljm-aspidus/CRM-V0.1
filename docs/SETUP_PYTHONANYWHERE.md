@@ -55,8 +55,8 @@ SESSION_COOKIE_SECURE=true
 
 # --- SUPABASE (NOVO) ---
 SUPABASE_URL=https://gceaznutofvqbuyypjlh.supabase.co
-SUPABASE_ANON_KEY=***PURGED-PUBLISHABLE***
-SUPABASE_SERVICE_ROLE_KEY=***PURGED-SECRET***
+SUPABASE_ANON_KEY=<NALEPI OVDE Publishable key iz Supabase Dashboard-a — vidi napomenu 1>
+SUPABASE_SERVICE_ROLE_KEY=<NALEPI OVDE Secret key iz Supabase Dashboard-a — vidi napomenu 2>
 SUPABASE_JWT_SECRET=<NALEPI OVDE JWT Secret iz koraka 1A>
 SUPABASE_DB_URL=<NALEPI OVDE ceo connection string iz koraka 1B, sa lozinkom>
 
@@ -67,7 +67,11 @@ USE_SUPABASE_DB=false
 DUAL_WRITE_MODE=false
 ```
 
-6. Zameni 4 mesta gde piše `<...>` sa pravim vrednostima.
+6. Zameni sva mesta gde piše `<...>` sa pravim vrednostima:
+   - **Napomena 1 — Publishable key**: Supabase Dashboard → Project Settings → API → "Project API keys" → "anon public" (ili "Publishable" u novom UI-ju). Kopiraj vrednost, nalepi umesto `<NALEPI OVDE Publishable key ...>`.
+   - **Napomena 2 — Secret key**: Isti ekran (Project Settings → API) → "service_role" (klik "Reveal") ili "Secret" u novom UI-ju. Kopiraj i nalepi umesto `<NALEPI OVDE Secret key ...>`. Nikad ovaj ne u git.
+   - **JWT Secret**: iz koraka 1A gore.
+   - **DB URL sa lozinkom**: iz koraka 1B gore.
 7. **Save**.
 
 **Provera bezbednosti**: uradi `ls -la ~/mysite/` u Bash konzoli na PythonAnywhere-u. Fajl `.env` treba da postoji. Ako nije, možda je editor sačuvao kao `env` bez tačke — preimenuj ga na `.env`.
