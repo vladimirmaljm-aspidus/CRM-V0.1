@@ -63,6 +63,10 @@ def parse_args():
     ap.add_argument("--skip-create", action="store_true", help="Preskoči create_user, samo šalji reset (za postojeće naloge)")
     ap.add_argument("--limit", type=int, default=0, help="Ograniči broj partnera (0 = svi)")
     ap.add_argument("--sleep", type=float, default=1.5, help="Pauza između poziva Supabase-u (sekunde), default 1.5")
+    ap.add_argument("--portal-url", type=str,
+                    default=os.environ.get("PORTAL_BASE_URL", "").strip(),
+                    help="Kompletan URL portal login stranice (npr. https://aspidus.pythonanywhere.com/portal/login). "
+                         "Bez ovoga Supabase koristi Dashboard 'Site URL' — preporučeno postaviti eksplicitno.")
     return ap.parse_args()
 
 
@@ -170,7 +174,7 @@ def main():
 
         line = f"{prefix}  ✓ {marker} uid={(uid or '-')[:8]}"
         if args.send_emails:
-            ok, detail = send_password_reset(p["email"])
+            ok, detail = send_password_reset(p["email"], redirect_to=args.portal_url or None)
             if ok:
                 stats["reset_sent"] += 1
                 line += "  📧 reset sent"
