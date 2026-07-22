@@ -160,6 +160,115 @@ def supabase_auth_exchange():
     })
 
 
+@portal_bp.route('/api/portal/auth/supabase/set-password', methods=['POST'])
+def supabase_set_password():
+    """Recovery flow — postavlja novu lozinku i odmah pravi portal sesiju.
+
+    Body: {"access_token": <recovery JWT>, "password": <nova>, "location": "lat,lng"}
+
+    1) Offline verify JWT (HS256 + JWT Secret)
+    2) admin.update_user_by_id(sub, {password: ...})
+    3) find_partner_by_email → create_portal_session → return auth_key
+
+    Ovaj endpoint eliminiše potrebu za supabase-js na klijentu za recovery
+    tok — sve se radi serverski (brže, robusnije, radi i bez CDN-a).
+    """
+    ip = _client_ip()
+    if not check_portal_rate_limit(ip):
+        abort(429)
+
+    from auth_supabase import (
+        verify_supabase_jwt, update_user_password, use_supabase_auth,
+    )
+    if not use_supabase_auth():
+        return jsonify({"error": "Supabase Auth is not enabled on this server."}), 503
+
+    payload = request.get_json(silent=True) or {}
+    access_token = str(payload.get('access_token') or '').strip()
+    new_password = str(payload.get('password') or '')
+    location = str(payload.get('location') or '').strip()
+
+    if not access_token:
+        return jsonify({"error": "Missing access_token"}), 400
+    if not new_password or len(new_password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters."}), 400
+
+    claims = verify_supabase_jwt(access_token)
+    if not claims:
+        log_audit('SECURITY', 'portal',
+                  f'set-password: JWT verify failed from {ip}', is_suspicious=True)
+        return jsonify({"error": "Invalid or expired recovery link."}), 401
+
+    sub = str(claims.get('sub') or '').strip()
+    email = str(claims.get('email') or '').strip().lower()
+    if not sub or not email:
+        return jsonify({"error": "Token missing sub/email claim."}), 400
+
+    partner_id, partner = find_partner_by_email(email)
+    if not partner:
+        log_audit('SECURITY', 'portal',
+                  f'set-password: valid JWT but no partner for {email}',
+                  is_suspicious=True)
+        return jsonify({"error": "This account is not linked to any partner."}), 403
+
+    if partner.get('isPortalActive', True) is False:
+        log_portal_activity(partner_id, 'LOGIN_BLOCKED',
+                            f'set-password on revoked portal: {email}')
+        return jsonify({"error": "Access Revoked. Contact administrator."}), 403
+
+    ok, detail = update_user_password(sub, new_password)
+    if not ok:
+        log_audit('ERROR', 'portal',
+                  f'set-password failed for {email}: {detail}', is_suspicious=False)
+        return jsonify({"error": f"Could not save password: {detail}"}), 500
+
+    # GPS gate (Premium izuzetak)
+    is_premium = is_partner_premium(partner)
+    if not is_premium and (not location or ',' not in location):
+        # Lozinka JE postavljena — samo GPS fali. Neka klijent osveži sa GPS-om.
+        return jsonify({
+            "status": "password_saved",
+            "error": "LOCATION_REQUIRED",
+            "message": "Password saved. Please allow location and sign in.",
+        }), 200
+
+    # Uveri se da postoji portalToken (kao u exchange-u)
+    token = partner.get('portalToken')
+    if not token:
+        import json as _json
+        import sqlite3 as _sql
+        import secrets as _sec
+        from config import DB_FILE as _DBF
+        token = _sec.token_urlsafe(32)
+        partner['portalToken'] = token
+        partner.setdefault('isPortalActive', True)
+        conn = _sql.connect(_DBF, timeout=30.0)
+        try:
+            conn.execute('PRAGMA busy_timeout=30000;')
+            conn.execute('UPDATE partners SET data=? WHERE id=?',
+                         (_json.dumps(partner), partner_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    from . import create_portal_session
+    auth_key = create_portal_session(token, partner_id=partner_id)
+    gps_note = f'GPS: {location}' if location else 'no GPS (premium)'
+    log_portal_activity(partner_id, 'LOGIN_SUCCESS',
+                        f'Recovery→password set + sign-in ({gps_note}) email={email}')
+    log_audit('LOGIN', 'portal',
+              f'Portal password recovery: {email} ({gps_note})',
+              is_suspicious=False)
+
+    return jsonify({
+        "status": "success",
+        "auth_key": auth_key,
+        "token": token,
+        "isPremium": is_premium,
+        "supabase_user_id": sub,
+    })
+
+
 @portal_bp.route('/api/portal/auth/supabase/send-magic-link', methods=['POST'])
 def supabase_send_magic_link():
     """Proxy — traži od Supabase-a da pošalje magic-link. Uvek isti odgovor
