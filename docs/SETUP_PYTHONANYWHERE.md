@@ -78,19 +78,28 @@ DUAL_WRITE_MODE=false
 
 ---
 
-## Korak 3 — Instaliraj `python-dotenv` (jednokratno)
+## Korak 3 — Instaliraj Python pakete (jednokratno)
 
 U PythonAnywhere:
 1. Otvori tab **"Consoles"** → **"Start a new console"** → **"Bash"**
 2. U konzoli otkucaj:
 
 ```bash
-pip3.11 install --user python-dotenv supabase psycopg[binary,pool]
+pip3.11 install --user python-dotenv "supabase>=2.0" "PyJWT>=2.8"
 ```
 
 (Ako koristiš drugu Python verziju — npr. `pip3.10` — prilagodi.)
 
-Čekaj 30-60 sekundi da se instalira. Očekivano: "Successfully installed python-dotenv-... supabase-... psycopg-...".
+Čekaj 30-60 sekundi. Očekivano: "Successfully installed python-dotenv-... supabase-... PyJWT-...".
+
+**Napomena — `psycopg` NIJE potreban za PA Free plan.** Facade radi preko
+supabase-py (HTTPS). Ako kasnije nadogradiš na PA Hacker plan, doda ćeš
+i psycopg tada:
+
+```bash
+# Samo ako pređeš na PA Hacker plan (traži DB_BACKEND=postgres):
+pip3.11 install --user 'psycopg[binary,pool]>=3.1'
+```
 
 ---
 
@@ -150,6 +159,34 @@ Ako sve radi, videćeš:
 ```
 
 Ako vidiš neki `✗` red, tu je problem — copy-paste izlaz i pošalji mi.
+
+---
+
+---
+
+## Prebacivanje na PA Hacker plan kada odlučiš
+
+Kada kasnije odlučiš da nadogradiš PythonAnywhere na Hacker plan
+(otključava direktan Postgres TCP), promena je jednostavna:
+
+1. U `.env` fajlu promeni:
+   ```
+   DB_BACKEND=postgres
+   ```
+2. Otkucaj u PA Bash konzoli:
+   ```
+   pip3.11 install --user 'psycopg[binary,pool]>=3.1'
+   ```
+3. Nabavi Pooler URL iz Supabase Dashboard-a:
+   - Project Settings → Database → Connection string tab
+   - Izaberi **"Transaction pooler"** (port 6543, IPv4)
+   - Kopiraj + zameni `[YOUR-PASSWORD]` sa lozinkom (URL-encode-uj `@` kao `%40`)
+   - Nalepi u `SUPABASE_DB_URL` u `.env`
+4. Web tab → **Reload**.
+5. Pokreni `python3.11 scripts/verify_supabase_connection.py` — sve treba biti ✅ **plus** "Postgres connectivity" sekcija sad zeleno.
+
+Ništa u aplikaciji ne treba menjati — data-layer facade automatski
+detektuje `DB_BACKEND=postgres` i koristi psycopg umesto REST-a.
 
 ---
 
