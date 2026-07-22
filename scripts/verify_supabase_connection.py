@@ -164,11 +164,34 @@ def check_postgres(db_url: str):
                 if extra:
                     warn(f"Neočekivane tabele (nije problem, samo info): {', '.join(sorted(extra))}")
     except psycopg.OperationalError as e:
-        fail(f"Postgres konekcija propala: {e}")
-        if "authentication" in str(e).lower() or "password" in str(e).lower():
-            fail("→ Verovatno je DB lozinka pogrešna. Vrati se na Korak 1B u SETUP_PYTHONANYWHERE.md.")
-        elif "could not translate" in str(e).lower():
-            fail("→ SUPABASE_DB_URL host je pogrešan ili nema mreže.")
+        emsg = str(e)
+        fail(f"Postgres konekcija propala: {emsg}")
+
+        # Specifična dijagnostika za tipične greške:
+        # 1) URL parse fail zbog nekodiranog specijalnog karaktera u lozinci
+        if "Name or service not known" in emsg or "could not translate host" in emsg.lower():
+            # Ako u URL-u ima 2+ '@', velika verovatnoća da je '@' u lozinki
+            # nije URL-encoded (%40) i parser je pukao na pogrešnom '@'.
+            after_scheme = db_url.split("://", 1)[-1] if "://" in db_url else db_url
+            n_at = after_scheme.count("@")
+            if n_at > 1:
+                fail("→ Tvoja DB lozinka sadrži '@' (ili neki drugi specijalan karakter).")
+                fail("→ Fix: u SUPABASE_DB_URL zameni '@' u lozinci sa '%40'.")
+                fail("   Primer:  Aspidus@2026  →  Aspidus%402026")
+                fail("   Drugi karakteri: ':'→'%3A' '/'→'%2F' '#'→'%23' '?'→'%3F' '%'→'%25' ' '→'%20'")
+                fail("→ Alternativa: Supabase Dashboard → Database → Reset password →")
+                fail("   koristi samo slova+brojeve (bez specijalnih karaktera).")
+            else:
+                fail("→ SUPABASE_DB_URL host je pogrešan, ili nemaš izlaznu mrežu.")
+                fail("   Proveri da tvoj hosting (PythonAnywhere Free ne dozvoljava izlaz na 5432).")
+        elif "authentication" in emsg.lower() or "password" in emsg.lower():
+            fail("→ Verovatno je DB lozinka pogrešna (ili sadrži nekodovan specijalni karakter).")
+            fail("   Ako ima '@', ':', '/', '#', '?' u lozinci — URL-encode-uj ih.")
+        elif "connection refused" in emsg.lower():
+            fail("→ Server je odbio konekciju. Proveri da je Session mode (port 5432), ne Transaction mode.")
+        elif "timeout" in emsg.lower():
+            fail("→ Konekcija je istekla. Verovatno ti hosting blokira izlaz ka port 5432.")
+            fail("   PythonAnywhere Free NE dozvoljava proizvoljne odlazne konekcije — treba Hacker plan+.")
     except Exception as e:
         fail(f"Neočekivana greška: {e}")
 
