@@ -291,4 +291,4 @@ def find_partner_by_email(email):
 
 
 # Učitavanje svih modula kako bi rute bile aktivne
-from . import auth, data, actions
+from . import auth, data, actions, auth_supabase  # noqa: E402,F401
