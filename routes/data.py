@@ -149,9 +149,15 @@ def get_data(key):
 @data_bp.route('/api/item/<key>', methods=['POST'])
 @login_required
 def save_single_item(key):
-    item = request.json
-    if not item: return jsonify({"error": "Empty payload"}), 400
-    
+    # BEZBEDNOST + STABILNOST: request.json može biti bilo šta što se parsira
+    # kao JSON — objekat, niz, string, broj, null. Bez proveri tipa naredni
+    # item.get(...) baca AttributeError → 500 na svaki nevalidan payload
+    # (npr. korisnik nalepi "[1,2,3]" u probama, ili frontend bug pošalje
+    # pogrešnu strukturu). Provera radi soft: mora biti dict.
+    item = request.get_json(silent=True)
+    if not isinstance(item, dict):
+        return jsonify({"error": "Empty or invalid payload — expected JSON object"}), 400
+
     item_id = item.get('id')
     if not item_id: return jsonify({"error": "ID is required"}), 400
     

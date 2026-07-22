@@ -119,6 +119,13 @@ function renderProductsView() {
     main.appendChild(header);
 
     setTimeout(() => {
+        // ISPRAVKA: dugme "Preuzmi Šablon" (id=dl-prod-tmpl) je bilo prisutno u
+        // UI-ju od početka, ali nije bilo povezano ni sa jednim handlerom
+        // (izgledalo je klikljivo, a klik nije radio ništa).
+        document.getElementById('dl-prod-tmpl')?.addEventListener('click', () => {
+            if (typeof downloadProductTemplate === 'function') downloadProductTemplate();
+            else if (typeof showToast === 'function') showToast('Template download unavailable', 'error');
+        });
         document.getElementById('import-prod-btn')?.addEventListener('click', () => document.getElementById('import-prod-file').click());
         document.getElementById('import-prod-file')?.addEventListener('change', (e) => { if(typeof importProductsFromCSV === 'function') importProductsFromCSV(e.target.files[0]); e.target.value = ''; });
     }, 0);
