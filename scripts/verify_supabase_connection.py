@@ -37,6 +37,12 @@ def fail(msg: str):
     print(f"{RED}✗{RESET} {msg}")
 
 
+def info_fail(msg: str):
+    """Info-mode 'greška' — prikazuje se, ali NE računa se u pass/fail.
+    Koristi se za Postgres direct check kad je DB_BACKEND=rest (nije bitno)."""
+    print(f"{YELLOW}✗{RESET} {msg}  {DIM}(info-only, ne utiče na overall pass){RESET}")
+
+
 def warn(msg: str):
     print(f"{YELLOW}⚠{RESET} {msg}")
 
@@ -127,12 +133,14 @@ def _mask_db_url(url: str) -> str:
 # ==========================================================================
 # 3) Postgres konekcija + tabele
 # ==========================================================================
-def check_postgres(db_url: str):
-    section("Postgres connectivity")
+def check_postgres(db_url: str, fatal: bool = True):
+    """Direktan Postgres connectivity probe. `fatal=False` znači info-only."""
+    _f = fail if fatal else info_fail
+    section("Postgres connectivity" + ("" if fatal else " (info-only za REST backend)"))
     try:
         import psycopg
     except ImportError:
-        fail("psycopg nije instaliran. Pokreni:  pip3.11 install --user 'psycopg[binary,pool]'")
+        _f("psycopg nije instaliran. Pokreni:  pip3.11 install --user 'psycopg[binary,pool]'")
         return
 
     expected_tables = {
@@ -156,8 +164,8 @@ def check_postgres(db_url: str):
                 missing = expected_tables - tables
                 extra = tables - expected_tables
                 if missing:
-                    fail(f"Nedostaju tabele: {', '.join(sorted(missing))}")
-                    fail("→ pokreni schemas/supabase_schema.sql u Supabase SQL Editor-u")
+                    _f(f"Nedostaju tabele: {', '.join(sorted(missing))}")
+                    _f("→ pokreni schemas/supabase_schema.sql u Supabase SQL Editor-u")
                 else:
                     ok(f"Found {len(tables)} tables in public schema")
                     print(f"   {DIM}{', '.join(sorted(tables))}{RESET}")
@@ -165,7 +173,7 @@ def check_postgres(db_url: str):
                     warn(f"Neočekivane tabele (nije problem, samo info): {', '.join(sorted(extra))}")
     except psycopg.OperationalError as e:
         emsg = str(e)
-        fail(f"Postgres konekcija propala: {emsg}")
+        _f(f"Postgres konekcija propala: {emsg}")
 
         # Specifična dijagnostika za tipične greške:
         # 1) URL parse fail zbog nekodiranog specijalnog karaktera u lozinci
@@ -175,25 +183,26 @@ def check_postgres(db_url: str):
             after_scheme = db_url.split("://", 1)[-1] if "://" in db_url else db_url
             n_at = after_scheme.count("@")
             if n_at > 1:
-                fail("→ Tvoja DB lozinka sadrži '@' (ili neki drugi specijalan karakter).")
-                fail("→ Fix: u SUPABASE_DB_URL zameni '@' u lozinci sa '%40'.")
-                fail("   Primer:  Aspidus@2026  →  Aspidus%402026")
-                fail("   Drugi karakteri: ':'→'%3A' '/'→'%2F' '#'→'%23' '?'→'%3F' '%'→'%25' ' '→'%20'")
-                fail("→ Alternativa: Supabase Dashboard → Database → Reset password →")
-                fail("   koristi samo slova+brojeve (bez specijalnih karaktera).")
+                _f("→ Tvoja DB lozinka sadrži '@' (ili neki drugi specijalan karakter).")
+                _f("→ Fix: u SUPABASE_DB_URL zameni '@' u lozinci sa '%40'.")
+                _f("   Primer:  Aspidus@2026  →  Aspidus%402026")
+                _f("   Drugi karakteri: ':'→'%3A' '/'→'%2F' '#'→'%23' '?'→'%3F' '%'→'%25' ' '→'%20'")
+                _f("→ Alternativa: Supabase Dashboard → Database → Reset password →")
+                _f("   koristi samo slova+brojeve (bez specijalnih karaktera).")
             else:
-                fail("→ SUPABASE_DB_URL host je pogrešan, ili nemaš izlaznu mrežu.")
-                fail("   Proveri da tvoj hosting (PythonAnywhere Free ne dozvoljava izlaz na 5432).")
+                _f("→ SUPABASE_DB_URL host je pogrešan, ili nemaš izlaznu mrežu.")
+                _f("   Proveri da tvoj hosting (PythonAnywhere Free ne dozvoljava izlaz na 5432).")
         elif "authentication" in emsg.lower() or "password" in emsg.lower():
-            fail("→ Verovatno je DB lozinka pogrešna (ili sadrži nekodovan specijalni karakter).")
-            fail("   Ako ima '@', ':', '/', '#', '?' u lozinci — URL-encode-uj ih.")
+            _f("→ Verovatno je DB lozinka pogrešna (ili sadrži nekodovan specijalni karakter).")
+            _f("   Ako ima '@', ':', '/', '#', '?' u lozinci — URL-encode-uj ih.")
         elif "connection refused" in emsg.lower():
-            fail("→ Server je odbio konekciju. Proveri da je Session mode (port 5432), ne Transaction mode.")
+            _f("→ Server je odbio konekciju (verovatno PA Free blokira TCP outbound).")
+            _f("   REST backend će raditi bez problema; za direktan Postgres treba PA Hacker plan.")
         elif "timeout" in emsg.lower():
-            fail("→ Konekcija je istekla. Verovatno ti hosting blokira izlaz ka port 5432.")
-            fail("   PythonAnywhere Free NE dozvoljava proizvoljne odlazne konekcije — treba Hacker plan+.")
+            _f("→ Konekcija je istekla. Verovatno ti hosting blokira izlaz ka port 5432/6543.")
+            _f("   PythonAnywhere Free NE dozvoljava proizvoljne odlazne konekcije — treba Hacker plan+.")
     except Exception as e:
-        fail(f"Neočekivana greška: {e}")
+        _f(f"Neočekivana greška: {e}")
 
 
 # ==========================================================================
@@ -273,16 +282,102 @@ def check_jwt_secret(secret: str):
 
 
 # ==========================================================================
+# 6) Data-layer facade end-to-end (bira backend prema DB_BACKEND flag-u)
+# ==========================================================================
+def check_data_layer():
+    section("Data-layer facade (backend prema DB_BACKEND flag-u)")
+    # Dodaj parent dir na sys.path da 'data_layer' paket bude dostupan
+    # čak i kad se skript pokrene iz scripts/ direktorijuma.
+    _root = Path(__file__).resolve().parent.parent
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
+    try:
+        import data_layer as db
+        db.reset()  # ako je već cached iz prethodnog testa — reset
+    except ImportError as e:
+        fail(f"data_layer paket nije dostupan: {e}")
+        return
+    try:
+        backend = db.backend_name()
+        ok(f"Backend odabran: '{backend}'")
+    except Exception as e:
+        fail(f"Ne mogu da odaberem backend: {e}")
+        return
+
+    # Osnovni sanity: pročitaj broj partnera preko facade-a
+    try:
+        cnt = db.count("partners")
+        ok(f"db.count('partners') → {cnt}")
+    except Exception as e:
+        fail(f"db.count('partners') propao: {e}")
+        return
+
+    # Full CRUD probe u izolovanom test-partner-u
+    import time as _t
+    test_id = f"verify-probe-{int(_t.time())}"
+    try:
+        row = db.insert("partners", {
+            "id": test_id,
+            "email": f"{test_id}@verify.local",
+            "company_name": "Verify Probe (delete me)",
+            "portal_level": 1,
+            "can_login": False,   # ne dozvoli login test entiteta
+        })
+        ok(f"db.insert('partners', …) → id={row.get('id')}")
+    except Exception as e:
+        fail(f"db.insert propao: {e}")
+        return
+    try:
+        got = db.select_one("partners", {"id": test_id})
+        ok(f"db.select_one → email={got and got.get('email')}")
+    except Exception as e:
+        fail(f"db.select_one propao: {e}")
+    try:
+        updated = db.update("partners", {"id": test_id}, {"portal_level": 2})
+        pl = (updated or [{}])[0].get("portal_level")
+        ok(f"db.update portal_level → {pl}")
+    except Exception as e:
+        fail(f"db.update propao: {e}")
+    try:
+        upserted = db.upsert("partners", {
+            "id": test_id, "email": f"{test_id}@verify.local",
+            "company_name": "Verify Probe (upserted)", "portal_level": 3,
+        }, on_conflict="id")
+        ok(f"db.upsert → portal_level={upserted.get('portal_level')}")
+    except Exception as e:
+        fail(f"db.upsert propao: {e}")
+    try:
+        n = db.delete("partners", {"id": test_id})
+        ok(f"db.delete → {n} row(s) removed")
+    except Exception as e:
+        fail(f"db.delete propao: {e}")
+
+    try:
+        h = db.health()
+        ok(f"db.health() → {h}")
+    except Exception as e:
+        fail(f"db.health propao: {e}")
+
+
 def main():
     print(f"{DIM}=== Aspidus × Supabase — verifikacija setup-a ==={RESET}")
     load_env()
     env = check_env_vars()
+
+    backend = (os.environ.get("DB_BACKEND") or "rest").strip().lower()
+
+    # Postgres direct connectivity check je FATAL samo ako je backend='postgres'.
+    # Ako je backend='rest', pukao Postgres direct nije problem — samo INFO.
     if env.get("SUPABASE_DB_URL"):
-        check_postgres(env["SUPABASE_DB_URL"])
+        check_postgres(env["SUPABASE_DB_URL"], fatal=(backend == "postgres"))
+
     if env.get("SUPABASE_URL") and env.get("SUPABASE_SERVICE_ROLE_KEY"):
         check_supabase(env["SUPABASE_URL"], env["SUPABASE_SERVICE_ROLE_KEY"])
     if env.get("SUPABASE_JWT_SECRET"):
         check_jwt_secret(env["SUPABASE_JWT_SECRET"])
+
+    # Najvažnija provera — facade koji Flask stvarno koristi
+    check_data_layer()
 
     print()
     if _HAS_ANY_FAILURE:
