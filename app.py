@@ -253,11 +253,27 @@ def apply_brutal_security_headers(response):
     #  - router.project-osrm.org      — kopneno rutiranje (logistics)
     #  - hcaptcha.com                 — portal captcha verify
     #  - *.basemaps.cartocdn.com      — Leaflet tile-ovi (u img-src ispod)
+    # Supabase host — čitamo iz env-a da nadaomo Auth i Storage endpoint-ima
+    # u CSP allow-listu. Ako SUPABASE_URL nije postavljen, ostavljamo prazan
+    # placeholder (nema efekta ni na koju konekciju).
+    import os as _os_csp
+    _sb_url = _os_csp.environ.get('SUPABASE_URL', '').strip().rstrip('/')
+    _sb_host = ''
+    if _sb_url:
+        _sb_host = _sb_url.replace('https://', '').replace('http://', '')
+    _sb_https = f'https://{_sb_host}' if _sb_host else ''
+
     csp = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
         "https://cdn.tailwindcss.com https://cdn.jsdelivr.net "
         "https://cdnjs.cloudflare.com https://unpkg.com "
+        "https://esm.sh "
+        "https://hcaptcha.com https://*.hcaptcha.com; "
+        "script-src-elem 'self' 'unsafe-inline' "
+        "https://cdn.tailwindcss.com https://cdn.jsdelivr.net "
+        "https://cdnjs.cloudflare.com https://unpkg.com "
+        "https://esm.sh "
         "https://hcaptcha.com https://*.hcaptcha.com; "
         "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com "
         "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
@@ -269,7 +285,9 @@ def apply_brutal_security_headers(response):
         "connect-src 'self' http://ip-api.com https://open.er-api.com "
         "https://api.exchangerate.host https://nominatim.openstreetmap.org "
         "https://router.project-osrm.org https://www.trading-economics.com "
-        "https://hcaptcha.com https://*.hcaptcha.com;"
+        "https://esm.sh "
+        + (f"{_sb_https} " if _sb_https else "")
+        + "https://hcaptcha.com https://*.hcaptcha.com;"
     )
     response.headers['Content-Security-Policy'] = csp
     

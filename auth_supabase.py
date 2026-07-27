@@ -67,18 +67,41 @@ def _service_role_key() -> str:
     return key
 
 
+_jwks_client_cache = {}
+
+
+def _get_jwks_client(jwks_url: str):
+    """Kesirani PyJWKClient — preuzima Supabase-ove javne ključeve jednom
+    (sa TTL-om) pa reuse-uje za sve dalje verifikacije."""
+    if jwks_url in _jwks_client_cache:
+        return _jwks_client_cache[jwks_url]
+    from jwt import PyJWKClient
+    _jwks_client_cache[jwks_url] = PyJWKClient(
+        jwks_url,
+        cache_keys=True,
+        lifespan=3600,   # 1h refresh
+        timeout=8.0,
+    )
+    return _jwks_client_cache[jwks_url]
+
+
 def verify_supabase_jwt(token: str) -> Optional[dict]:
-    """Proverava potpis i istek Supabase JWT-a (HS256 preko JWT Secret-a).
+    """Verifikuje Supabase JWT — podržava i HS256 (legacy) i ES256/RS256/EdDSA
+    (nova asimetrična šema).
 
-    Vraća dict payload (sub, email, aud, exp, role, …) na uspeh, None ako je
-    token nevalidan iz bilo kog razloga. Nikada ne baca izuzetak — sve
-    greške postaju None + audit log na pozivaocu.
+    Za HS256 koristi SUPABASE_JWT_SECRET iz .env (offline, brzo).
+    Za asimetrične algoritme preuzima javni ključ iz Supabase-ovog JWKS
+    endpoint-a `/auth/v1/.well-known/jwks.json` (kesirano 1h) i verifikuje
+    potpis PyJWT-om preko `cryptography` paketa.
 
-    Bezbednosne provere koje PyJWT radi za nas:
-      * HS256 algoritam (aktivno onemogućavamo "none" napad)
+    Vraća payload dict (sub, email, aud, exp, role, …) na uspeh, None ako je
+    token nevalidan iz bilo kog razloga. Nikada ne baca izuzetak.
+
+    Bezbednosne provere koje PyJWT radi:
+      * Eksplicitna lista algoritama (blokira "none" napad)
       * exp (nije istekao)
-      * iat, nbf (ako postoje)
       * aud="authenticated" (Supabase default)
+      * sub obavezan
     """
     if not token or not isinstance(token, str):
         return None
@@ -88,14 +111,39 @@ def verify_supabase_jwt(token: str) -> Optional[dict]:
         raise RuntimeError(
             "PyJWT nije instaliran. Pokreni: pip install 'PyJWT>=2.8'"
         )
+
+    # Peek na algorithm iz token headera pa odaberi put verifikacije
     try:
-        payload = jwt.decode(
-            token,
-            _jwt_secret(),
-            algorithms=["HS256"],
-            audience="authenticated",
-            options={"require": ["exp", "sub"]},
-        )
+        header = jwt.get_unverified_header(token)
+    except Exception:
+        return None
+    alg = str(header.get("alg", "")).upper()
+
+    try:
+        if alg == "HS256":
+            payload = jwt.decode(
+                token,
+                _jwt_secret(),
+                algorithms=["HS256"],
+                audience="authenticated",
+                options={"require": ["exp", "sub"]},
+            )
+        elif alg in ("ES256", "RS256", "EDDSA", "ES384", "RS384"):
+            # Asimetrični algoritam — fetch JWKS iz Supabase-a i verifikuj
+            # javnim ključem koji odgovara kid-u iz token header-a.
+            jwks_url = f"{_supabase_url().rstrip('/')}/auth/v1/.well-known/jwks.json"
+            jwks_client = _get_jwks_client(jwks_url)
+            signing_key = jwks_client.get_signing_key_from_jwt(token)
+            payload = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=[alg],
+                audience="authenticated",
+                options={"require": ["exp", "sub"]},
+            )
+        else:
+            # Nepoznat algoritam — odbij (spreči downgrade napad).
+            return None
     except jwt.ExpiredSignatureError:
         return None
     except jwt.InvalidAudienceError:
@@ -104,6 +152,7 @@ def verify_supabase_jwt(token: str) -> Optional[dict]:
         return None
     except Exception:
         return None
+
     if not isinstance(payload, dict):
         return None
     return payload
