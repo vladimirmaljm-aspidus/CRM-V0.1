@@ -197,26 +197,23 @@
         </div>
     </div>
 
-    <script type="module">
+    <script>
         // ================================================================
-        //  SUPABASE AUTH BOOTSTRAP
-        //  Ako je server postavio USE_SUPABASE_AUTH=true, sakrij legacy OTP
-        //  step i prikaži Supabase widget. Ako je false, ostavi legacy UI.
-        //  Supabase klijent se učitava iz zvaničnog ESM CDN-a (isti kao
-        //  supabase-js dokumentacija).
+        //  SUPABASE AUTH BOOTSTRAP — 100% SERVER-SIDE
+        //  Ne koristimo supabase-js CDN — svaki poziv ide preko naših
+        //  Flask endpoint-a. To znači da radi na PA Free bez ijedne
+        //  outbound CDN zavisnosti (bez CSP komplikacija, bez ES module
+        //  problema u strožim browser-ima).
         // ================================================================
-        let sbClient = null;
         let sbConfig = null;
 
         async function initSupabaseIfEnabled() {
-            // KORAK 1 — odmah handluj URL hash (recovery / magic-link / error).
-            // Ovo ne sme da zavisi od supabase-js CDN import-a, jer PA Free
-            // ponekad ne uspeva da učita esm.sh CDN u razumnom roku i korisnik
-            // ostane zaglavljen na spinner-u. Recovery flow ide server-side.
+            // 100% server-side flow — nema supabase-js CDN dependency, radi
+            // svuda uključujući PA Free bez ikakvih outbound CDN pozivov.
             const hash = window.location.hash || '';
             const hasAuthHash = hash.includes('access_token=') || hash.includes('error=');
             if (hasAuthHash) {
-                consumeUrlHashSession();  // ne čekamo — pokreće se paralelno
+                consumeUrlHashSession();  // recovery/magic UI se prikazuje odmah
             }
 
             try {
@@ -224,36 +221,15 @@
                 const cfg = await res.json();
                 sbConfig = cfg;
                 if (!cfg.supabase_auth_enabled) return;
-                if (!cfg.supabase_url || !cfg.supabase_anon_key) {
-                    console.warn('Supabase Auth enabled but URL/anon key missing.');
-                    return;
-                }
 
-                // Ako smo u sred recovery flow-a (već prikazan set-password UI),
-                // ne diramo widget. Ako nismo, prikaži Supabase widget.
+                // Prikaži Supabase widget (Password/Magic Link) ako nismo u sred
+                // recovery flow-a. Sve tri operacije rade preko naših endpoint-a.
                 if (!hasAuthHash) {
                     document.getElementById('step-supabase').classList.remove('hidden');
                     document.getElementById('step-email').classList.add('hidden');
                 }
-
-                // Dinamički import supabase-js sa timeout-om — ako CDN ne odgovori
-                // za 8s, ostavljamo legacy fallback i vidljivu poruku.
-                try {
-                    const importPromise = import('https://esm.sh/@supabase/supabase-js@2');
-                    const timeoutPromise = new Promise((_, rej) =>
-                        setTimeout(() => rej(new Error('supabase-js CDN timeout')), 8000)
-                    );
-                    const { createClient } = await Promise.race([importPromise, timeoutPromise]);
-                    sbClient = createClient(cfg.supabase_url, cfg.supabase_anon_key, {
-                        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
-                    });
-                } catch (impErr) {
-                    console.warn('supabase-js library nije učitan (CDN blokiran?):', impErr);
-                    // Password/Magic-Link tabovi neće raditi bez sbClient, ali
-                    // recovery flow (koji ide server-side) i legacy OTP rade.
-                }
             } catch (e) {
-                console.warn('Supabase init failed, falling back to legacy:', e);
+                console.warn('Supabase init failed:', e);
             }
         }
 
@@ -402,7 +378,6 @@
         };
 
         window.supabaseSignIn = async function() {
-            if (!sbClient) return showSupabaseError('Supabase client not ready. Refresh the page.');
             const email = document.getElementById('sb-email').value.trim();
             const password = document.getElementById('sb-password').value;
             if (!email || !password) return showSupabaseError('Please enter email and password.');
@@ -410,23 +385,16 @@
             btn.disabled = true; btn.textContent = 'Locating…';
             hideSupabaseFeedback();
 
-            // GPS pre-request (kao OTP flow — standard klijent mora, premium ne mora)
             let locData = '';
             try { locData = await getPreciseLocation(); } catch (_) {}
 
             btn.textContent = 'Signing in…';
-            const { data, error } = await sbClient.auth.signInWithPassword({ email, password });
-            if (error || !data?.session?.access_token) {
-                showSupabaseError(error?.message || 'Invalid email or password.');
-                btn.disabled = false; btn.textContent = 'Sign In';
-                return;
-            }
-
             try {
-                const res = await fetch('/api/portal/auth/supabase/exchange', {
+                // Server-side sign in — NO supabase-js dependency, NO CDN required
+                const res = await fetch('/api/portal/auth/supabase/signin-password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ access_token: data.session.access_token, location: locData })
+                    body: JSON.stringify({ email, password, location: locData })
                 });
                 const body = await res.json();
                 if (res.ok && body.auth_key && body.token) {
@@ -434,9 +402,9 @@
                     return;
                 }
                 if (body.error === 'LOCATION_REQUIRED') {
-                    showSupabaseError('Location access is required. Please allow precise location and try again.');
+                    showSupabaseError(body.message || 'Location access is required.');
                 } else {
-                    showSupabaseError(body.error || 'Could not complete sign-in.');
+                    showSupabaseError(body.error || 'Invalid email or password.');
                 }
             } catch (e) {
                 showSupabaseError('Network error. Please try again.');
