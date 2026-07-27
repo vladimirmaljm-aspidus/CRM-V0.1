@@ -491,74 +491,101 @@ def admin_set_partner_password(partner_id):
 def portal_user_change_password():
     """Ulogovan klijent menja svoju lozinku iz portala (Profile → Change Password).
     Traži trenutnu portal auth_key sesiju (već ulogovan) + trenutnu lozinku
-    (revalidacija) + novu lozinku."""
+    (revalidacija) + novu lozinku. Sve greške se vraćaju kao jasne poruke,
+    a interne greške se loguju u admin error buffer."""
     ip = _client_ip()
-    if not check_portal_rate_limit(ip):
-        abort(429)
-
-    from auth_supabase import (
-        signin_with_password, update_user_password, get_user_by_email, use_supabase_auth,
-    )
-    from . import verify_portal_session, portal_auth_sessions
-    if not use_supabase_auth():
-        return jsonify({"error": "Supabase Auth is not enabled."}), 503
-
-    payload = request.get_json(silent=True) or {}
-    portal_token = str(payload.get('portal_token') or '').strip()
-    current_password = str(payload.get('current_password') or '')
-    new_password = str(payload.get('new_password') or '')
-    auth_header = request.headers.get('X-Portal-Auth', '')
-
-    if not verify_portal_session(portal_token, auth_header):
-        return jsonify({"error": "Not authenticated."}), 401
-    if len(new_password) < 8:
-        return jsonify({"error": "New password must be at least 8 characters."}), 400
-
-    # Nadji partner + email
-    sess = portal_auth_sessions.get(portal_token) or {}
-    partner_id = sess.get('partner_id')
-    import sqlite3, json as _json
-    from config import DB_FILE
-    conn = sqlite3.connect(DB_FILE, timeout=30.0)
     try:
-        c = conn.cursor()
-        c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
-        row = c.fetchone()
-    finally:
-        conn.close()
-    if not row:
-        return jsonify({"error": "Partner not found."}), 404
-    try:
-        partner = _json.loads(row[0]) if row[0] else {}
-    except (ValueError, TypeError):
-        from utils import decrypt_data
-        partner = decrypt_data(row[0]) or {}
-    email = (partner.get('contact', {}) or {}).get('email') or partner.get('email') or ''
-    email = str(email).strip().lower()
+        if not check_portal_rate_limit(ip):
+            abort(429)
 
-    # Revalidacija trenutne lozinke (bezbednosno)
-    session_data, detail = signin_with_password(email, current_password)
-    if session_data is None:
-        log_audit('SECURITY', 'portal',
-                  f'change-password: wrong current password for {email}',
-                  is_suspicious=True)
-        return jsonify({"error": "Current password is incorrect."}), 401
+        from auth_supabase import (
+            signin_with_password, update_user_password, get_user_by_email, use_supabase_auth,
+        )
+        from . import verify_portal_session, portal_auth_sessions
+        if not use_supabase_auth():
+            return jsonify({"error": "Supabase Auth is not enabled on this server."}), 503
 
-    # Nadji Supabase user id preko emaila
-    supa_user = get_user_by_email(email)
-    if not supa_user:
-        return jsonify({"error": "Supabase account not found."}), 404
-    uid = supa_user.get('id') if isinstance(supa_user, dict) else getattr(supa_user, 'id', None)
-    if not uid:
-        return jsonify({"error": "Cannot resolve user id."}), 500
+        payload = request.get_json(silent=True) or {}
+        portal_token = str(payload.get('portal_token') or '').strip()
+        current_password = str(payload.get('current_password') or '')
+        new_password = str(payload.get('new_password') or '')
+        auth_header = request.headers.get('X-Portal-Auth', '')
 
-    ok, detail = update_user_password(str(uid), new_password)
-    if not ok:
-        return jsonify({"error": f"Could not update password: {detail}"}), 500
+        if not verify_portal_session(portal_token, auth_header):
+            return jsonify({"error": "Not authenticated. Please sign in again."}), 401
+        if len(new_password) < 8:
+            return jsonify({"error": "New password must be at least 8 characters."}), 400
 
-    log_audit('EDIT', 'portal',
-              f'Client changed portal password: {email}', is_suspicious=False)
-    return jsonify({"status": "success", "message": "Password changed."})
+        sess = portal_auth_sessions.get(portal_token) or {}
+        partner_id = sess.get('partner_id')
+        if not partner_id:
+            return jsonify({"error": "Portal session has no partner link. Sign out and sign in again."}), 400
+
+        import sqlite3, json as _json
+        from config import DB_FILE
+        conn = sqlite3.connect(DB_FILE, timeout=30.0)
+        try:
+            c = conn.cursor()
+            c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
+            row = c.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return jsonify({"error": "Partner record not found."}), 404
+        try:
+            partner = _json.loads(row[0]) if row[0] else {}
+        except (ValueError, TypeError):
+            from utils import decrypt_data
+            partner = decrypt_data(row[0]) or {}
+        email = (partner.get('contact', {}) or {}).get('email') or partner.get('email') or ''
+        email = str(email).strip().lower()
+        if not email:
+            return jsonify({"error": "This account has no email — cannot change password."}), 400
+
+        # Revalidacija trenutne lozinke
+        session_data, sd_detail = signin_with_password(email, current_password)
+        if session_data is None:
+            log_audit('SECURITY', 'portal',
+                      f'change-password: wrong current password for {email} ({sd_detail})',
+                      is_suspicious=True)
+            return jsonify({"error": "Current password is incorrect."}), 401
+
+        # Nadji Supabase user id — prvo iz signin session-a (najbrže i najsigurnije)
+        uid = None
+        try:
+            user = (session_data or {}).get('user') or {}
+            uid = user.get('id')
+        except Exception:
+            uid = None
+        if not uid:
+            # Fallback: admin lookup po emailu
+            supa_user = get_user_by_email(email)
+            if supa_user:
+                uid = supa_user.get('id') if isinstance(supa_user, dict) else getattr(supa_user, 'id', None)
+        if not uid:
+            return jsonify({"error": "Cannot resolve Supabase user. Contact administrator."}), 500
+
+        ok, up_detail = update_user_password(str(uid), new_password)
+        if not ok:
+            log_audit('ERROR', 'portal',
+                      f'change-password: update_user_password failed for {email}: {up_detail}',
+                      is_suspicious=False)
+            return jsonify({"error": f"Could not update password: {up_detail}"}), 500
+
+        log_audit('EDIT', 'portal',
+                  f'Client changed portal password: {email}', is_suspicious=False)
+        return jsonify({"status": "success", "message": "Password changed successfully."})
+    except Exception as e:
+        # Poslednji safety net — svaka neuhvaćena greška ide u admin error buffer
+        try:
+            from routes.supabase_admin import record_error
+            record_error(context='/api/portal/user/change-password', exc=e)
+        except Exception:
+            pass
+        return jsonify({
+            "error": "Internal error while changing password. Administrator has been notified.",
+            "detail": str(e)[:200],
+        }), 500
 
 
 @portal_bp.route('/api/portal/auth/supabase/send-magic-link', methods=['POST'])

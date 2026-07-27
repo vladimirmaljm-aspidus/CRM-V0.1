@@ -335,32 +335,44 @@ function renderPartnerDetailView(partnerId) {
         });
     }
 
-    // Send Portal Invite / Reset (Supabase Auth email)
+    // Send Portal Invite / Reset (Supabase Auth email) — koristi in-app modal + toast
     const inviteBtn = document.getElementById('portal-invite-btn');
     if (inviteBtn) {
         inviteBtn.addEventListener('click', async () => {
-            if (!confirm('Send Supabase Auth invite/reset email to this partner? They will receive a link to set their portal password.')) return;
+            const ok = await askConfirm(
+                'Send Portal Invite / Reset?',
+                'Slaće se Supabase Auth email partneru sa linkom za postavljanje portal lozinke. Ako Auth nalog ne postoji, biće kreiran automatski.'
+            );
+            if (!ok) return;
             inviteBtn.disabled = true; inviteBtn.innerText = '⏳ Sending...';
             try {
                 const res = await fetch(`/api/portal/admin/send-portal-invite/${partnerId}`, { method: 'POST' });
                 const data = await res.json();
                 if (res.ok && data.status === 'success') {
-                    alert('✅ ' + (data.message || 'Invite sent.'));
+                    showToast(data.message || 'Invite sent.', 'success');
                 } else {
-                    alert('Error: ' + (data.error || 'Unknown'));
+                    showToast('Greška: ' + (data.error || data.detail || 'nepoznato'), 'error', 6000);
                 }
-            } catch (e) { alert("Network Error."); }
+            } catch (e) { showToast('Mrežna greška: ' + e.message, 'error'); }
             inviteBtn.disabled = false; inviteBtn.innerHTML = '📧 Send Portal Invite / Reset';
         });
     }
 
-    // Set Portal Password manually (admin unese novu lozinku direktno)
+    // Set Portal Password manually — in-app modal sa password input polje
     const setPwdBtn = document.getElementById('portal-setpwd-btn');
     if (setPwdBtn) {
         setPwdBtn.addEventListener('click', async () => {
-            const pwd = prompt('Enter a new portal password for this partner (min. 8 characters). They can sign in immediately with it.');
+            const pwd = await askInput('Set Portal Password', {
+                description: 'Unesi novu lozinku za ovog partnera (min. 8 karaktera). Klijent može odmah da se uloguje sa njom. Prosledi mu je bezbednim kanalom (WhatsApp/telefon).',
+                inputType: 'password',
+                placeholder: 'nova lozinka',
+                okText: 'Set Password',
+            });
             if (!pwd) return;
-            if (pwd.length < 8) { alert('Password must be at least 8 characters.'); return; }
+            if (pwd.length < 8) {
+                showToast('Lozinka mora biti najmanje 8 karaktera.', 'error');
+                return;
+            }
             setPwdBtn.disabled = true; setPwdBtn.innerText = '⏳ Setting...';
             try {
                 const res = await fetch(`/api/portal/admin/set-partner-password/${partnerId}`, {
@@ -370,11 +382,11 @@ function renderPartnerDetailView(partnerId) {
                 });
                 const data = await res.json();
                 if (res.ok && data.status === 'success') {
-                    alert('✅ ' + (data.message || 'Password set. Partner can sign in now.'));
+                    showToast(data.message || 'Password set. Partner can sign in now.', 'success', 5000);
                 } else {
-                    alert('Error: ' + (data.error || 'Unknown'));
+                    showToast('Greška: ' + (data.error || data.detail || 'nepoznato'), 'error', 6000);
                 }
-            } catch (e) { alert("Network Error."); }
+            } catch (e) { showToast('Mrežna greška: ' + e.message, 'error'); }
             setPwdBtn.disabled = false; setPwdBtn.innerHTML = '🔑 Set Portal Password';
         });
     }

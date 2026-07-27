@@ -36,6 +36,77 @@ def supabase_admin_page():
         return "Admin only.", 403
     return render_template('supabase_admin.html')
 
+
+# ==========================================================
+#  ERROR LOG — admin uvid u sve 5xx greške i security incidents
+# ==========================================================
+
+_ERROR_BUFFER = []       # in-memory ring buffer, poslednjih 500 grešaka
+_ERROR_BUFFER_MAX = 500
+_error_lock = threading.Lock()
+
+
+def record_error(context: str, exc: Exception | str, request_id: str | None = None, meta: dict | None = None):
+    """Poziva se iz svih backend-a kad neka operacija baci grešku koju
+    treba da admin vidi. Čuva se u in-memory buffer-u + audit_log."""
+    import traceback
+    tb = ""
+    msg = str(exc)
+    if isinstance(exc, Exception):
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-2000:]
+
+    entry = {
+        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        "context": context,
+        "message": msg[:500],
+        "traceback": tb,
+        "request_id": request_id,
+        "meta": meta or {},
+    }
+    with _error_lock:
+        _ERROR_BUFFER.append(entry)
+        if len(_ERROR_BUFFER) > _ERROR_BUFFER_MAX:
+            _ERROR_BUFFER.pop(0)
+
+    try:
+        log_audit('ERROR', context, f'{msg[:400]} (req={request_id or "-"})',
+                  is_suspicious=False)
+    except Exception:
+        pass
+
+
+@supabase_admin_bp.route('/admin/errors', methods=['GET'])
+@login_required
+def admin_errors_page():
+    """HTML stranica za admin — pregled poslednjih grešaka."""
+    if session.get('role') != 'admin':
+        return "Admin only.", 403
+    return render_template('admin_errors.html')
+
+
+@supabase_admin_bp.route('/api/admin/errors', methods=['GET'])
+@login_required
+def admin_errors_api():
+    """JSON — vraća poslednjih N zapisa iz error buffer-a."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    limit = int(request.args.get('limit', 100))
+    with _error_lock:
+        entries = list(reversed(_ERROR_BUFFER[-limit:]))
+    return jsonify({"entries": entries, "total": len(_ERROR_BUFFER)})
+
+
+@supabase_admin_bp.route('/api/admin/errors/clear', methods=['POST'])
+@login_required
+def admin_errors_clear():
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    with _error_lock:
+        n = len(_ERROR_BUFFER)
+        _ERROR_BUFFER.clear()
+    log_audit('EDIT', 'system', f'Admin cleared error buffer ({n} entries)', is_suspicious=False)
+    return jsonify({"status": "ok", "cleared": n})
+
 # In-memory migracija stanje — vidljivo kroz /status endpoint
 _migration_state = {
     "running": False,

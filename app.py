@@ -107,8 +107,35 @@ app.register_blueprint(verify_bp)
 
 # Supabase admin API — status, migration control, feature flag switching.
 # Sve rute su admin-only i loguju se u audit_log.
-from routes.supabase_admin import supabase_admin_bp  # noqa: E402
+from routes.supabase_admin import supabase_admin_bp, record_error  # noqa: E402
 app.register_blueprint(supabase_admin_bp)
+
+
+@app.errorhandler(500)
+def _catch_500(e):
+    """Sve 500 greške idu u admin error buffer + vraćaju request_id klijentu."""
+    import uuid
+    req_id = uuid.uuid4().hex[:12]
+    try:
+        record_error(
+            context=request.path,
+            exc=e,
+            request_id=req_id,
+            meta={
+                "method": request.method,
+                "ip": request.headers.get('X-Forwarded-For', request.remote_addr),
+                "user_agent": request.headers.get('User-Agent', ''),
+                "referrer": request.headers.get('Referer', ''),
+            },
+        )
+    except Exception:
+        pass
+    return jsonify({
+        "error": "Internal Server Error",
+        "message": "Došlo je do interne greške. Administrator je obavešten. Ako se ponovi, javi ga sa ID-em.",
+        "request_id": req_id,
+        "hint": "Detalji su vidljivi u /admin/errors stranici (admin only).",
+    }), 500
 
 @app.before_request
 def enforce_csrf():
