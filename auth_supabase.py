@@ -271,6 +271,44 @@ def send_password_reset(email: str, redirect_to: Optional[str] = None) -> tuple[
         return False, f"{e.__class__.__name__}:{e}"
 
 
+def signin_with_password(email: str, password: str) -> tuple[Optional[dict], str]:
+    """Server-side password sign-in preko Supabase Auth REST API-ja.
+
+    Ne zahteva supabase-js na klijentu — svaki HTTP klijent može da radi ovo.
+    Vraća (session_dict, detail) gde session_dict sadrži {access_token,
+    refresh_token, user, expires_at} na uspeh, ili (None, error_msg) na fail.
+
+    Rate-limitovano na Supabase strani (default 30/hour po IP-u)."""
+    if not email or not password:
+        return None, "invalid_params"
+    try:
+        import httpx
+    except ImportError:
+        return None, "httpx_missing"
+    anon = os.environ.get("SUPABASE_ANON_KEY", "").strip()
+    if not anon:
+        return None, "no_anon_key"
+    url = f"{_supabase_url().rstrip('/')}/auth/v1/token?grant_type=password"
+    try:
+        r = httpx.post(
+            url,
+            headers={"apikey": anon, "Content-Type": "application/json"},
+            json={"email": email.strip().lower(), "password": password},
+            timeout=15.0,
+        )
+    except Exception as e:
+        return None, f"network:{e.__class__.__name__}"
+    if r.status_code == 200:
+        data = r.json()
+        return data, "signed_in"
+    try:
+        err = r.json()
+        msg = err.get("error_description") or err.get("msg") or err.get("error") or str(err)
+    except Exception:
+        msg = r.text[:200] if r.text else f"http_{r.status_code}"
+    return None, f"http_{r.status_code}:{msg}"
+
+
 def update_user_password(user_id: str, new_password: str) -> tuple[bool, str]:
     """Postavi novu lozinku za korisnika preko Supabase admin API-ja.
     Koristi se u recovery flow-u: nakon što offline verifikujemo JWT

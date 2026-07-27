@@ -269,6 +269,160 @@ def supabase_set_password():
     })
 
 
+@portal_bp.route('/api/portal/auth/supabase/signin-password', methods=['POST'])
+def supabase_signin_password():
+    """Server-side password sign-in — ne zahteva supabase-js na klijentu.
+    Body: {"email": "...", "password": "...", "location": "lat,lng"}
+    """
+    ip = _client_ip()
+    if not check_portal_rate_limit(ip):
+        abort(429)
+
+    from auth_supabase import (
+        signin_with_password, verify_supabase_jwt, use_supabase_auth,
+    )
+    if not use_supabase_auth():
+        return jsonify({"error": "Supabase Auth is not enabled."}), 503
+
+    payload = request.get_json(silent=True) or {}
+    email = str(payload.get('email') or '').strip().lower()
+    password = str(payload.get('password') or '')
+    location = str(payload.get('location') or '').strip()
+
+    if not email or not password:
+        return jsonify({"error": "Email and password required."}), 400
+
+    partner_id, partner = find_partner_by_email(email)
+    if not partner:
+        log_audit('SECURITY', 'portal',
+                  f'signin-password: no partner for {email}', is_suspicious=True)
+        return jsonify({"error": "Invalid email or password."}), 401
+    if partner.get('isPortalActive', True) is False:
+        log_portal_activity(partner_id, 'LOGIN_BLOCKED',
+                            f'signin-password on revoked: {email}')
+        return jsonify({"error": "Access Revoked. Contact administrator."}), 403
+
+    session, detail = signin_with_password(email, password)
+    if session is None:
+        log_audit('SECURITY', 'portal',
+                  f'signin-password failed for {email}: {detail}', is_suspicious=True)
+        return jsonify({"error": "Invalid email or password."}), 401
+
+    is_premium = is_partner_premium(partner)
+    if not is_premium and (not location or ',' not in location):
+        return jsonify({
+            "error": "LOCATION_REQUIRED",
+            "message": "Precise location must be shared to access the portal.",
+        }), 403
+
+    token = partner.get('portalToken')
+    if not token:
+        import json as _json
+        import sqlite3 as _sql
+        import secrets as _sec
+        from config import DB_FILE as _DBF
+        token = _sec.token_urlsafe(32)
+        partner['portalToken'] = token
+        partner.setdefault('isPortalActive', True)
+        conn = _sql.connect(_DBF, timeout=30.0)
+        try:
+            conn.execute('PRAGMA busy_timeout=30000;')
+            conn.execute('UPDATE partners SET data=? WHERE id=?',
+                         (_json.dumps(partner), partner_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    from . import create_portal_session
+    auth_key = create_portal_session(token, partner_id=partner_id)
+    gps_note = f'GPS: {location}' if location else 'no GPS (premium)'
+    log_portal_activity(partner_id, 'LOGIN_SUCCESS',
+                        f'Supabase password login ({gps_note}) email={email}')
+    log_audit('LOGIN', 'portal',
+              f'Portal Supabase password login: {email}', is_suspicious=False)
+
+    user = session.get('user') if isinstance(session, dict) else None
+    sub = (user or {}).get('id', '')
+
+    return jsonify({
+        "status": "success",
+        "auth_key": auth_key,
+        "token": token,
+        "isPremium": is_premium,
+        "supabase_user_id": sub,
+    })
+
+
+@portal_bp.route('/api/portal/admin/set-partner-password/<partner_id>', methods=['POST'])
+def admin_set_partner_password(partner_id):
+    """Admin dugme — direktno postavlja portal lozinku za partnera preko
+    Supabase admin API-ja. Zaobilazi email reset dance flow.
+    Body: {"password": "..."}"""
+    from flask import session as _fsess
+    from utils import log_audit as _la
+    if _fsess.get('role') != 'admin':
+        _la('SECURITY', 'portal',
+            f'Non-admin tried set-partner-password for {partner_id}',
+            is_suspicious=True)
+        return jsonify({"error": "Admin only."}), 403
+
+    from auth_supabase import (
+        create_or_get_auth_user, update_user_password, use_supabase_auth,
+    )
+    if not use_supabase_auth():
+        return jsonify({"error": "Supabase Auth is not enabled."}), 503
+
+    data = request.get_json(silent=True) or {}
+    new_password = str(data.get('password') or '')
+    if len(new_password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters."}), 400
+
+    import sqlite3
+    import json as _json
+    from config import DB_FILE
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "Partner not found."}), 404
+    try:
+        partner = _json.loads(row[0]) if row[0] else {}
+    except (ValueError, TypeError):
+        from utils import decrypt_data
+        partner = decrypt_data(row[0]) or {}
+
+    email = (partner.get('contact', {}) or {}).get('email') or partner.get('email') or ''
+    email = str(email).strip().lower()
+    if not email:
+        return jsonify({"error": "Partner has no email."}), 400
+
+    uid, status = create_or_get_auth_user(
+        email, partner_id=partner_id,
+        company_name=partner.get('companyName', ''),
+        email_confirm=True,
+    )
+    if not uid:
+        return jsonify({"error": f"Could not resolve auth user: {status}"}), 500
+
+    ok, detail = update_user_password(uid, new_password)
+    if not ok:
+        return jsonify({"error": f"Password update failed: {detail}"}), 500
+
+    _la('EDIT', 'portal',
+        f'Admin set portal password for partner {partner_id} ({email})',
+        is_suspicious=False)
+    return jsonify({
+        "status": "success",
+        "message": f"Password set for {email}. Partner can now sign in.",
+        "auth_user_id": uid,
+        "auth_user_status": status,
+    })
+
+
 @portal_bp.route('/api/portal/auth/supabase/send-magic-link', methods=['POST'])
 def supabase_send_magic_link():
     """Proxy — traži od Supabase-a da pošalje magic-link. Uvek isti odgovor
