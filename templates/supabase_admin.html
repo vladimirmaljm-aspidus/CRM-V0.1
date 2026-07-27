@@ -6,110 +6,233 @@
     <title>Supabase Migration — Aspidus CRM</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #f8fafc; }
-        .card { background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.06); border: 1px solid #e2e8f0; }
-        .btn { padding: 8px 16px; border-radius: 8px; font-weight: 600; font-size: 13px; transition: all .15s; }
-        .btn-primary { background: #2563eb; color: white; } .btn-primary:hover { background: #1d4ed8; }
-        .btn-warn { background: #d97706; color: white; } .btn-warn:hover { background: #b45309; }
-        .btn-danger { background: #dc2626; color: white; } .btn-danger:hover { background: #b91c1c; }
-        .btn-ghost { background: #f1f5f9; color: #334155; } .btn-ghost:hover { background: #e2e8f0; }
-        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-        pre.log { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; font-size: 11px; line-height: 1.5; overflow: auto; max-height: 500px; font-family: ui-monospace, monospace; }
-        .kv { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9; }
-        .kv:last-child { border-bottom: none; }
-        .kv .k { color: #64748b; font-size: 12px; font-weight: 500; }
-        .kv .v { font-family: ui-monospace, monospace; font-size: 12px; color: #0f172a; }
-        .badge { padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
-        .badge-green { background: #dcfce7; color: #166534; }
-        .badge-red   { background: #fee2e2; color: #991b1b; }
-        .badge-amber { background: #fef3c7; color: #92400e; }
+        body {
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+            min-height: 100vh;
+        }
+        .glass {
+            background: rgba(255,255,255,0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.9);
+            box-shadow: 0 4px 20px rgba(0,0,0,.04), 0 1px 3px rgba(0,0,0,.02);
+        }
+        .card {
+            background: white;
+            border-radius: 14px;
+            border: 1px solid #e5e7eb;
+            transition: box-shadow .2s ease;
+        }
+        .card:hover { box-shadow: 0 4px 20px rgba(0,0,0,.06); }
+        .btn { padding: 9px 18px; border-radius: 10px; font-weight: 600; font-size: 13px; transition: all .15s; display:inline-flex; align-items:center; gap:8px; }
+        .btn-primary { background: linear-gradient(180deg,#2563eb,#1d4ed8); color:white; box-shadow: 0 2px 6px rgba(37,99,235,.3); }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(37,99,235,.35); }
+        .btn-warn { background: linear-gradient(180deg,#f59e0b,#d97706); color:white; box-shadow: 0 2px 6px rgba(245,158,11,.3); }
+        .btn-warn:hover { transform: translateY(-1px); }
+        .btn-danger { background: linear-gradient(180deg,#ef4444,#dc2626); color:white; }
+        .btn-ghost { background:#fff; color:#334155; border:1px solid #e5e7eb; }
+        .btn-ghost:hover { background:#f8fafc; border-color:#cbd5e1; }
+        .btn:disabled { opacity:.55; cursor:not-allowed; transform:none !important; }
+        pre.log { background: linear-gradient(180deg,#0f172a,#1e293b); color:#e2e8f0; padding:14px; border-radius:10px; font-size:11px; line-height:1.55; overflow:auto; max-height:520px; font-family: ui-monospace, "SF Mono", Monaco, Menlo, monospace; border:1px solid #334155; }
+        .kv { display:flex; justify-content:space-between; align-items:center; padding:9px 0; border-bottom:1px solid #f1f5f9; }
+        .kv:last-child { border-bottom:none; }
+        .kv .k { color:#64748b; font-size:11px; font-weight:600; letter-spacing:.03em; text-transform:uppercase; }
+        .kv .v { font-family: ui-monospace, monospace; font-size:12px; color:#0f172a; font-weight:600; }
+        .badge { padding:3px 10px; border-radius:999px; font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
+        .badge-green { background:#dcfce7; color:#166534; }
+        .badge-red   { background:#fee2e2; color:#991b1b; }
+        .badge-amber { background:#fef3c7; color:#92400e; }
+        .badge-slate { background:#f1f5f9; color:#475569; }
+        .header-icon { width:38px; height:38px; border-radius:10px; background:linear-gradient(135deg,#2563eb,#7c3aed); color:white; display:inline-flex; align-items:center; justify-content:center; font-size:18px; box-shadow:0 4px 10px rgba(37,99,235,.3); }
+
+        /* MODAL */
+        .modal-overlay { position:fixed; inset:0; background:rgba(15,23,42,.5); backdrop-filter:blur(4px); z-index:50; display:none; align-items:center; justify-content:center; padding:16px; }
+        .modal-overlay.open { display:flex; animation: fadeIn .15s ease; }
+        .modal-box { background:white; border-radius:16px; max-width:480px; width:100%; box-shadow: 0 20px 60px rgba(0,0,0,.25); overflow:hidden; animation: slideUp .18s ease; }
+        @keyframes fadeIn { from { opacity:0 } to { opacity:1 } }
+        @keyframes slideUp { from { transform:translateY(12px); opacity:0 } to { transform:translateY(0); opacity:1 } }
+        .modal-head { padding:20px 24px 8px; }
+        .modal-body { padding:8px 24px 20px; color:#475569; font-size:14px; line-height:1.55; }
+        .modal-actions { padding:14px 24px; background:#f8fafc; border-top:1px solid #e5e7eb; display:flex; justify-content:flex-end; gap:8px; }
+
+        /* TOAST */
+        .toast-wrap { position:fixed; bottom:20px; right:20px; z-index:60; display:flex; flex-direction:column; gap:8px; }
+        .toast { padding:12px 18px; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.15); font-size:13px; font-weight:500; max-width:400px; animation: slideIn .2s ease; }
+        .toast-success { background:#065f46; color:white; }
+        .toast-error { background:#991b1b; color:white; }
+        .toast-info { background:#1e40af; color:white; }
+        @keyframes slideIn { from { transform:translateX(20px); opacity:0 } to { transform:translateX(0); opacity:1 } }
     </style>
 </head>
-<body class="p-6">
+<body class="p-6 md:p-8">
     <div class="max-w-6xl mx-auto">
+        <!-- HEADER -->
         <div class="flex items-center justify-between mb-6">
-            <div>
-                <h1 class="text-2xl font-bold text-slate-900">🚀 Supabase Migration Control</h1>
-                <p class="text-sm text-slate-500 mt-1">Prelazak sa lokalnog SQLite-a na Supabase Postgres — sve na jednom mestu.</p>
+            <div class="flex items-center gap-4">
+                <span class="header-icon">🚀</span>
+                <div>
+                    <h1 class="text-2xl font-bold text-slate-900">Supabase Migration Control</h1>
+                    <p class="text-sm text-slate-500 mt-0.5">Prelazak sa lokalnog SQLite-a na Supabase Postgres — sve na jednom mestu.</p>
+                </div>
             </div>
-            <a href="/" class="btn btn-ghost">← Back to CRM</a>
+            <div class="flex items-center gap-2">
+                <a href="/admin/errors" class="btn btn-ghost">📋 Error Log</a>
+                <a href="/" class="btn btn-ghost">← Back to CRM</a>
+            </div>
         </div>
 
         <!-- STATUS -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
             <div class="card p-5">
-                <div class="flex items-center justify-between mb-3">
-                    <h2 class="font-semibold text-slate-900">📊 Feature Flags</h2>
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="font-semibold text-slate-900 flex items-center gap-2"><span>📊</span> Feature Flags</h2>
                     <button class="btn btn-ghost text-xs" onclick="refreshStatus()">🔄 Refresh</button>
                 </div>
                 <div id="flags"><span class="text-sm text-slate-400">Loading…</span></div>
             </div>
 
             <div class="card p-5">
-                <h2 class="font-semibold text-slate-900 mb-3">🔗 Supabase Connection</h2>
+                <h2 class="font-semibold text-slate-900 mb-4 flex items-center gap-2"><span>🔗</span> Supabase Connection</h2>
                 <div id="supabase-conn"><span class="text-sm text-slate-400">Loading…</span></div>
             </div>
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
             <div class="card p-5">
-                <h2 class="font-semibold text-slate-900 mb-3">📦 SQLite (source)</h2>
+                <h2 class="font-semibold text-slate-900 mb-4 flex items-center gap-2"><span>📦</span> SQLite <span class="text-xs font-normal text-slate-500">(source)</span></h2>
                 <div id="sqlite-counts" class="text-sm"><span class="text-slate-400">Loading…</span></div>
             </div>
             <div class="card p-5">
-                <h2 class="font-semibold text-slate-900 mb-3">☁️ Supabase Postgres (target)</h2>
+                <h2 class="font-semibold text-slate-900 mb-4 flex items-center gap-2"><span>☁️</span> Supabase Postgres <span class="text-xs font-normal text-slate-500">(target)</span></h2>
                 <div id="supabase-counts" class="text-sm"><span class="text-slate-400">Loading…</span></div>
             </div>
         </div>
 
         <!-- ACTIONS -->
         <div class="card p-5 mb-4">
-            <h2 class="font-semibold text-slate-900 mb-3">🎯 Migration Actions</h2>
+            <h2 class="font-semibold text-slate-900 mb-4 flex items-center gap-2"><span>🎯</span> Migration Actions</h2>
             <div class="flex flex-wrap gap-3 mb-4">
                 <button class="btn btn-ghost" onclick="dryRun()" id="btn-dry">🧪 Dry-Run (safe, just counts)</button>
                 <button class="btn btn-primary" onclick="startMigration()" id="btn-migrate">▶ Start Full Migration</button>
                 <button class="btn btn-warn" onclick="toggleFlag('USE_SUPABASE_DB')" id="btn-flag-db">Toggle USE_SUPABASE_DB</button>
                 <button class="btn btn-warn" onclick="toggleFlag('DUAL_WRITE_MODE')" id="btn-flag-dw">Toggle DUAL_WRITE_MODE</button>
             </div>
-            <p class="text-xs text-slate-500">
-                <strong>Preporučen redosled:</strong>
+            <div class="rounded-xl bg-slate-50 border border-slate-200 p-4 text-xs text-slate-600 leading-relaxed">
+                <strong class="text-slate-800">Preporučen redosled:</strong>
                 1) Dry-Run da vidiš brojeve. 2) Start Full Migration. 3) Kad završi bez grešaka,
                 Toggle DUAL_WRITE_MODE (piše u oba). 4) Sačekaj par sati / dana da si siguran.
                 5) Toggle USE_SUPABASE_DB (Supabase postaje glavni). 6) Kad si potpuno siguran,
-                obriši DUAL_WRITE_MODE. Za trajno menjanje flag-ova, editovaj <code>.env</code>.
-            </p>
+                obriši DUAL_WRITE_MODE. Za trajno menjanje flag-ova, editovaj <code class="bg-white px-1.5 py-0.5 rounded border border-slate-200">.env</code>.
+            </div>
         </div>
 
         <!-- MIGRATION LOG / PROGRESS -->
         <div class="card p-5 mb-4">
             <div class="flex items-center justify-between mb-3">
-                <h2 class="font-semibold text-slate-900">📜 Migration Log</h2>
+                <h2 class="font-semibold text-slate-900 flex items-center gap-2"><span>📜</span> Migration Log</h2>
                 <div id="migration-status"><span class="badge badge-amber">idle</span></div>
             </div>
             <pre class="log" id="migration-log">-- (no migration run yet) --</pre>
         </div>
     </div>
 
+    <!-- IN-APP MODAL (za confirm / alert / prompt) -->
+    <div class="modal-overlay" id="app-modal">
+        <div class="modal-box">
+            <div class="modal-head">
+                <h3 class="text-lg font-semibold text-slate-900" id="am-title">Confirm</h3>
+            </div>
+            <div class="modal-body" id="am-body"></div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" id="am-cancel">Cancel</button>
+                <button class="btn btn-primary" id="am-ok">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST HOST -->
+    <div class="toast-wrap" id="toast-host"></div>
+
     <script>
+        // ==============================================
+        //  In-app modal + toast (menja native alert/confirm/prompt)
+        // ==============================================
+        function toast(msg, kind='info', ms=4200){
+            const host = document.getElementById('toast-host');
+            const el = document.createElement('div');
+            el.className = 'toast toast-' + kind;
+            el.textContent = msg;
+            host.appendChild(el);
+            setTimeout(() => { el.style.opacity='0'; setTimeout(()=>el.remove(), 250); }, ms);
+        }
+        function appModal({ title, body, okText='OK', cancelText='Cancel', hideCancel=false, input=null }) {
+            return new Promise(resolve => {
+                const box = document.getElementById('app-modal');
+                document.getElementById('am-title').textContent = title;
+                const b = document.getElementById('am-body');
+                b.innerHTML = '';
+                if (typeof body === 'string') b.innerHTML = body;
+                let inputEl = null;
+                if (input) {
+                    inputEl = document.createElement('input');
+                    inputEl.type = input.type || 'text';
+                    inputEl.className = 'mt-3 w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm';
+                    inputEl.placeholder = input.placeholder || '';
+                    if (input.value) inputEl.value = input.value;
+                    b.appendChild(inputEl);
+                }
+                document.getElementById('am-ok').textContent = okText;
+                document.getElementById('am-cancel').textContent = cancelText;
+                document.getElementById('am-cancel').style.display = hideCancel ? 'none' : '';
+                box.classList.add('open');
+                if (inputEl) setTimeout(() => inputEl.focus(), 60);
+                const cleanup = () => { box.classList.remove('open'); document.getElementById('am-ok').onclick = null; document.getElementById('am-cancel').onclick = null; };
+                document.getElementById('am-ok').onclick = () => { const val = inputEl ? inputEl.value : true; cleanup(); resolve(val); };
+                document.getElementById('am-cancel').onclick = () => { cleanup(); resolve(null); };
+                if (inputEl) inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('am-ok').click(); });
+            });
+        }
+
+        // ==============================================
+        //  CSRF token setup — svaki fetch šalje X-CSRF-Token
+        // ==============================================
+        let CSRF_TOKEN = null;
+        async function loadCsrf() {
+            try {
+                const r = await fetch('/api/csrf/token');
+                const j = await r.json();
+                CSRF_TOKEN = j.csrf_token || null;
+            } catch(_) {}
+        }
+        async function api(url, opts={}) {
+            if (!CSRF_TOKEN && !['GET','HEAD','OPTIONS'].includes((opts.method || 'GET').toUpperCase())) {
+                await loadCsrf();
+            }
+            const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+            if (CSRF_TOKEN) headers['X-CSRF-Token'] = CSRF_TOKEN;
+            return fetch(url, Object.assign({}, opts, { headers }));
+        }
+
+        // ==============================================
+        //  Status + actions
+        // ==============================================
         let pollTimer = null;
 
         async function refreshStatus() {
             try {
-                const res = await fetch('/api/supabase/status');
+                const res = await api('/api/supabase/status');
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const s = await res.json();
 
-                // Flags
                 let flagHtml = '';
                 for (const [k, v] of Object.entries(s.flags)) {
                     const isOn = ['true', '1', 'yes', 'on'].includes(String(v).toLowerCase());
                     flagHtml += `<div class="kv"><span class="k">${k}</span><span class="v">
-                        <span class="badge ${isOn ? 'badge-green' : 'badge-amber'}">${v}</span>
+                        <span class="badge ${isOn ? 'badge-green' : 'badge-slate'}">${v}</span>
                     </span></div>`;
                 }
                 document.getElementById('flags').innerHTML = flagHtml;
 
-                // Connection
                 const sb = s.supabase;
                 let connHtml = `
                     <div class="kv"><span class="k">Connection</span><span class="v">
@@ -119,31 +242,26 @@
                     </span></div>
                     <div class="kv"><span class="k">Backend</span><span class="v">${sb.backend || '—'}</span></div>
                     <div class="kv"><span class="k">Auth Admin API</span><span class="v">
-                        <span class="badge ${sb.auth_ok ? 'badge-green' : 'badge-red'}">${sb.auth_ok ? 'OK' : (sb.auth_users || 'off')}</span>
+                        <span class="badge ${sb.auth_ok ? 'badge-green' : 'badge-slate'}">${sb.auth_ok ? 'OK' : (sb.auth_users || 'off')}</span>
                     </span></div>
-                    ${sb.error ? `<div class="kv"><span class="k">Error</span><span class="v text-red-600">${sb.error}</span></div>` : ''}
+                    ${sb.error ? `<div class="kv"><span class="k">Error</span><span class="v text-red-600" style="font-size:11px">${sb.error}</span></div>` : ''}
                 `;
                 document.getElementById('supabase-conn').innerHTML = connHtml;
 
-                // SQLite counts
                 let sqliteHtml = '';
-                const sk = Object.keys(s.sqlite_counts).sort();
-                for (const k of sk) {
+                for (const k of Object.keys(s.sqlite_counts).sort()) {
                     sqliteHtml += `<div class="kv"><span class="k">${k}</span><span class="v">${s.sqlite_counts[k]}</span></div>`;
                 }
                 document.getElementById('sqlite-counts').innerHTML = sqliteHtml || '<span class="text-slate-400">No data</span>';
 
-                // Supabase counts
                 let supaHtml = '';
-                const spk = Object.keys(sb.counts || {}).sort();
-                for (const k of spk) {
+                for (const k of Object.keys(sb.counts || {}).sort()) {
                     supaHtml += `<div class="kv"><span class="k">${k}</span><span class="v">${sb.counts[k]}</span></div>`;
                 }
                 document.getElementById('supabase-counts').innerHTML = supaHtml || '<span class="text-slate-400">No data</span>';
 
-                // Migration log
                 const m = s.migration;
-                let statusBadge = '<span class="badge badge-amber">idle</span>';
+                let statusBadge = '<span class="badge badge-slate">idle</span>';
                 if (m.running) statusBadge = '<span class="badge badge-green">RUNNING</span>';
                 else if (m.error) statusBadge = '<span class="badge badge-red">ERROR</span>';
                 else if (m.finished_at) statusBadge = '<span class="badge badge-green">completed</span>';
@@ -156,12 +274,8 @@
                 document.getElementById('btn-migrate').disabled = m.running;
                 document.getElementById('btn-dry').disabled = m.running;
 
-                // Poll while running
-                if (m.running && !pollTimer) {
-                    pollTimer = setInterval(refreshStatus, 3000);
-                } else if (!m.running && pollTimer) {
-                    clearInterval(pollTimer); pollTimer = null;
-                }
+                if (m.running && !pollTimer) { pollTimer = setInterval(refreshStatus, 3000); }
+                else if (!m.running && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
             } catch (e) {
                 document.getElementById('flags').innerHTML = '<span class="text-red-600 text-sm">Error: ' + e.message + '</span>';
             }
@@ -171,55 +285,68 @@
             const btn = document.getElementById('btn-dry');
             btn.disabled = true; btn.textContent = '⏳ Running dry-run...';
             try {
-                const res = await fetch('/api/supabase/dry-run', { method: 'POST' });
+                const res = await api('/api/supabase/dry-run', { method: 'POST' });
                 const data = await res.json();
                 if (res.ok) {
-                    document.getElementById('migration-log').textContent = data.output;
+                    document.getElementById('migration-log').textContent = data.output || '(empty output)';
+                    toast('Dry-run finished.', 'success');
                 } else {
-                    alert('Dry-run error: ' + (data.error || 'Unknown'));
+                    toast('Dry-run error: ' + (data.error || 'HTTP ' + res.status), 'error', 6000);
                 }
-            } catch (e) { alert('Network error.'); }
+            } catch (e) { toast('Network error: ' + e.message, 'error'); }
             btn.disabled = false; btn.textContent = '🧪 Dry-Run (safe, just counts)';
         }
 
         async function startMigration() {
-            if (!confirm('Start FULL data migration from SQLite → Supabase Postgres?\n\nThis will UPSERT all rows. Existing rows in Supabase get overwritten by their SQLite version.\n\nSafe to re-run — uses UPSERT by id.')) return;
+            const ok = await appModal({
+                title: 'Start Full Migration?',
+                body: 'This will <b>UPSERT</b> all rows from SQLite into Supabase Postgres.<br><br>Safe to re-run — existing rows get overwritten with SQLite version by id. Runs in background, page auto-refreshes.',
+                okText: 'Yes, start migration',
+            });
+            if (!ok) return;
             try {
-                const res = await fetch('/api/supabase/migrate', { method: 'POST' });
+                const res = await api('/api/supabase/migrate', { method: 'POST' });
                 const data = await res.json();
                 if (res.ok) {
                     document.getElementById('migration-log').textContent = 'Migration started... polling for updates.';
+                    toast('Migration started in background.', 'success');
                     refreshStatus();
                 } else {
-                    alert('Migration error: ' + (data.error || 'Unknown'));
+                    toast('Migration error: ' + (data.error || 'Unknown'), 'error');
                 }
-            } catch (e) { alert('Network error.'); }
+            } catch (e) { toast('Network error.', 'error'); }
         }
 
         async function toggleFlag(flag) {
-            if (!confirm(`Toggle ${flag}?\n\nThis changes the flag in the RUNNING process only. For permanent change, edit .env on server and Reload web app.`)) return;
+            const curBadge = document.querySelector('#flags').textContent.match(new RegExp(flag + '\\s*([a-z01]+)', 'i'));
+            const currentIsOn = curBadge && /true|1|yes|on/i.test(curBadge[1]);
+            const newVal = currentIsOn ? 'false' : 'true';
+            const ok = await appModal({
+                title: `Toggle ${flag}?`,
+                body: `Current: <b>${currentIsOn ? 'true' : 'false'}</b> → New: <b>${newVal}</b><br><br>⚠ This changes the flag in the <b>running process only</b>. For permanent change, edit <code>.env</code> on server and Reload web app.`,
+                okText: `Set to ${newVal}`,
+            });
+            if (!ok) return;
             try {
-                const cur = document.querySelector('#flags').textContent.match(new RegExp(flag + '\\s*(true|false|1|0)', 'i'));
-                const currentIsOn = cur && /true|1|yes/i.test(cur[1]);
-                const newVal = currentIsOn ? 'false' : 'true';
-                const res = await fetch('/api/supabase/set-flag', {
+                const res = await api('/api/supabase/set-flag', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ flag, value: newVal })
                 });
                 const data = await res.json();
                 if (res.ok) {
-                    alert(`${flag}: ${data.old} → ${data.new}\n\n(In-process only. Edit .env for permanent.)`);
+                    toast(`${flag}: ${data.old} → ${data.new}`, 'success');
                     refreshStatus();
                 } else {
-                    alert('Error: ' + (data.error || 'Unknown'));
+                    toast('Error: ' + (data.error || 'Unknown'), 'error');
                 }
-            } catch (e) { alert('Network error.'); }
+            } catch (e) { toast('Network error.', 'error'); }
         }
 
-        refreshStatus();
-        // Auto-refresh every 15s when idle
-        setInterval(() => { if (!pollTimer) refreshStatus(); }, 15000);
+        (async () => {
+            await loadCsrf();
+            await refreshStatus();
+            setInterval(() => { if (!pollTimer) refreshStatus(); }, 15000);
+        })();
     </script>
 </body>
 </html>

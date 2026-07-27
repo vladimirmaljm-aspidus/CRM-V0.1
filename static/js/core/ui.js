@@ -809,6 +809,17 @@ function setupGlobalListeners(){
 
   const sb = document.getElementById('settings-btn');
   if(sb) sb.addEventListener('click', () => { if(typeof SettingsManager !== 'undefined') SettingsManager.showModal(); });
+
+  // Otkrij admin-only linkove (Supabase Migration, Error Log) samo ako je user admin
+  try {
+    const isAdmin = state && state.user && state.user.role === 'admin';
+    if (isAdmin) {
+      ['supabase-admin-link', 'admin-errors-link'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.classList.remove('hidden'); el.classList.add('flex'); }
+      });
+    }
+  } catch(_) {}
   
   const mcb = document.getElementById('modal-close-btn');
   if(mcb) mcb.addEventListener('click', closeModal);

@@ -203,6 +203,21 @@
                   <span id="notif-label" class="nav-text ml-2.5 font-medium text-sm">Obaveštenja</span>
               </button>
 
+              <!-- SUPABASE ADMIN — vidljivo samo adminu, ubacuje se dinamicki iz ui.js -->
+              <a id="supabase-admin-link" href="/admin/supabase" class="hidden w-full flex items-center bg-transparent hover:bg-[var(--hover-bg)] text-main p-2 rounded-lg transition-colors group btn-content-wrapper" title="Supabase Migration & Cloud DB">
+                  <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center text-[var(--muted)] group-hover:text-[var(--accent)] transition-colors">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M17.5 19a4.5 4.5 0 100-9 5.5 5.5 0 00-10.9-.75A4 4 0 006 17.5"/><path d="M8 13l4 4 4-4"/><path d="M12 17V7"/></svg>
+                  </div>
+                  <span class="nav-text ml-2.5 font-medium text-sm">Supabase</span>
+              </a>
+
+              <a id="admin-errors-link" href="/admin/errors" class="hidden w-full flex items-center bg-transparent hover:bg-[var(--hover-bg)] text-main p-2 rounded-lg transition-colors group btn-content-wrapper" title="Error Log — greške u sistemu">
+                  <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center text-[var(--muted)] group-hover:text-red-600 transition-colors">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  </div>
+                  <span class="nav-text ml-2.5 font-medium text-sm">Error Log</span>
+              </a>
+
               <button id="settings-btn" class="w-full flex items-center bg-transparent hover:bg-[var(--hover-bg)] text-main p-2 rounded-lg transition-colors group btn-content-wrapper" title="Podešavanja Firme">
                   <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center text-[var(--muted)] group-hover:text-[var(--accent)] transition-colors">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
