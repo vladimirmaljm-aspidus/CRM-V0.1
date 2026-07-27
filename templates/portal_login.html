@@ -209,6 +209,16 @@
         let sbConfig = null;
 
         async function initSupabaseIfEnabled() {
+            // KORAK 1 — odmah handluj URL hash (recovery / magic-link / error).
+            // Ovo ne sme da zavisi od supabase-js CDN import-a, jer PA Free
+            // ponekad ne uspeva da učita esm.sh CDN u razumnom roku i korisnik
+            // ostane zaglavljen na spinner-u. Recovery flow ide server-side.
+            const hash = window.location.hash || '';
+            const hasAuthHash = hash.includes('access_token=') || hash.includes('error=');
+            if (hasAuthHash) {
+                consumeUrlHashSession();  // ne čekamo — pokreće se paralelno
+            }
+
             try {
                 const res = await fetch('/api/portal/public_config');
                 const cfg = await res.json();
@@ -218,20 +228,32 @@
                     console.warn('Supabase Auth enabled but URL/anon key missing.');
                     return;
                 }
-                // Dinamički import supabase-js (ESM sa oficijelnog CDN-a)
-                const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
-                sbClient = createClient(cfg.supabase_url, cfg.supabase_anon_key, {
-                    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
-                });
-                // Prikaži Supabase blok, sakrij legacy step-email
-                document.getElementById('step-supabase').classList.remove('hidden');
-                document.getElementById('step-email').classList.add('hidden');
 
-                // Ako smo se vratili sa magic-link/reset klika (Supabase upisuje access_token u URL hash)
-                await consumeUrlHashSession();
+                // Ako smo u sred recovery flow-a (već prikazan set-password UI),
+                // ne diramo widget. Ako nismo, prikaži Supabase widget.
+                if (!hasAuthHash) {
+                    document.getElementById('step-supabase').classList.remove('hidden');
+                    document.getElementById('step-email').classList.add('hidden');
+                }
+
+                // Dinamički import supabase-js sa timeout-om — ako CDN ne odgovori
+                // za 8s, ostavljamo legacy fallback i vidljivu poruku.
+                try {
+                    const importPromise = import('https://esm.sh/@supabase/supabase-js@2');
+                    const timeoutPromise = new Promise((_, rej) =>
+                        setTimeout(() => rej(new Error('supabase-js CDN timeout')), 8000)
+                    );
+                    const { createClient } = await Promise.race([importPromise, timeoutPromise]);
+                    sbClient = createClient(cfg.supabase_url, cfg.supabase_anon_key, {
+                        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+                    });
+                } catch (impErr) {
+                    console.warn('supabase-js library nije učitan (CDN blokiran?):', impErr);
+                    // Password/Magic-Link tabovi neće raditi bez sbClient, ali
+                    // recovery flow (koji ide server-side) i legacy OTP rade.
+                }
             } catch (e) {
                 console.warn('Supabase init failed, falling back to legacy:', e);
-                // Ostaviti legacy UI aktivan
             }
         }
 
@@ -273,20 +295,10 @@
             // Očisti hash odmah da token ne curi u browser history / referer
             history.replaceState(null, '', window.location.pathname + window.location.search);
 
-            // Recovery / invite / signup → prvo tražimo NOVU LOZINKU, tek posle exchange
+            // Recovery / invite / signup → prvo tražimo NOVU LOZINKU.
+            // NE zahtevamo supabase-js — sve ide server-side kroz set-password endpoint.
             if (linkType === 'recovery' || linkType === 'invite' || linkType === 'signup') {
                 recoverySession = { access_token: accessToken, refresh_token: refreshToken };
-                if (sbClient && refreshToken) {
-                    try {
-                        // supabase.auth.updateUser zahteva aktivnu sesiju u klijentu
-                        await sbClient.auth.setSession({
-                            access_token: accessToken,
-                            refresh_token: refreshToken,
-                        });
-                    } catch (e) {
-                        console.warn('setSession failed:', e);
-                    }
-                }
                 document.getElementById('step-supabase').classList.add('hidden');
                 document.getElementById('step-email').classList.add('hidden');
                 document.getElementById('step-set-password').classList.remove('hidden');
@@ -324,40 +336,37 @@
             errEl.classList.add('hidden');
             if (!p1 || p1.length < 8) { errEl.textContent = 'Password must be at least 8 characters.'; errEl.classList.remove('hidden'); return; }
             if (p1 !== p2) { errEl.textContent = 'Passwords do not match.'; errEl.classList.remove('hidden'); return; }
-            if (!sbClient || !recoverySession) {
+            if (!recoverySession || !recoverySession.access_token) {
                 errEl.textContent = 'Session expired. Please request a new reset link.';
                 errEl.classList.remove('hidden'); return;
             }
             const btn = document.getElementById('sp-btn');
-            btn.disabled = true; btn.textContent = 'Saving…';
+            btn.disabled = true; btn.textContent = 'Locating…';
+            // GPS pre-request (standard klijent mora, premium ne)
+            let locData = '';
+            try { locData = await getPreciseLocation(); } catch (_) {}
+            btn.textContent = 'Saving…';
             try {
-                const { error } = await sbClient.auth.updateUser({ password: p1 });
-                if (error) {
-                    errEl.textContent = error.message || 'Could not save password.';
-                    errEl.classList.remove('hidden');
-                    btn.disabled = false; btn.textContent = 'Save & Sign In';
-                    return;
-                }
-                // Posle uspešnog set-a, uzimamo svež access_token iz aktivne sesije
-                // (updateUser vraća novu sesiju automatski) i onda exchange sa serverom.
-                btn.textContent = 'Signing in…';
-                let locData = '';
-                try { locData = await getPreciseLocation(); } catch (_) {}
-                const { data: sess } = await sbClient.auth.getSession();
-                const token = sess?.session?.access_token || recoverySession.access_token;
-                const res = await fetch('/api/portal/auth/supabase/exchange', {
+                // Server-side set-password + login (ne zahteva supabase-js na klijentu)
+                const res = await fetch('/api/portal/auth/supabase/set-password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ access_token: token, location: locData })
+                    body: JSON.stringify({
+                        access_token: recoverySession.access_token,
+                        password: p1,
+                        location: locData,
+                    })
                 });
                 const body = await res.json();
-                if (res.ok && body.auth_key && body.token) {
+                if (res.ok && body.status === 'success' && body.auth_key && body.token) {
                     finishSupabaseLogin(body);
                     return;
                 }
-                errEl.textContent = body.error === 'LOCATION_REQUIRED'
-                    ? 'Location access is required. Please allow precise location and try again.'
-                    : (body.error || 'Password saved, but sign-in failed. Try signing in manually.');
+                if (body.error === 'LOCATION_REQUIRED') {
+                    errEl.textContent = body.message || 'Password saved. Please allow precise location and try again.';
+                } else {
+                    errEl.textContent = body.error || 'Could not save password.';
+                }
                 errEl.classList.remove('hidden');
             } catch (e) {
                 errEl.textContent = 'Network error. Try again.';

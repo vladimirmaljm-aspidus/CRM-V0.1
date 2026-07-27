@@ -222,6 +222,25 @@ def send_password_reset(email: str, redirect_to: Optional[str] = None) -> tuple[
         return False, f"{e.__class__.__name__}:{e}"
 
 
+def update_user_password(user_id: str, new_password: str) -> tuple[bool, str]:
+    """Postavi novu lozinku za korisnika preko Supabase admin API-ja.
+    Koristi se u recovery flow-u: nakon što offline verifikujemo JWT
+    iz reset link-a i izvadimo `sub`, ovaj poziv postavlja lozinku bez
+    potrebe za klijentskom supabase-js sesijom.
+
+    Vraća (ok, detail)."""
+    if not user_id or not new_password:
+        return False, "invalid_params"
+    if len(new_password) < 8:
+        return False, "password_too_short"
+    client = admin_client()
+    try:
+        client.auth.admin.update_user_by_id(str(user_id), {"password": new_password})
+        return True, "updated"
+    except Exception as e:
+        return False, f"{e.__class__.__name__}:{e}"
+
+
 def send_magic_link(email: str, redirect_to: Optional[str] = None) -> tuple[bool, str]:
     """Traži od Supabase-a da pošalje magic-link (sign_in_with_otp bez lozinke).
     Vraća (ok, detail)."""
