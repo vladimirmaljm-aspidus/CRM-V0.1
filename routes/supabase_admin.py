@@ -107,6 +107,124 @@ def admin_errors_clear():
     log_audit('EDIT', 'system', f'Admin cleared error buffer ({n} entries)', is_suspicious=False)
     return jsonify({"status": "ok", "cleared": n})
 
+
+# ==========================================================
+#  SESSION INFO — za Profile & Preferences panel
+# ==========================================================
+
+@supabase_admin_bp.route('/api/session/info', methods=['GET'])
+@login_required
+def session_info_api():
+    """Vraca info o trenutnoj sesiji za Profile > Session tab."""
+    from utils import FirewallCache
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr) or ''
+    if ',' in ip:
+        ip = ip.split(',')[0].strip()
+    login_ts = session.get('login_time')
+    last_ts = session.get('last_active', login_ts)
+    ttl = int(FirewallCache.settings.get('crm_inactivity', 1200))
+    return jsonify({
+        "username": session.get('username'),
+        "role": session.get('role'),
+        "user_id": session.get('user_id'),
+        "login_time": time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(login_ts)) if login_ts else None,
+        "last_active": time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(last_ts)) if last_ts else None,
+        "ttl_seconds": ttl,
+        "ip": ip,
+    })
+
+
+@supabase_admin_bp.route('/api/2fa/status', methods=['GET'])
+@login_required
+def two_fa_status_api():
+    """Vraca status 2FA — za Profile > Security tab."""
+    try:
+        import sqlite3
+        from config import DB_FILE
+        conn = sqlite3.connect(DB_FILE, timeout=5.0)
+        c = conn.cursor()
+        c.execute("SELECT totp_secret FROM users WHERE id=?", (session.get('user_id'),))
+        row = c.fetchone()
+        conn.close()
+        enabled = bool(row and row[0])
+    except Exception:
+        enabled = False
+    return jsonify({"enabled": enabled})
+
+
+@supabase_admin_bp.route('/api/users/me', methods=['PATCH'])
+@login_required
+def users_me_patch():
+    """Update trenutnog user-a profil (fullName, email, phone)."""
+    import sqlite3, json as _json
+    from config import DB_FILE
+    from utils import decrypt_data, encrypt_data
+    body = request.get_json(silent=True) or {}
+    allowed = {k: body.get(k) for k in ('fullName', 'email', 'phone') if k in body}
+    if not allowed:
+        return jsonify({"error": "No fields to update."}), 400
+    uid = session.get('user_id')
+    conn = sqlite3.connect(DB_FILE, timeout=15.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT data FROM users WHERE id=?", (uid,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"error": "User not found."}), 404
+        try:
+            data = _json.loads(row[0])
+        except (ValueError, TypeError):
+            data = decrypt_data(row[0]) or {}
+        data.update(allowed)
+        c.execute("UPDATE users SET data=? WHERE id=?", (_json.dumps(data), uid))
+        conn.commit()
+    finally:
+        conn.close()
+    log_audit('EDIT', 'users', f'User {session.get("username")} updated own profile: {list(allowed.keys())}',
+              is_suspicious=False)
+    return jsonify({"status": "ok"})
+
+
+@supabase_admin_bp.route('/api/users/change-password', methods=['POST'])
+@login_required
+def users_change_password():
+    """CRM user (ne portal) menja svoju CRM lozinku. Redirect na postojeci
+    auth_bp endpoint ako postoji, ili implementira ovde."""
+    body = request.get_json(silent=True) or {}
+    current = str(body.get('current') or '')
+    nxt = str(body.get('next') or '')
+    if len(nxt) < 8:
+        return jsonify({"error": "New password too short."}), 400
+    # Delegate to existing auth_bp change_password
+    try:
+        from routes.auth import _do_change_password  # helper if exists
+        return _do_change_password(current, nxt)
+    except ImportError:
+        pass
+    # Inline fallback — koristi utils bcrypt
+    try:
+        import sqlite3
+        from config import DB_FILE
+        from utils import verify_password, hash_password
+        uid = session.get('user_id')
+        conn = sqlite3.connect(DB_FILE, timeout=15.0)
+        c = conn.cursor()
+        c.execute("SELECT password_hash FROM users WHERE id=?", (uid,))
+        row = c.fetchone()
+        if not row or not verify_password(current, row[0]):
+            conn.close()
+            return jsonify({"error": "Current password is incorrect."}), 401
+        new_hash = hash_password(nxt)
+        c.execute("UPDATE users SET password_hash=? WHERE id=?", (new_hash, uid))
+        conn.commit()
+        conn.close()
+        log_audit('SECURITY', 'users', f'User {session.get("username")} changed own password.',
+                  is_suspicious=False)
+        return jsonify({"status": "success"})
+    except Exception as e:
+        record_error('/api/users/change-password', e)
+        return jsonify({"error": "Could not change password.", "detail": str(e)[:200]}), 500
+
 # In-memory migracija stanje — vidljivo kroz /status endpoint
 _migration_state = {
     "running": False,

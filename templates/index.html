@@ -7,6 +7,7 @@
     <link rel="icon" href="data:;base64,iVBORw0KGgo=">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/modern.css">
     
     <!-- jsPDF & autotable: lazy-loaded od strane pdf_generator.js SAMO kad
          korisnik zatraži native (client-side) PDF. Server-side ReportLab je
@@ -195,6 +196,14 @@
                   <span id="refresh-label" class="nav-text ml-2.5 font-medium text-sm">Refresh</span>
               </button>
 
+              <!-- PROFILE / PREFERENCES — otvara ceo profil panel -->
+              <button id="profile-btn" onclick="openPreferences()" class="w-full flex items-center bg-transparent hover:bg-[var(--hover-bg)] text-main p-2 rounded-lg transition-colors group btn-content-wrapper" title="Profile & Preferences (Ctrl+,)">
+                  <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center text-[var(--muted)] group-hover:text-[var(--accent)] transition-colors">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                  </div>
+                  <span class="nav-text ml-2.5 font-medium text-sm">Profile</span>
+              </button>
+
               <button id="show-notifications-btn" class="relative w-full flex items-center bg-transparent hover:bg-[var(--hover-bg)] text-main p-2 rounded-lg transition-colors group btn-content-wrapper" title="Obaveštenja">
                   <div class="w-8 h-8 min-w-[2rem] flex items-center justify-center relative text-[var(--muted)] group-hover:text-[var(--accent)] transition-colors">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
@@ -275,6 +284,7 @@
     <script src="/static/js/config/hs_codes.js"></script>
     <script src="/static/js/vendor/iban.js"></script>
     <script src="/static/js/core/utils.js"></script>
+    <script src="/static/js/core/preferences.js"></script>
     <script src="/static/js/core/cmdk.js"></script>
     <script src="/static/js/core/api.js"></script>
     <script src="/static/js/core/export.js"></script>
