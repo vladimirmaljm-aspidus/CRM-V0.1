@@ -353,6 +353,70 @@ def supabase_signin_password():
     })
 
 
+@portal_bp.route('/api/portal/admin/send-portal-invite/<partner_id>', methods=['POST'])
+def admin_send_portal_invite(partner_id):
+    """Admin dugme — pošalje partneru invite/reset mail. Ako Auth user ne
+    postoji, prvo ga napravi. Klijent klikne link, postavi lozinku, ulazi.
+    """
+    from flask import session as _fsess
+    from utils import log_audit as _la
+    if _fsess.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+
+    from auth_supabase import (
+        create_or_get_auth_user, send_password_reset, use_supabase_auth,
+    )
+    if not use_supabase_auth():
+        return jsonify({"error": "Supabase Auth is not enabled."}), 503
+
+    import sqlite3, json as _json
+    from config import DB_FILE
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "Partner not found."}), 404
+    try:
+        partner = _json.loads(row[0]) if row[0] else {}
+    except (ValueError, TypeError):
+        from utils import decrypt_data
+        partner = decrypt_data(row[0]) or {}
+
+    email = (partner.get('contact', {}) or {}).get('email') or partner.get('email') or ''
+    email = str(email).strip().lower()
+    if not email:
+        return jsonify({"error": "Partner has no email."}), 400
+
+    uid, status = create_or_get_auth_user(
+        email, partner_id=partner_id,
+        company_name=partner.get('companyName', ''),
+        email_confirm=True,
+    )
+    if not uid:
+        return jsonify({"error": f"Could not resolve auth user: {status}"}), 500
+
+    import os as _os
+    portal_url = _os.environ.get('PORTAL_BASE_URL', '').strip() or \
+                 f"{request.url_root.rstrip('/')}/portal/login"
+    ok, detail = send_password_reset(email, redirect_to=portal_url)
+    if not ok:
+        return jsonify({"error": f"Send failed: {detail}"}), 500
+
+    _la('EDIT', 'portal',
+        f'Admin sent portal invite to partner {partner_id} ({email})',
+        is_suspicious=False)
+    return jsonify({
+        "status": "success",
+        "message": f"Invite/reset email sent to {email}",
+        "auth_user_id": uid,
+        "auth_user_status": status,
+    })
+
+
 @portal_bp.route('/api/portal/admin/set-partner-password/<partner_id>', methods=['POST'])
 def admin_set_partner_password(partner_id):
     """Admin dugme — direktno postavlja portal lozinku za partnera preko
@@ -421,6 +485,80 @@ def admin_set_partner_password(partner_id):
         "auth_user_id": uid,
         "auth_user_status": status,
     })
+
+
+@portal_bp.route('/api/portal/user/change-password', methods=['POST'])
+def portal_user_change_password():
+    """Ulogovan klijent menja svoju lozinku iz portala (Profile → Change Password).
+    Traži trenutnu portal auth_key sesiju (već ulogovan) + trenutnu lozinku
+    (revalidacija) + novu lozinku."""
+    ip = _client_ip()
+    if not check_portal_rate_limit(ip):
+        abort(429)
+
+    from auth_supabase import (
+        signin_with_password, update_user_password, get_user_by_email, use_supabase_auth,
+    )
+    from . import verify_portal_session, portal_auth_sessions
+    if not use_supabase_auth():
+        return jsonify({"error": "Supabase Auth is not enabled."}), 503
+
+    payload = request.get_json(silent=True) or {}
+    portal_token = str(payload.get('portal_token') or '').strip()
+    current_password = str(payload.get('current_password') or '')
+    new_password = str(payload.get('new_password') or '')
+    auth_header = request.headers.get('X-Portal-Auth', '')
+
+    if not verify_portal_session(portal_token, auth_header):
+        return jsonify({"error": "Not authenticated."}), 401
+    if len(new_password) < 8:
+        return jsonify({"error": "New password must be at least 8 characters."}), 400
+
+    # Nadji partner + email
+    sess = portal_auth_sessions.get(portal_token) or {}
+    partner_id = sess.get('partner_id')
+    import sqlite3, json as _json
+    from config import DB_FILE
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "Partner not found."}), 404
+    try:
+        partner = _json.loads(row[0]) if row[0] else {}
+    except (ValueError, TypeError):
+        from utils import decrypt_data
+        partner = decrypt_data(row[0]) or {}
+    email = (partner.get('contact', {}) or {}).get('email') or partner.get('email') or ''
+    email = str(email).strip().lower()
+
+    # Revalidacija trenutne lozinke (bezbednosno)
+    session_data, detail = signin_with_password(email, current_password)
+    if session_data is None:
+        log_audit('SECURITY', 'portal',
+                  f'change-password: wrong current password for {email}',
+                  is_suspicious=True)
+        return jsonify({"error": "Current password is incorrect."}), 401
+
+    # Nadji Supabase user id preko emaila
+    supa_user = get_user_by_email(email)
+    if not supa_user:
+        return jsonify({"error": "Supabase account not found."}), 404
+    uid = supa_user.get('id') if isinstance(supa_user, dict) else getattr(supa_user, 'id', None)
+    if not uid:
+        return jsonify({"error": "Cannot resolve user id."}), 500
+
+    ok, detail = update_user_password(str(uid), new_password)
+    if not ok:
+        return jsonify({"error": f"Could not update password: {detail}"}), 500
+
+    log_audit('EDIT', 'portal',
+              f'Client changed portal password: {email}', is_suspicious=False)
+    return jsonify({"status": "success", "message": "Password changed."})
 
 
 @portal_bp.route('/api/portal/auth/supabase/send-magic-link', methods=['POST'])

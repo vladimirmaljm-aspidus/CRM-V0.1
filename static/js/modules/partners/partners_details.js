@@ -229,6 +229,8 @@ function renderPartnerDetailView(partnerId) {
                    </div>
                    <button id="kyc-partner-btn" class="w-full btn bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 shadow-sm border border-indigo-800">📄 ${Utils.t('kyc.reviewTitle')}</button>
                    <button id="b2b-portal-btn" class="w-full btn bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs py-2 shadow-sm border border-slate-900">🌐 ${Utils.t('misc.b2bLinkBtn')}</button>
+                   <button id="portal-invite-btn" class="w-full btn bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 shadow-sm border border-blue-800">📧 Send Portal Invite / Reset</button>
+                   <button id="portal-setpwd-btn" class="w-full btn bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs py-2 shadow-sm border border-amber-800">🔑 Set Portal Password</button>
                    ${partner.portalToken ? `<button id="portal-access-btn" class="w-full btn ${partner.isPortalActive === false ? 'bg-emerald-600 hover:bg-emerald-700 border-emerald-800' : 'bg-rose-600 hover:bg-rose-700 border-rose-800'} text-white font-bold text-xs py-2 shadow-sm border">${partner.isPortalActive === false ? '✅ ' + Utils.t('misc.portalReactivate') : '🔒 ' + Utils.t('misc.portalRevoke')}</button>` : ''}
                </div>
             </div>
@@ -330,6 +332,50 @@ function renderPartnerDetailView(partnerId) {
                 alert("Network Error.");
                 portalAccessBtn.disabled = false;
             }
+        });
+    }
+
+    // Send Portal Invite / Reset (Supabase Auth email)
+    const inviteBtn = document.getElementById('portal-invite-btn');
+    if (inviteBtn) {
+        inviteBtn.addEventListener('click', async () => {
+            if (!confirm('Send Supabase Auth invite/reset email to this partner? They will receive a link to set their portal password.')) return;
+            inviteBtn.disabled = true; inviteBtn.innerText = '⏳ Sending...';
+            try {
+                const res = await fetch(`/api/portal/admin/send-portal-invite/${partnerId}`, { method: 'POST' });
+                const data = await res.json();
+                if (res.ok && data.status === 'success') {
+                    alert('✅ ' + (data.message || 'Invite sent.'));
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown'));
+                }
+            } catch (e) { alert("Network Error."); }
+            inviteBtn.disabled = false; inviteBtn.innerHTML = '📧 Send Portal Invite / Reset';
+        });
+    }
+
+    // Set Portal Password manually (admin unese novu lozinku direktno)
+    const setPwdBtn = document.getElementById('portal-setpwd-btn');
+    if (setPwdBtn) {
+        setPwdBtn.addEventListener('click', async () => {
+            const pwd = prompt('Enter a new portal password for this partner (min. 8 characters). They can sign in immediately with it.');
+            if (!pwd) return;
+            if (pwd.length < 8) { alert('Password must be at least 8 characters.'); return; }
+            setPwdBtn.disabled = true; setPwdBtn.innerText = '⏳ Setting...';
+            try {
+                const res = await fetch(`/api/portal/admin/set-partner-password/${partnerId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: pwd })
+                });
+                const data = await res.json();
+                if (res.ok && data.status === 'success') {
+                    alert('✅ ' + (data.message || 'Password set. Partner can sign in now.'));
+                } else {
+                    alert('Error: ' + (data.error || 'Unknown'));
+                }
+            } catch (e) { alert("Network Error."); }
+            setPwdBtn.disabled = false; setPwdBtn.innerHTML = '🔑 Set Portal Password';
         });
     }
 
