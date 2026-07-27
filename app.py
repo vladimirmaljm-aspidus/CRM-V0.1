@@ -105,6 +105,11 @@ app.register_blueprint(documents_register_bp)
 # na ponudi/fakturi. Bez registracije ovog bp-a, QR na PDF-u vodi u 404.
 app.register_blueprint(verify_bp)
 
+# Supabase admin API — status, migration control, feature flag switching.
+# Sve rute su admin-only i loguju se u audit_log.
+from routes.supabase_admin import supabase_admin_bp  # noqa: E402
+app.register_blueprint(supabase_admin_bp)
+
 @app.before_request
 def enforce_csrf():
     """Odbija POST/PUT/DELETE/PATCH bez validnog X-CSRF-Token header-a.
