@@ -920,9 +920,71 @@
                     <h3 class="text-sm font-semibold text-slate-800 mb-3" id="lbl-profile-history">Your Change Requests</h3>
                     <div id="profile-requests-body" class="space-y-2"></div>
                 </div>
+
+                <!-- Change Password (Supabase Auth) — vidljivo samo ako je USE_SUPABASE_AUTH aktivan -->
+                <div id="change-password-section" class="mt-8 pt-6 border-t border-slate-100 hidden">
+                    <h3 class="text-sm font-semibold text-slate-800 mb-3">🔑 Change Password</h3>
+                    <p class="text-xs text-slate-500 mb-3">Change your portal sign-in password. You'll stay signed in.</p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
+                        <div><label class="label">Current password</label><input type="password" id="pwd-current" class="input" autocomplete="current-password"></div>
+                        <div><label class="label">New password (min. 8)</label><input type="password" id="pwd-new" class="input" autocomplete="new-password"></div>
+                    </div>
+                    <div class="mt-4 flex items-center gap-3">
+                        <button class="btn btn-primary" onclick="submitChangePassword()">Change Password</button>
+                        <span id="pwd-msg" class="text-xs"></span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
+
+    <script>
+        // Show change-password section only when USE_SUPABASE_AUTH is on
+        (async function(){
+            try {
+                const r = await fetch('/api/portal/public_config');
+                const c = await r.json();
+                if (c.supabase_auth_enabled) {
+                    const el = document.getElementById('change-password-section');
+                    if (el) el.classList.remove('hidden');
+                }
+            } catch(_) {}
+        })();
+
+        async function submitChangePassword() {
+            const cur = document.getElementById('pwd-current').value;
+            const nw = document.getElementById('pwd-new').value;
+            const msg = document.getElementById('pwd-msg');
+            msg.textContent = ''; msg.className = 'text-xs';
+            if (!cur || !nw) { msg.textContent = 'Both fields required.'; msg.classList.add('text-red-600'); return; }
+            if (nw.length < 8) { msg.textContent = 'New password must be at least 8 characters.'; msg.classList.add('text-red-600'); return; }
+
+            // portal_token je u URL-u; auth_key u sessionStorage kao 'portal_auth_' + token
+            const parts = window.location.pathname.split('/').filter(Boolean);
+            const portalToken = parts[parts.length - 1] || '';
+            const authKey = sessionStorage.getItem('portal_auth_' + portalToken) || '';
+
+            try {
+                const res = await fetch('/api/portal/user/change-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
+                    body: JSON.stringify({ portal_token: portalToken, current_password: cur, new_password: nw })
+                });
+                const body = await res.json();
+                if (res.ok && body.status === 'success') {
+                    msg.textContent = '✓ ' + (body.message || 'Password changed.');
+                    msg.classList.add('text-emerald-600');
+                    document.getElementById('pwd-current').value = '';
+                    document.getElementById('pwd-new').value = '';
+                } else {
+                    msg.textContent = body.error || 'Error changing password.';
+                    msg.classList.add('text-red-600');
+                }
+            } catch (e) {
+                msg.textContent = 'Network error.'; msg.classList.add('text-red-600');
+            }
+        }
+    </script>
 
     <!-- RFQ MODAL -->
     <div id="rfq-modal" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 hidden items-center justify-center p-3 sm:p-4">
