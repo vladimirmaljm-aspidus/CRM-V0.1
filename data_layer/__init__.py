@@ -159,3 +159,15 @@ def reset():
     global _backend_instance
     with _backend_lock:
         _backend_instance = None
+
+
+def get_supabase_client():
+    """V23.1 — vraca sirov supabase-py klijent za skripte koje trebaju direktan
+    pristup (import_local_db_to_supabase.py, migrate_data_to_supabase.py).
+    Radi samo ako je REST backend aktivan."""
+    b = get_backend()
+    if hasattr(b, 'client'):
+        return b.client
+    if hasattr(b, '_client'):
+        return b._client
+    raise RuntimeError('get_supabase_client dostupan samo sa REST backend-om — postavi DB_BACKEND=rest')

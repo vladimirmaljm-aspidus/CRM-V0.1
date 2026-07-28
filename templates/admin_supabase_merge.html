@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Supabase Merge Wizard — Aspidus CRM</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: linear-gradient(180deg,#f8fafc,#eef2f7); min-height:100vh; }
+  .card { background:white; border-radius:14px; border:1px solid #e5e7eb; }
+  .btn { padding:6px 12px; border-radius:8px; font-weight:600; font-size:12px; cursor:pointer; transition:.15s; }
+  .btn-primary { background:linear-gradient(135deg,#4f46e5,#7c3aed); color:white; }
+  .btn-warn { background:#fef3c7; color:#92400e; border:1px solid #fde68a; }
+  .btn-ghost { background:white; color:#334155; border:1px solid #e5e7eb; }
+  .btn-danger { background:#ef4444; color:white; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:99px; font-size:10px; font-weight:700; }
+  .pill-green { background:#dcfce7; color:#166534; }
+  .pill-red { background:#fee2e2; color:#991b1b; }
+  .pill-amber { background:#fef3c7; color:#92400e; }
+  .pill-gray { background:#f1f5f9; color:#475569; }
+  table { width:100%; border-collapse:collapse; }
+  th { background:#f8fafc; text-align:left; padding:8px 12px; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#475569; }
+  td { padding:8px 12px; border-bottom:1px solid #f1f5f9; font-size:12px; }
+  pre { background:#0f172a; color:#e2e8f0; padding:12px; border-radius:8px; overflow-x:auto; font-size:11px; }
+</style>
+<script src="/static/js/core/breadcrumbs.js" defer></script>
+</head>
+<body class="p-4 md:p-6">
+<div class="max-w-7xl mx-auto">
+  <div id="breadcrumbs-mount" class="mb-3"></div>
+
+  <div class="flex items-center justify-between mb-6 flex-wrap gap-2">
+    <div class="flex items-center gap-3">
+      <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center text-xl shadow">☁</div>
+      <div>
+        <h1 class="text-2xl font-bold text-slate-900">Supabase Merge Wizard</h1>
+        <p class="text-xs text-slate-500 mt-0.5">Bezbedan pregled i push lokalnih SQLite podataka u Supabase — po tabeli, sa per-row error report.</p>
+      </div>
+    </div>
+    <a href="/" class="btn btn-ghost">← CRM</a>
+  </div>
+
+  <div id="status-banner" class="mb-4"></div>
+
+  <div class="card p-4">
+    <div class="flex items-center justify-between mb-3">
+      <b class="text-sm">Tables</b>
+      <button onclick="pushAll()" class="btn btn-warn">⚠ Push ALL tables</button>
+    </div>
+    <div class="overflow-x-auto">
+      <table>
+        <thead><tr>
+          <th>Table</th><th>Source DB</th>
+          <th class="text-right">Local rows</th>
+          <th class="text-right">Supabase rows</th>
+          <th class="text-right">Diff</th>
+          <th class="text-center">Status</th>
+          <th class="text-right pr-3">Actions</th>
+        </tr></thead>
+        <tbody id="tbody"><tr><td colspan="7" class="text-center py-6 text-slate-400">⏳ Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="detail" class="mt-4"></div>
+</div>
+
+<script>
+let csrf='';
+async function _csrf(){ if(csrf)return csrf; csrf=(await(await fetch('/api/csrf/token')).json()).csrf_token||''; return csrf; }
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+
+if (window.setBreadcrumbs) window.setBreadcrumbs([
+  { label:'Operations', href:'/admin/supabase' },
+  { label:'Merge Wizard' },
+]);
+
+async function load() {
+  const r = await fetch('/api/admin/supabase/merge/status');
+  const j = await r.json();
+  const banner = document.getElementById('status-banner');
+  if (!j.supabase_ok) {
+    banner.innerHTML = `<div class="card p-4 bg-red-50 border-red-200 text-sm text-red-700">
+      ✗ Supabase backend nije dostupan: <code>${esc(j.supabase_error || 'unknown')}</code><br>
+      Proveri <code>SUPABASE_URL</code> i <code>SUPABASE_SERVICE_KEY</code> u .env pa Reload.</div>`;
+    document.getElementById('tbody').innerHTML = '<tr><td colspan="7" class="text-center py-8 text-slate-400">Supabase mora biti dostupan.</td></tr>';
+    return;
+  }
+  banner.innerHTML = `<div class="card p-3 bg-emerald-50 border-emerald-200 text-xs text-emerald-800">
+    ✓ Supabase backend OK. Ispod je stanje po tabeli — kliknite "Preview" pa "Push" na svakoj koju želite migrirati.</div>`;
+
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = j.tables.map(t => {
+    const supPill = t.supabase_exists
+      ? (t.diff === 0 ? '<span class="pill pill-green">In sync</span>'
+        : (t.diff > 0 ? `<span class="pill pill-amber">${t.diff} to push</span>`
+          : `<span class="pill pill-gray">supabase ahead</span>`))
+      : '<span class="pill pill-red">table missing in Supabase</span>';
+    return `<tr>
+      <td><code class="text-xs bg-slate-100 px-2 py-0.5 rounded">${esc(t.name)}</code></td>
+      <td class="text-slate-500">${esc(t.local_db)}</td>
+      <td class="text-right font-mono">${t.local_count}</td>
+      <td class="text-right font-mono">${t.supabase_exists ? t.supabase_count : '—'}</td>
+      <td class="text-right font-mono">${t.diff === null ? '—' : (t.diff > 0 ? '+' + t.diff : t.diff)}</td>
+      <td class="text-center">${supPill}</td>
+      <td class="text-right pr-3">
+        <button onclick="preview('${esc(t.name)}')" class="btn btn-ghost">Preview</button>
+        ${t.supabase_exists && t.local_count > 0
+          ? `<button onclick="pushOne('${esc(t.name)}', false)" class="btn btn-primary ml-1">Push →</button>`
+          : ''}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function preview(table) {
+  const detail = document.getElementById('detail');
+  detail.innerHTML = '<div class="card p-4"><div class="text-slate-400 text-sm">⏳ Loading preview…</div></div>';
+  const j = await (await fetch(`/api/admin/supabase/merge/preview/${table}?limit=3`)).json();
+  if (j.error) { detail.innerHTML = `<div class="card p-4 text-red-600 text-sm">✗ ${esc(j.error)}</div>`; return; }
+  detail.innerHTML = `
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-3">
+        <b class="text-sm">Preview: <code>${esc(table)}</code></b>
+        <button onclick="pushOne('${esc(table)}', true)" class="btn btn-ghost">🔬 Dry-run</button>
+      </div>
+      <div class="text-xs text-slate-500 mb-2">Coerced sample (ovako ce izgledati poslato u Supabase):</div>
+      <pre>${esc(JSON.stringify(j.sample_coerced, null, 2))}</pre>
+    </div>
+  `;
+}
+
+async function pushOne(table, dryRun) {
+  const detail = document.getElementById('detail');
+  detail.innerHTML = `<div class="card p-4"><div class="text-slate-400 text-sm">⏳ ${dryRun?'Dry-run':'Pushing'} <code>${esc(table)}</code>…</div></div>`;
+  const csrfTok = await _csrf();
+  const r = await fetch(`/api/admin/supabase/merge/push/${table}`, {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':csrfTok},
+    body: JSON.stringify({ dry_run: !!dryRun })
+  });
+  const j = await r.json();
+  if (j.error) { detail.innerHTML = `<div class="card p-4 text-red-600 text-sm">✗ ${esc(j.error)}</div>`; return; }
+  const errs = j.errors || [];
+  detail.innerHTML = `
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <b class="text-sm">Result: <code>${esc(table)}</code>${dryRun?' <span class="pill pill-amber">DRY RUN</span>':''}</b>
+        <span class="text-xs text-slate-500">${j.processed} processed · ${j.ok} ok · ${j.error_count||errs.length} errors</span>
+      </div>
+      ${dryRun ? `<pre>${esc(JSON.stringify(j.first_row_coerced, null, 2))}</pre>`
+        : (errs.length === 0
+          ? '<div class="text-emerald-700 bg-emerald-50 p-3 rounded text-sm">✅ Sve poslato bez greske.</div>'
+          : `<div class="text-red-700 bg-red-50 p-3 rounded text-sm mb-2">
+              ⚠ ${j.error_count || errs.length} errors — proveri Supabase schema za ovu tabelu ako je razlog isti u vise redova.
+             </div>
+             <div class="max-h-64 overflow-y-auto"><table class="w-full text-xs">
+              <thead><tr class="text-slate-500"><th class="text-left pb-1">idx</th><th class="text-left pb-1">id</th><th class="text-left pb-1">reason</th></tr></thead>
+              <tbody>${errs.map(e => `<tr>
+                <td class="pr-2 py-1 text-slate-400">${e.idx}</td>
+                <td class="pr-2 py-1 font-mono text-slate-600">${esc(e.id||'—').substring(0,40)}</td>
+                <td class="pr-2 py-1 text-red-700">${esc(e.reason)}</td>
+              </tr>`).join('')}</tbody>
+            </table></div>`)}
+    </div>
+  `;
+  if (!dryRun) load();
+}
+
+async function pushAll() {
+  if (!confirm('Push SVE tabele u Supabase? Preporucujem da prvo pokrenes push po tabeli da vidis errore.')) return;
+  const detail = document.getElementById('detail');
+  detail.innerHTML = '<div class="card p-4 text-slate-400 text-sm">⏳ Pushing all — ovo moze potrajati…</div>';
+  const csrfTok = await _csrf();
+  const r = await fetch('/api/admin/supabase/merge/push-all', {method:'POST', headers:{'X-CSRF-Token':csrfTok}});
+  const j = await r.json();
+  const rep = j.report || {};
+  const rows = Object.entries(rep).map(([t, s]) => `
+    <tr>
+      <td><code>${esc(t)}</code></td>
+      <td>${esc(s.status)}</td>
+      <td class="text-right">${s.ok || 0}</td>
+      <td class="text-right">${s.errors || 0}</td>
+      <td class="text-red-600 text-xs">${esc(s.first_error || '')}</td>
+    </tr>
+  `).join('');
+  detail.innerHTML = `<div class="card p-4">
+    <b class="text-sm">Push-All report</b>
+    <div class="overflow-x-auto mt-3"><table>
+      <thead><tr><th>Table</th><th>Status</th><th class="text-right">OK</th><th class="text-right">Errors</th><th>First error</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+  </div>`;
+  load();
+}
+
+load();
+</script>
+</body>
+</html>

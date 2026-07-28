@@ -106,9 +106,32 @@ def _rows_of(conn, table):
 
 
 def _push_batch(supabase, table, batch):
-    """Salje batch na Supabase preko postgrest upsert."""
-    resp = supabase.table(table).upsert(batch).execute()
-    return resp
+    """Salje batch na Supabase preko postgrest upsert.
+
+    Ako batch fail (obicno zbog jednog los-formatiranog reda), padamo natrag na
+    per-row rezim tako da vidimo TACAN red koji je razlog. Vraca (ok_count, errors_list).
+    """
+    try:
+        supabase.table(table).upsert(batch).execute()
+        return len(batch), []
+    except Exception as batch_err:
+        # Batch failed — probaj svaki red pojedinacno
+        ok = 0
+        errors = []
+        for i, row in enumerate(batch):
+            try:
+                supabase.table(table).upsert(row).execute()
+                ok += 1
+            except Exception as row_err:
+                errors.append({
+                    'row_index': i,
+                    'row_id': row.get('id') or row.get('token') or '?',
+                    'reason': f'{type(row_err).__name__}: {str(row_err)[:250]}',
+                })
+        if not errors:
+            # Sve prošlo pojedinacno — mozda je bio timeout na batch
+            log.warning(f'{table}: batch failed ({batch_err}) but per-row succeeded — retrying single mode')
+        return ok, errors
 
 
 def main():
@@ -179,22 +202,22 @@ def main():
             total_pushed += len(rows)
             continue
 
-        # batch upload
+        # batch upload sa per-row fallback (bez prekida)
+        table_errors = 0
         for i in range(0, len(rows), args.batch_size):
             batch = rows[i:i+args.batch_size]
-            try:
-                _push_batch(supabase, supabase_name, batch)
-                total_pushed += len(batch)
-                log.info(f'    batch {i//args.batch_size+1}: {len(batch)} uploaded (running total {total_pushed})')
-            except Exception as e:
+            ok, err_list = _push_batch(supabase, supabase_name, batch)
+            total_pushed += ok
+            for e in err_list:
                 total_errors += 1
-                log.error(f'    batch failed at row {i}: {e}')
-                # zadrzi prvi bad row u log
-                log.error(f'    first row of failed batch: {json.dumps(batch[0], default=str)[:500]}')
-                # PREKID — bezbedno je stati odmah nego naprosto slati dalje
-                log.error('Import PREKINUT zbog greske. Popravite pa pokrenite ponovo (upsert je idempotent).')
-                sys.exit(2)
+                table_errors += 1
+                if table_errors <= 5:
+                    log.error(f'    {sqlite_name} row_id={e["row_id"]} → {e["reason"]}')
+            log.info(f'    batch {i//args.batch_size+1}: {ok}/{len(batch)} ok, {len(err_list)} row errors '
+                     f'(table total {table_errors})')
             time.sleep(args.sleep_ms / 1000.0)
+        if table_errors > 5:
+            log.error(f'    ...{table_errors-5} more errors suppressed (see Supabase logs)')
 
     conn.close()
 
