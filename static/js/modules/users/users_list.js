@@ -112,8 +112,11 @@ function renderUsersView() {
                 try {
                     const res = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
                     const json = await res.json();
-                    if(json.error === "cannot_delete_self") alert(tLang('Sistem vam ne dozvoljava da obrišete sopstveni nalog.', 'System prevents you from deleting your own account.'));
-                    else renderUsersView();
+                    if (json.error === 'cannot_delete_self') {
+                        const msg = tLang('Ne možete obrisati sopstveni nalog.', 'You cannot delete your own account.');
+                        if (typeof showToast === 'function') showToast(msg, 'error');
+                        else alert(msg);
+                    } else renderUsersView();
                 } catch(err) { console.error(err); }
             }
         }));
@@ -431,7 +434,8 @@ function showUserForm(user = null) {
             closeModal(); renderUsersView();
         } catch(e) { 
             console.error(e);
-            alert(tLang('Došlo je do greške na serveru prilikom upisa.', 'Server-side layout persistence failure.'));
+            const _m = tLang('Došlo je do greške na serveru prilikom upisa.', 'Server error while saving.');
+            if (typeof showToast === 'function') showToast(_m, 'error'); else alert(_m);
             const btn = document.querySelector('#user-form button[type="submit"]');
             if(btn) { btn.disabled = false; btn.innerText = tLang('Sačuvaj Promene', 'Save Changes'); }
         }

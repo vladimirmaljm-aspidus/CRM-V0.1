@@ -255,7 +255,8 @@ function renderPortalActivityView() {
               </div>`;
             openModal(Utils.t('portalActivity.stats30d') || 'Client Analytics (30d)', html, null);
         } catch (e) {
-            alert('Failed to load stats: ' + e.message);
+            const _m = 'Failed to load stats: ' + e.message;
+            if (typeof showToast === 'function') showToast(_m, 'error'); else alert(_m);
         }
     });
 

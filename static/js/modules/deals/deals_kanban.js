@@ -103,10 +103,11 @@ function renderDealsKanbanView() {
           }
       });
       drake.on('drop', async (el, target, source, sibling) => {
-          if (!canEdit) { 
-              drake.cancel(true); 
-              alert(Utils.t('users.accessDeniedEdit')); 
-              return; 
+          if (!canEdit) {
+              drake.cancel(true);
+              if (typeof showToast === 'function') showToast(Utils.t('users.accessDeniedEdit'), 'error');
+              else alert(Utils.t('users.accessDeniedEdit'));
+              return;
           }
           const dealId = el.dataset.id;
           const newStatus = target.dataset.status;

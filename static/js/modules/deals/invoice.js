@@ -488,7 +488,7 @@ function renderInvoiceModal(dealId) {
                   await saveSingleItem('partners', buyer);
               }
           }
-      } else alert("PDF module missing.");
+      } else if (typeof showToast === 'function') { showToast('PDF module missing.', 'error'); } else alert("PDF module missing.");
       
       btn.innerHTML = originalText; btn.disabled = false;
   };

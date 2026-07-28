@@ -384,8 +384,8 @@ function showProfileModal() {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({new_password})
             });
-            if(res.ok) { alert(t('misc.saved')); closeModal(); }
-            else { alert(t('misc.loginErrorMsg')); }
+            if(res.ok) { showToast(t('misc.saved'), 'success'); closeModal(); }
+            else { showToast(t('misc.loginErrorMsg'), 'error'); }
         } catch(e) { console.error(e); }
     });
 
@@ -402,7 +402,7 @@ function showProfileModal() {
                 if (prev) prev.innerHTML = state.user.signature ? `<img src="${state.user.signature}" class="max-w-full max-h-full object-contain">` : `<span class="text-xs text-[var(--muted)]">—</span>`;
                 const rm = document.getElementById('sig-remove');
                 if (rm) rm.classList.toggle('hidden', !state.user.signature);
-            } else { alert(srLang ? 'Greška pri čuvanju potpisa.' : 'Error saving signature.'); }
+            } else { showToast(srLang ? 'Greška pri čuvanju potpisa.' : 'Error saving signature.', 'error'); }
         } catch(e) { console.error(e); }
     };
 
@@ -410,7 +410,7 @@ function showProfileModal() {
     if (fileInput) fileInput.addEventListener('change', async (e) => {
         const f = e.target.files[0]; if (!f) return;
         const url = await uploadFileToServer(f);
-        if (url) await saveSignature(url); else alert(srLang ? 'Otpremanje nije uspelo.' : 'Upload failed.');
+        if (url) await saveSignature(url); else showToast(srLang ? 'Otpremanje nije uspelo.' : 'Upload failed.', 'error');
         e.target.value = '';
     });
     const rmBtn = document.getElementById('sig-remove');
@@ -447,7 +447,7 @@ function showProfileModal() {
         try {
             const r = await fetch('/api/auth/totp/setup_start', {method: 'POST'});
             const j = await r.json();
-            if (!r.ok) { alert(j.message || 'Failed to start 2FA setup'); return; }
+            if (!r.ok) { showToast(j.message || 'Failed to start 2FA setup', 'error'); return; }
             // Show QR + code entry modal
             const qrUri = encodeURIComponent(j.provisioning_uri);
             const setupHtml = `
@@ -496,7 +496,7 @@ function showProfileModal() {
                         <button type="button" onclick="const t=this.parentNode.querySelectorAll('.font-mono'); navigator.clipboard.writeText(Array.from(t).map(e=>e.textContent).join('\\n')); this.textContent='✓ Copied';" class="btn btn-primary small w-full">📋 Copy all</button>
                     </div>`, () => { refreshTwofaStatus(); });
             });
-        } catch (e) { console.error(e); alert('2FA setup failed'); }
+        } catch (e) { console.error(e); showToast('2FA setup failed', 'error'); }
     });
 
     if (twofaDisable) twofaDisable.addEventListener('click', async () => {
@@ -515,8 +515,8 @@ function showProfileModal() {
             body: JSON.stringify({password, code}),
         });
         const j = await r.json();
-        if (r.ok) { alert(srLang ? '2FA isključeno.' : '2FA disabled.'); refreshTwofaStatus(); }
-        else alert(j.message || 'Failed to disable 2FA');
+        if (r.ok) { showToast(srLang ? '2FA isključeno.' : '2FA disabled.', 'success'); refreshTwofaStatus(); }
+        else showToast(j.message || 'Failed to disable 2FA', 'error');
     });
 }
 
@@ -809,14 +809,22 @@ async function showPortalPendingModal(kind) {
         btn.addEventListener('click', async (e) => {
             const req = e.currentTarget.dataset.req;
             const action = e.currentTarget.dataset.action;
-            if (!confirm(action === 'approve' ? (srLang ? 'Odobriti i primeniti izmene?' : 'Approve and apply changes?') : (srLang ? 'Odbiti zahtev?' : 'Reject request?'))) return;
+            const title = action === 'approve'
+                ? (srLang ? 'Odobri i primeni izmene' : 'Approve & apply changes')
+                : (srLang ? 'Odbij zahtev' : 'Reject request');
+            const desc = action === 'approve'
+                ? (srLang ? 'Ove izmene će se odmah primeniti na partnerskom profilu.' : 'These changes will be applied to the partner profile immediately.')
+                : (srLang ? 'Klijent će biti obavešten da je zahtev odbijen.' : 'The partner will be notified that the request was rejected.');
+            const ok = await (window.askConfirm ? window.askConfirm(title, desc, { okText: title, danger: action === 'reject' }) : confirm(desc));
+            if (!ok) return;
             const r = await fetch(`/api/portal/admin/profile_requests/${req}/review`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action }) });
             if (r.ok) {
+                showToast(srLang ? '✓ Zahtev obrađen.' : '✓ Request processed.', 'success');
                 showPortalPendingModal('profile_requests');
                 if (typeof loadFromStorage === 'function') await loadFromStorage();
                 checkAllNotifications();
             } else {
-                alert(srLang ? 'Greška.' : 'Error.');
+                showToast(srLang ? 'Greška prilikom obrade zahteva.' : 'Error processing request.', 'error');
             }
         });
     });
@@ -824,12 +832,22 @@ async function showPortalPendingModal(kind) {
         btn.addEventListener('click', async (e) => {
             const pid = e.currentTarget.dataset.prod;
             const action = e.currentTarget.dataset.action;
-            if (!confirm(action === 'approve' ? (srLang ? 'Odobriti ovaj proizvod?' : 'Approve this product?') : (srLang ? 'Odbiti proizvod?' : 'Reject product?'))) return;
+            const title = action === 'approve'
+                ? (srLang ? 'Odobri proizvod' : 'Approve product')
+                : (srLang ? 'Odbij proizvod' : 'Reject product');
+            const desc = action === 'approve'
+                ? (srLang ? 'Proizvod će postati javno vidljiv u vašem katalogu.' : 'The product will become visible in your public catalog.')
+                : (srLang ? 'Klijent će biti obavešten da je proizvod odbijen.' : 'The partner will be notified that the product was rejected.');
+            const ok = await (window.askConfirm ? window.askConfirm(title, desc, { okText: title, danger: action === 'reject' }) : confirm(desc));
+            if (!ok) return;
             const r = await fetch(`/api/portal/admin/products/review/${pid}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ action }) });
             if (r.ok) {
+                showToast(srLang ? '✓ Odgovor sačuvan.' : '✓ Response saved.', 'success');
                 showPortalPendingModal('products');
                 if (typeof loadFromStorage === 'function') await loadFromStorage();
                 checkAllNotifications();
+            } else {
+                showToast(srLang ? 'Greška.' : 'Error.', 'error');
             }
         });
     });
