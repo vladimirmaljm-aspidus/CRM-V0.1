@@ -151,6 +151,28 @@
             </div>
             <div id="storage-status"><span class="text-sm text-slate-400">Click Refresh to load bucket status…</span></div>
         </div>
+
+        <!-- OPERATIONS CENTER: Auth Sync, Reconcile, Sync-Back -->
+        <div class="card p-5 mb-4">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="font-semibold text-slate-900 flex items-center gap-2"><span>⚙️</span> Operations Center</h2>
+                <a href="/admin/mail-queue" class="text-xs text-indigo-600 hover:underline">→ Mail Queue</a>
+            </div>
+            <div class="rounded-xl bg-slate-50 border border-slate-200 p-4 text-xs text-slate-600 leading-relaxed mb-3">
+                <strong class="text-slate-800">Šta ovo radi:</strong>
+                <ul class="list-disc pl-4 mt-1 space-y-0.5">
+                    <li><b>Auth Sync</b> — uparuje Supabase Auth users sa lokalnim partners (repair za propustene webhook-ove).</li>
+                    <li><b>Reconcile</b> — poredi row count u SQLite vs Supabase Postgres i prikazuje drift.</li>
+                    <li><b>Sync-Back</b> — kopira Supabase-only redove (napr. iz Dashboard-a) nazad u SQLite.</li>
+                </ul>
+            </div>
+            <div class="flex flex-wrap gap-2 mb-3">
+                <button class="btn btn-primary" onclick="runAuthSync()" id="btn-auth-sync">🔗 Auth Sync</button>
+                <button class="btn btn-ghost" onclick="runReconcile()" id="btn-reconcile">📊 Reconcile</button>
+                <button class="btn btn-warn" onclick="runSyncBack(true)" id="btn-syncback-dry">↻ Sync-Back (dry-run)</button>
+            </div>
+            <div id="ops-output" class="text-xs"></div>
+        </div>
     </div>
 
     <!-- IN-APP MODAL (za confirm / alert / prompt) -->
@@ -437,9 +459,103 @@
             }
         }
 
+        // ==========================================================
+        //  OPERATIONS CENTER handlers
+        // ==========================================================
+        async function runAuthSync() {
+            const btn = document.getElementById('btn-auth-sync');
+            const out = document.getElementById('ops-output');
+            btn.disabled = true; btn.textContent = '⏳ Syncing…';
+            out.innerHTML = '<div class="text-slate-400">Fetching Supabase Auth users…</div>';
+            try {
+                const res = await api('/api/admin/supabase-auth/sync', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok || !data.ok) { toast('✗ ' + (data.error || 'Failed'), 'error'); out.innerHTML = ''; return; }
+                const s = data.summary || {};
+                out.innerHTML = `<div class="rounded-lg bg-emerald-50 border border-emerald-200 p-3">
+                    <b>✓ Auth sync complete.</b> Matched: <b>${s.matched}</b>, orphan Auth users (no partner): <b>${s.missing_partner}</b>, errors: <b>${s.errors}</b>.
+                </div>`;
+                toast(`✓ ${s.matched} matched, ${s.missing_partner} orphan.`, 'success');
+            } catch (e) { toast('Network error: ' + e.message, 'error'); }
+            finally { btn.disabled = false; btn.textContent = '🔗 Auth Sync'; }
+        }
+
+        async function runReconcile() {
+            const btn = document.getElementById('btn-reconcile');
+            const out = document.getElementById('ops-output');
+            btn.disabled = true; btn.textContent = '⏳ Counting…';
+            out.innerHTML = '<div class="text-slate-400">Reconciling row counts across all tables…</div>';
+            try {
+                const res = await api('/api/supabase/reconcile', { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok || !data.ok) { toast('✗ ' + (data.error || 'Failed'), 'error'); out.innerHTML = ''; return; }
+                const rows = data.results || [];
+                const html = `<div class="rounded-lg border border-slate-200 overflow-hidden">
+                    <table class="w-full text-xs">
+                        <thead class="bg-slate-50"><tr>
+                            <th class="p-2 text-left">Table</th><th class="p-2 text-right">SQLite</th>
+                            <th class="p-2 text-right">Supabase</th><th class="p-2 text-left">Status</th>
+                        </tr></thead>
+                        <tbody>${rows.map(r => {
+                            const badge = r.status === 'ok' ? '<span class="badge badge-green">OK</span>'
+                                : r.status === 'sp_error' ? '<span class="badge badge-red">SP error</span>'
+                                : '<span class="badge badge-amber">DRIFT</span>';
+                            return `<tr class="border-t border-slate-100">
+                                <td class="p-2 font-mono">${r.source_table}</td>
+                                <td class="p-2 text-right">${r.sqlite_count ?? '—'}</td>
+                                <td class="p-2 text-right">${r.supabase_count ?? '—'}</td>
+                                <td class="p-2">${badge}</td>
+                            </tr>`;
+                        }).join('')}</tbody>
+                    </table></div>
+                    <div class="text-xs mt-2 ${data.drift ? 'text-amber-700' : 'text-emerald-700'}">
+                        ${data.drift ? '⚠ Drift detected. Consider Sync-Back or Migration.' : '✓ All tables aligned.'}
+                    </div>`;
+                out.innerHTML = html;
+                toast(data.drift ? '⚠ Drift detected' : '✓ Aligned', data.drift ? 'warn' : 'success');
+            } catch (e) { toast('Network error: ' + e.message, 'error'); }
+            finally { btn.disabled = false; btn.textContent = '📊 Reconcile'; }
+        }
+
+        async function runSyncBack(dryRun) {
+            if (!dryRun) {
+                const ok = await appModal({
+                    title: 'Sync-Back (COMMIT)',
+                    body: 'Ovo ce <b>zaista upisati</b> Supabase-only redove u lokalnu SQLite bazu. UPSERT po id (idempotent). Pokreni <b>dry-run prvo</b> da vidis sta ce se desiti.',
+                    okText: 'Yes, sync back',
+                });
+                if (!ok) return;
+            }
+            const btn = document.getElementById('btn-syncback-dry');
+            const out = document.getElementById('ops-output');
+            btn.disabled = true; btn.textContent = '⏳ Working…';
+            out.innerHTML = '<div class="text-slate-400">Fetching Supabase IDs and comparing…</div>';
+            try {
+                const res = await api('/api/supabase/sync-back', {
+                    method: 'POST',
+                    body: JSON.stringify({ confirm: !dryRun })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.ok) { toast('✗ ' + (data.error || 'Failed'), 'error'); out.innerHTML = ''; return; }
+                const rows = data.results || [];
+                out.innerHTML = `<div class="rounded-lg border border-slate-200 p-3 text-xs">
+                    <b>${dryRun ? 'DRY-RUN' : 'COMMITTED'}:</b> Total ${dryRun ? 'to sync' : 'synced'}: <b>${data.total_pushed || 0}</b>
+                    ${data.total_errors ? `, errors: <b class="text-red-600">${data.total_errors}</b>` : ''}
+                    <ul class="mt-2 space-y-1">
+                        ${rows.map(r => `<li>${r.source_table} → ${r.n_pushed} rows${r.errors?.length ? ` (<span class="text-red-600">${r.errors.length} errors</span>)` : ''}</li>`).join('')}
+                    </ul>
+                    ${dryRun ? '<div class="mt-3"><button class="btn btn-warn small" onclick="runSyncBack(false)">Confirm & sync back for real</button></div>' : ''}
+                </div>`;
+                toast(dryRun ? `↻ Would sync ${data.total_pushed} rows` : `✓ Synced ${data.total_pushed} rows`, 'success');
+            } catch (e) { toast('Network error: ' + e.message, 'error'); }
+            finally { btn.disabled = false; btn.textContent = '↻ Sync-Back (dry-run)'; }
+        }
+        window.runSyncBack = runSyncBack;
+
         (async () => {
             await loadCsrf();
             await refreshStatus();
+            refreshStorage();  // auto-load Storage panel odmah
             setInterval(() => { if (!pollTimer) refreshStatus(); }, 15000);
         })();
     </script>

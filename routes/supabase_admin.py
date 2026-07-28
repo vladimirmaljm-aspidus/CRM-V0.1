@@ -542,11 +542,17 @@ def supabase_set_flag():
     value = str(body.get("value", "")).strip().lower()
 
     allowed = {"USE_SUPABASE_AUTH", "USE_SUPABASE_DB",
-               "USE_SUPABASE_STORAGE", "DUAL_WRITE_MODE"}
+               "USE_SUPABASE_STORAGE", "DUAL_WRITE_MODE",
+               "DB_BACKEND", "BACKUP_OFFSITE"}
     if flag not in allowed:
         return jsonify({"error": f"Flag '{flag}' not allowed."}), 400
-    if value not in {"true", "false", "1", "0", "yes", "no"}:
-        return jsonify({"error": "Value must be true/false."}), 400
+    # DB_BACKEND uzima 'rest' ili 'postgres', ostali su bool
+    if flag == "DB_BACKEND":
+        if value not in {"rest", "postgres", "pg"}:
+            return jsonify({"error": "DB_BACKEND must be 'rest' or 'postgres'."}), 400
+    else:
+        if value not in {"true", "false", "1", "0", "yes", "no"}:
+            return jsonify({"error": "Value must be true/false."}), 400
 
     old = os.environ.get(flag, "false")
     os.environ[flag] = value
@@ -781,3 +787,105 @@ def admin_mail_queue_drain():
         return jsonify({"ok": True, "stats": stats or {}})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}), 500
+
+
+# ==========================================================
+#  RECONCILE + SYNC-BACK (Operations Center)
+# ==========================================================
+
+@supabase_admin_bp.route('/api/supabase/reconcile', methods=['POST'])
+@login_required
+def supabase_reconcile():
+    r = _admin_only()
+    if r: return r
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        try:
+            from scripts.reconcile_sqlite_supabase import _get_supabase_client, _count_sqlite, _count_supabase, _open_db
+            from scripts.migrate_data_to_supabase import MIGRATION_PLAN
+        except ImportError as e:
+            return jsonify({'ok': False, 'error': f'reconcile module import failed: {e}'}), 500
+        client = _get_supabase_client()
+        conns = {src: _open_db(src) for src in ('crm', 'portal', 'audit')}
+        results = []
+        drift = False
+        for src, source_table, target_table, _ in MIGRATION_PLAN:
+            sq = _count_sqlite(conns.get(src), source_table)
+            sp_raw = _count_supabase(client, target_table)
+            sp = None; sp_err = None
+            if isinstance(sp_raw, dict) and '__err__' in sp_raw:
+                sp_err = sp_raw['__err__']
+            else:
+                sp = sp_raw
+            status = 'ok'
+            if sp_err: status = 'sp_error'
+            elif sq is None: status = 'sqlite_missing'
+            elif sq != sp: status = 'drift'; drift = True
+            results.append({
+                'source': src, 'source_table': source_table, 'target_table': target_table,
+                'sqlite_count': sq, 'supabase_count': sp,
+                'supabase_error': sp_err, 'status': status,
+            })
+        for c in conns.values():
+            if c is not None: c.close()
+        return jsonify({'ok': True, 'drift': drift, 'results': results})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'{type(e).__name__}: {str(e)[:200]}'}), 500
+
+
+@supabase_admin_bp.route('/api/supabase/sync-back', methods=['POST'])
+@login_required
+def supabase_sync_back():
+    r = _admin_only()
+    if r: return r
+    body = request.get_json(silent=True) or {}
+    confirm = bool(body.get('confirm'))
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        try:
+            from scripts.reconcile_sqlite_supabase import _get_supabase_client, _sample_ids_sqlite, _push_to_sqlite, _open_db
+            from scripts.migrate_data_to_supabase import MIGRATION_PLAN
+        except ImportError as e:
+            return jsonify({'ok': False, 'error': f'sync-back module import failed: {e}'}), 500
+        client = _get_supabase_client()
+        conns = {src: _open_db(src) for src in ('crm', 'portal', 'audit')}
+        results = []
+        total_pushed = 0
+        total_errors = 0
+        for src, source_table, target_table, _ in MIGRATION_PLAN:
+            sq_conn = conns.get(src)
+            sq_ids = set(map(str, _sample_ids_sqlite(sq_conn, source_table, 10000)))
+            sp_ids_all = []
+            try:
+                offset = 0
+                while offset < 50000:
+                    r2 = client.table(target_table).select('id').range(offset, offset + 999).execute()
+                    page = [row.get('id') for row in (r2.data or [])]
+                    if not page: break
+                    sp_ids_all.extend(page)
+                    if len(page) < 1000: break
+                    offset += 1000
+            except Exception as e:
+                results.append({'source_table': source_table, 'n_pushed': 0, 'errors': [str(e)[:120]]})
+                continue
+            sp_ids = set(map(str, sp_ids_all))
+            missing = list(sp_ids - sq_ids)
+            if not missing:
+                results.append({'source_table': source_table, 'n_pushed': 0, 'errors': []})
+                continue
+            n_pushed, errors = _push_to_sqlite(client, src, source_table, target_table, missing, dry_run=not confirm)
+            results.append({'source_table': source_table, 'n_pushed': n_pushed, 'errors': errors})
+            total_pushed += n_pushed
+            total_errors += len(errors)
+        for c in conns.values():
+            if c is not None: c.close()
+        log_audit('EDIT' if confirm else 'READ', 'system',
+                  f'Sync-back {"COMMIT" if confirm else "DRY-RUN"}: {total_pushed} rows, {total_errors} errors',
+                  is_suspicious=confirm)
+        return jsonify({
+            'ok': True, 'confirmed': confirm,
+            'total_pushed': total_pushed, 'total_errors': total_errors,
+            'results': results,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'{type(e).__name__}: {str(e)[:200]}'}), 500

@@ -412,3 +412,64 @@ def portal_heartbeat(token):
         "remaining_inactivity": remaining_inactivity,
         "inactivity_ttl": inactivity_ttl,
     })
+
+
+# ==========================================================
+#  TASK #41: BIDIRECTIONAL KYC SYNC — PREFILL FROM CRM
+# ==========================================================
+# Portal klijent kad otvori KYC formu, vidi trenutno poznata polja
+# iz CRM-a (ako je admin nesto vec upisao ili je klijent ranije poslao
+# KYC koji je odobren). Klijent moze da menja/dopunjuje pre submita.
+#
+# Ovo je "single source of truth" — CRM je autoritativan; portal je view.
+# Novi KYC submit pravi profile_change_request za polja koja su promenjena.
+
+@portal_bp.route('/api/portal/kyc/prefill/<token>', methods=['GET'])
+def portal_kyc_prefill(token):
+    """Vrati trenutno poznata partner polja u obliku pogodnom za KYC formu.
+    Sluzi za pre-fill — klijent onda edituje samo sta treba."""
+    auth_header = request.headers.get('X-Portal-Auth')
+    if not verify_portal_session(token, auth_header):
+        return jsonify({"error": "session_invalid"}), 401
+
+    conn = sqlite3.connect(DB_FILE, timeout=15.0)
+    try:
+        c = conn.cursor()
+        partner_id, partner = find_partner_by_token(c, token, enforce_active=True)
+    finally:
+        conn.close()
+    if not partner:
+        return jsonify({"error": "not_found"}), 404
+
+    kyc = partner.get('kyc') or {}
+    contact = partner.get('contact') if isinstance(partner.get('contact'), dict) else {}
+    addr = partner.get('address') if isinstance(partner.get('address'), dict) else {}
+
+    prefill = {
+        'companyName':   partner.get('companyName') or '',
+        'regNo':         kyc.get('regNo')   or partner.get('regNo')   or '',
+        'taxId':         kyc.get('taxId')   or partner.get('taxId')   or '',
+        'website':       kyc.get('website') or partner.get('website') or '',
+        'industry':      kyc.get('industry') or '',
+        'contactPhone':  contact.get('phone') or partner.get('phone') or '',
+        'contactEmail':  contact.get('email') or partner.get('email') or '',
+        'contactPerson': contact.get('person') or '',
+        'address':       addr.get('street') if addr.get('street') else (partner.get('address') if isinstance(partner.get('address'), str) else ''),
+        'city':          addr.get('city') or '',
+        'country':       addr.get('country') or '',
+        'bankName':      (kyc.get('bank') or {}).get('name') or partner.get('bankName') or '',
+        'bankIban':      (kyc.get('bank') or {}).get('iban') or partner.get('accountNumber') or '',
+        'bankSwift':     (kyc.get('bank') or {}).get('swift') or partner.get('swift') or '',
+        'kycStatus':     kyc.get('status') or 'pending',
+        'entityType':    kyc.get('entityType') or 'company',
+        'directors':     kyc.get('directors') or [],
+        'ubos':          kyc.get('ubos') or [],
+        'files':         kyc.get('files') or {},
+    }
+
+    return jsonify({
+        "ok": True,
+        "prefill": prefill,
+        "readonly_kyc_status": prefill['kycStatus'] == 'approved',
+        "hint": "These fields are pre-filled from your CRM record. Edit and re-submit to request an update.",
+    })

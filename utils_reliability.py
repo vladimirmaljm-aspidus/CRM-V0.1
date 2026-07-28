@@ -288,6 +288,87 @@ def health_disk() -> dict:
         return {"ok": False, "status": "error", "detail": str(e)[:200]}
 
 
+def health_ocr() -> dict:
+    """Koji OCR back-endovi su dostupni na ovom serveru."""
+    try:
+        from utils_ocr import has_ocr_available
+        avail = has_ocr_available()
+        n_ok = sum(1 for v in avail.values() if v)
+        detail = ", ".join(f"{k}={'✓' if v else '✗'}" for k, v in avail.items())
+        return {
+            "ok": n_ok >= 1,  # bar jedan back-end
+            "status": "checked",
+            "detail": detail + f" ({n_ok}/{len(avail)} back-ends available)",
+        }
+    except Exception as e:
+        return {"ok": False, "status": "error", "detail": str(e)[:200]}
+
+
+def health_mail_queue() -> dict:
+    """Trenutno stanje email queue-a — broj pending / failed / dead."""
+    try:
+        import sqlite3
+        from config import DB_FILE
+        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
+            conn.execute('PRAGMA busy_timeout=5000')
+            counts = {}
+            for st in ("pending", "sending", "sent", "failed", "dead"):
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM email_queue WHERE status=?", (st,)
+                ).fetchone()
+                counts[st] = row[0] if row else 0
+        failed = counts.get('failed', 0) + counts.get('dead', 0)
+        return {
+            "ok": failed == 0,
+            "status": "healthy" if failed == 0 else "has_failures",
+            "detail": (f"pending={counts.get('pending', 0)}, "
+                       f"failed={counts.get('failed', 0)}, "
+                       f"dead={counts.get('dead', 0)}, "
+                       f"sent={counts.get('sent', 0)}")
+        }
+    except Exception as e:
+        return {"ok": False, "status": "error", "detail": str(e)[:200]}
+
+
+def health_data_layer() -> dict:
+    """Aktivni data_layer backend + probe za sanity."""
+    try:
+        from data_layer import backend_name, health as _dl_health
+        name = backend_name()
+        try:
+            info = _dl_health()
+        except Exception as e:
+            return {"ok": False, "status": "backend_error",
+                    "detail": f"backend={name}, error={type(e).__name__}: {str(e)[:120]}"}
+        if info.get("ok"):
+            return {"ok": True, "status": "reachable",
+                    "detail": f"backend={name}, partners={info.get('partners_count', '?')}"}
+        return {"ok": False, "status": "backend_error",
+                "detail": f"backend={name}, error={info.get('error', 'unknown')[:120]}"}
+    except ImportError:
+        return {"ok": True, "status": "not_active",
+                "detail": "data_layer facade nije uvezen (SQLite-only mod)"}
+    except Exception as e:
+        return {"ok": False, "status": "error", "detail": str(e)[:200]}
+
+
+def health_webhook() -> dict:
+    """Da li je WEBHOOK_SECRET postavljen — bez toga webhook odbija sve."""
+    try:
+        import os as _os
+        secret = _os.environ.get('WEBHOOK_SECRET', '').strip()
+        if not secret:
+            return {"ok": False, "status": "not_configured",
+                    "detail": "WEBHOOK_SECRET nije postavljen u .env"}
+        if len(secret) < 16:
+            return {"ok": False, "status": "weak_secret",
+                    "detail": f"secret prekratak ({len(secret)} chars, min 16)"}
+        return {"ok": True, "status": "configured",
+                "detail": f"secret length {len(secret)} chars"}
+    except Exception as e:
+        return {"ok": False, "status": "error", "detail": str(e)[:200]}
+
+
 def full_health() -> dict:
     """Vraća sveobuhvatni health report — koristi ga /api/health endpoint."""
     checks = {
@@ -298,6 +379,10 @@ def full_health() -> dict:
         "smtp":              health_smtp(),
         "backup":            health_backup(),
         "disk":              health_disk(),
+        "ocr":               health_ocr(),
+        "mail_queue":        health_mail_queue(),
+        "webhook":           health_webhook(),
+        "data_layer":        health_data_layer(),
     }
     overall_ok = all(c.get("ok") for c in checks.values() if c.get("status") not in ("disabled", "not_configured"))
     return {

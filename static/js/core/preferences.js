@@ -118,9 +118,28 @@
     applyPrefs(getPrefs());
 
     // --- Preferences modal ---
-    function openPreferences() {
+    async function openPreferences() {
         const cur = getPrefs();
-        const user = (window.state && window.state.user) || {};
+        // Uvek dovuci svez profil sa servera — state.user moze biti stale.
+        let user = (window.state && window.state.user) || {};
+        try {
+            const r = await fetch('/api/users/me', { credentials: 'same-origin' });
+            if (r.ok) {
+                const fresh = await r.json();
+                user = Object.assign({}, user, fresh);
+                if (window.state && window.state.user) Object.assign(window.state.user, fresh);
+                // Restore notif checkboxes iz notif_prefs (server je izvor istine)
+                if (fresh.notif_prefs) {
+                    const np = fresh.notif_prefs;
+                    setPrefs({
+                        notifPortal: np.portal !== false,
+                        notifDeals:  np.deals !== false,
+                        notifEmail:  np.email === true,
+                        notifSound:  np.sound === true,
+                    });
+                }
+            }
+        } catch(_) {}
 
         const html = `
         <div class="pref-modal-overlay" onclick="if(event.target===this)closePreferences()">
@@ -630,10 +649,10 @@
     window.open2FA = open2FA;
 
     // Keyboard shortcut Cmd/Ctrl + , to open
-    document.addEventListener('keydown', e => {
+    document.addEventListener('keydown', async e => {
         if ((e.metaKey || e.ctrlKey) && e.key === ',') {
             e.preventDefault();
-            openPreferences();
+            await openPreferences();
         }
     });
 
