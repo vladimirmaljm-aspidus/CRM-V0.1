@@ -463,6 +463,25 @@
                     <div id="kyc-status-line" class="mt-3 hidden"></div>
                 </div>
 
+                <!-- Instructions panel — pomaze klijentu da razume sta se trazi PRE nego sto pocne da unosi -->
+                <div class="mb-6 rounded-xl border border-blue-200 bg-blue-50/60 p-4">
+                    <div class="flex items-start gap-3">
+                        <span class="text-2xl leading-none">📋</span>
+                        <div class="flex-1 text-sm text-slate-700 space-y-2">
+                            <b class="text-slate-900">Before you start</b>
+                            <ul class="list-disc pl-4 space-y-1 text-xs">
+                                <li>Fields marked with <span class="text-red-500 font-bold">*</span> are <b>mandatory</b> — the form cannot be submitted without them.</li>
+                                <li>All data is <b>end-to-end encrypted</b> in a Fernet-AES vault and never leaves your account without your consent.</li>
+                                <li>For company entities you'll need: Reg No., VAT/Tax ID, directors' passports, and at least one bank account (IBAN + SWIFT/BIC).</li>
+                                <li>Individuals only need passport / ID scan and a recent utility bill (proof of home address, issued within last 3 months).</li>
+                                <li>Sanctions and PEP screening runs automatically after submission. If your entity is flagged, an admin will review manually.</li>
+                                <li>You can save partial progress and continue later — data persists on this device until submission.</li>
+                            </ul>
+                            <p class="text-xs text-slate-500 pt-1 italic">Need help? Contact your account manager or the compliance team.</p>
+                        </div>
+                    </div>
+                </div>
+
                 <form id="kyc-form" class="space-y-8">
                     <!-- 0. Entity type: Company (legal entity) vs Individual (private person)
                          Sve legal-entity polja (Directors, UBO, Bank...) su vidljiva samo kod

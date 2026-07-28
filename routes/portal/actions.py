@@ -917,6 +917,47 @@ def portal_upload(token):
     if not urls:
         return jsonify({"error": "No valid or safe files uploaded."}), 400
 
+    # OCR extraction u background thread-u — ne blokira response.
+    # Rezultat se cesuje u file_text tabeli za buducu pretragu.
+    try:
+        import threading
+        def _extract_bg(pairs, pid):
+            try:
+                import sqlite3 as _sq
+                from utils_ocr import extract_text as _extr, summarize_text as _summ
+                import uuid as _uuid, time as _time
+                for local_path, url in pairs:
+                    try:
+                        text = _extr(local_path)
+                        if not text:
+                            continue
+                        preview = _summ(text, max_len=500)
+                        with _sq.connect(DB_FILE, timeout=15.0) as _c:
+                            _c.execute('PRAGMA busy_timeout=15000')
+                            _c.execute(
+                                "INSERT OR REPLACE INTO file_text "
+                                "(id, file_url, partner_id, filename, text_preview, full_text, char_count, extracted_at) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                (str(_uuid.uuid4()), url, pid, os.path.basename(local_path),
+                                 preview, text, len(text),
+                                 _time.strftime('%Y-%m-%dT%H:%M:%SZ', _time.gmtime()))
+                            )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        # Sakupi (local_path, url) parove
+        pairs = []
+        for u in urls:
+            fname = u.rsplit('/', 1)[-1]
+            local = os.path.join(PORTAL_UPLOAD_FOLDER, fname)
+            if os.path.exists(local):
+                pairs.append((local, u))
+        if pairs:
+            threading.Thread(target=_extract_bg, args=(pairs, partner_id), daemon=True).start()
+    except Exception:
+        pass
+
     return jsonify({"status": "success", "urls": urls})
 
 @portal_bp.route('/api/portal/kyc/submit/<token>', methods=['POST'])

@@ -9,3 +9,4 @@ blinker==1.7.0
 gunicorn==21.2.0
 reportlab==4.0.7
 supabase==2.0.0
+pdfminer.six==20240706

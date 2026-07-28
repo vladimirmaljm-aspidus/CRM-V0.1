@@ -374,3 +374,68 @@ def bulk_zip():
         as_attachment=True,
         download_name=f'aspidus-documents-{ts}.zip'
     )
+
+
+# ==========================================================
+#  OCR / TEXT PREVIEW (v22.4)
+# ==========================================================
+
+@documents_bp.route('/api/documents/text-preview', methods=['GET'])
+@login_required
+def document_text_preview():
+    """Vrati text_preview za dati file_url (query param `url`)."""
+    file_url = (request.args.get('url') or '').strip()
+    if not file_url:
+        return jsonify({'error': 'url_required'}), 400
+    import sqlite3
+    from config import DB_FILE
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
+            conn.execute('PRAGMA busy_timeout=10000')
+            row = conn.execute(
+                "SELECT text_preview, char_count, extracted_at, partner_id "
+                "FROM file_text WHERE file_url=?",
+                (file_url,)
+            ).fetchone()
+    except sqlite3.OperationalError as e:
+        return jsonify({'error': str(e)[:200]}), 500
+    if not row:
+        return jsonify({'preview': None, 'available': False,
+                        'hint': 'OCR nije jos izvrsen ili tip fajla nije podrzan.'})
+    return jsonify({
+        'preview': row[0], 'char_count': row[1] or 0,
+        'extracted_at': row[2], 'partner_id': row[3],
+        'available': True
+    })
+
+
+@documents_bp.route('/api/documents/search', methods=['GET'])
+@login_required
+def document_search():
+    """Full-text pretraga kroz OCR-ovane dokumente.
+    Query param `q` — string za pretragu (case-insensitive).
+    Vraca do 50 fajlova sa matchujuci partner_id + preview."""
+    q = (request.args.get('q') or '').strip()
+    if len(q) < 3:
+        return jsonify({'error': 'query_too_short',
+                        'hint': 'Minimalna duzina: 3 karaktera.'}), 400
+    import sqlite3
+    from config import DB_FILE
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
+            conn.execute('PRAGMA busy_timeout=10000')
+            rows = conn.execute(
+                "SELECT file_url, partner_id, filename, text_preview, extracted_at "
+                "FROM file_text WHERE full_text LIKE ? COLLATE NOCASE "
+                "ORDER BY extracted_at DESC LIMIT 50",
+                (f'%{q}%',)
+            ).fetchall()
+    except sqlite3.OperationalError as e:
+        return jsonify({'error': str(e)[:200]}), 500
+    return jsonify({
+        'query': q, 'total': len(rows),
+        'results': [{
+            'file_url': r[0], 'partner_id': r[1], 'filename': r[2],
+            'preview': r[3], 'extracted_at': r[4]
+        } for r in rows]
+    })

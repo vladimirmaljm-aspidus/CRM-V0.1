@@ -88,6 +88,24 @@ def init_db():
                 c.execute("ALTER TABLE users ADD COLUMN phone TEXT")
             if 'notif_prefs' not in cols:
                 c.execute("ALTER TABLE users ADD COLUMN notif_prefs TEXT")
+
+            # v22: file_text — OCR/text extract cache za KYC uploads.
+            # Kada admin trazi "svi partneri koji imaju rec X u dokumentima",
+            # ova tabela je full-text search index. Popunjava se u background
+            # thread-u odmah posle uspesnog uploada.
+            c.execute('''CREATE TABLE IF NOT EXISTS file_text (
+                id TEXT PRIMARY KEY,
+                file_url TEXT NOT NULL UNIQUE,
+                partner_id TEXT,
+                filename TEXT,
+                content_type TEXT,
+                text_preview TEXT,
+                full_text TEXT,
+                char_count INTEGER,
+                extracted_at TEXT
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_filetext_partner ON file_text(partner_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_filetext_url ON file_text(file_url)')
             
             # Kreiranje tabela za sve entitete
             tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
