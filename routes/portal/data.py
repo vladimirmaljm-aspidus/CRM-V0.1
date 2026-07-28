@@ -341,3 +341,44 @@ def submit_profile_change_request(token):
 
     log_audit('CREATE', 'portal', f'Profile change request submitted by partner {partner_id}: {list(changes.keys())}', is_suspicious=False)
     return jsonify({"status": "success", "message": "Zahtev je poslat administratoru na odobrenje.", "request_id": req_id})
+
+# ==========================================================
+#  HEARTBEAT — vraća koliko još sesija traje
+# ==========================================================
+
+@portal_bp.route('/api/portal/heartbeat/<token>', methods=['GET'])
+def portal_heartbeat(token):
+    """Vraća koliko sekundi je preostalo do isteka portal sesije.
+
+    Klijent poziva ovo svakih 60s da bi:
+      1) resetovao `last_active` (ova ruta prolazi kroz verify_portal_session
+         koji stampuje `last_active = now`, pa produžava inactivity prozor);
+      2) dobio `remaining_seconds` — koristi ga za warning modal 90s pre isteka.
+
+    Ne otkriva ništa što auth_key već ne omogućava — samo TTL brojač.
+    """
+    import time as _time
+    from . import portal_auth_sessions, _fw_ttl, PORTAL_INACTIVITY_TTL
+
+    auth_header = request.headers.get('X-Portal-Auth')
+    if not verify_portal_session(token, auth_header):
+        return jsonify({"error": "session_invalid"}), 401
+
+    sess = portal_auth_sessions.get(token) or {}
+    now = _time.time()
+    exp_abs = float(sess.get('expires', 0))
+    inactivity_ttl = _fw_ttl('portal_inactivity', PORTAL_INACTIVITY_TTL)
+    last_active = float(sess.get('last_active', now))
+
+    remaining_abs = max(0, int(exp_abs - now))
+    remaining_inactivity = max(0, int(inactivity_ttl - (now - last_active)))
+    # Warning treba da ide na osnovu one kraće koja će je stvarno oboriti
+    remaining = min(remaining_abs, remaining_inactivity) if exp_abs else remaining_inactivity
+
+    return jsonify({
+        "ok": True,
+        "remaining_seconds": remaining,
+        "remaining_absolute": remaining_abs,
+        "remaining_inactivity": remaining_inactivity,
+        "inactivity_ttl": inactivity_ttl,
+    })

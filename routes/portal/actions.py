@@ -839,6 +839,24 @@ def portal_upload(token):
         log_audit('SECURITY', 'portal_actions', f'Portal upload blocked: too many files ({len(files)})', is_suspicious=True)
         return jsonify({"error": "TOO_MANY_FILES"}), 400
 
+    # partner_id iz TOKEN-a — za Supabase Storage bucket putanju
+    partner_id = None
+    try:
+        _c = sqlite3.connect(DB_FILE, timeout=10.0)
+        try:
+            partner_id, _p = find_partner_by_token(_c.cursor(), token, enforce_active=True)
+        finally:
+            _c.close()
+    except Exception:
+        partner_id = None
+
+    # Lazy import — utils_storage povlaci supabase-py koji je optional
+    _storage_mod = None
+    try:
+        import utils_storage as _storage_mod
+    except Exception:
+        _storage_mod = None
+
     urls = []
     for file in files:
         if not file or file.filename == '':
@@ -868,6 +886,33 @@ def portal_upload(token):
         save_path = os.path.join(PORTAL_UPLOAD_FOLDER, secure_filename(new_filename))
         file.save(save_path)
         urls.append(f"/portal_uploads/{new_filename}")
+
+        # DUAL-WRITE — mirror u Supabase Storage (best-effort, ne kvari request
+        # ako Storage padne). URL koji vraćamo klijentu ostaje /portal_uploads/...
+        # (lokalno serving), a Storage kopija je "cold backup" za buducu
+        # migraciju. Kad predjemo na signed URL-ove, samo cemo prekidati serving
+        # sa lokalnog i ostaje samo Storage.
+        if _storage_mod and _storage_mod.use_supabase_storage() and partner_id:
+            try:
+                bucket_path = _storage_mod.path_for_partner_doc(
+                    partner_id, file.filename, subdir='portal-uploads'
+                )
+                with open(save_path, 'rb') as _rf:
+                    content = _rf.read()
+                _storage_mod.upload_bytes(
+                    _storage_mod.BUCKET_PARTNER_DOCS,
+                    bucket_path,
+                    content,
+                )
+            except Exception as _e:
+                # Nikad ne bacaj — upload je vec na disku, sve je OK sa
+                # perspektive korisnika. Log-uje se u admin errors za praćenje.
+                try:
+                    from routes.supabase_admin import record_error as _rec
+                    _rec('portal_upload_storage_mirror', _e,
+                         meta={'partner_id': partner_id, 'file': file.filename})
+                except Exception:
+                    pass
 
     if not urls:
         return jsonify({"error": "No valid or safe files uploaded."}), 400
