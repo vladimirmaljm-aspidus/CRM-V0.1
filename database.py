@@ -208,6 +208,73 @@ def init_db():
             )''')
             c.execute('CREATE INDEX IF NOT EXISTS idx_savedfilters_owner ON saved_filters(owner_user_id, entity_type)')
 
+            # v23.1 EXTRAS
+            # -------------
+            # custom_field_defs — admin definise dodatne kolone po entitetu (npr.
+            # "SAP kod" na partneru, "Ovlasteni prodavac" chekbox na proizvodu).
+            # Frontend proizvoljno renderuje polje na osnovu ovog kataloga.
+            c.execute('''CREATE TABLE IF NOT EXISTS custom_field_defs (
+                id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,      -- partner | product | deal | offer | invoice | proforma
+                field_key TEXT NOT NULL,        -- snake_case identifikator
+                field_label TEXT NOT NULL,
+                field_type TEXT NOT NULL,       -- text | number | date | bool | select | url | email
+                options_json TEXT,              -- za select-e: ["A","B","C"]
+                required INTEGER DEFAULT 0,
+                display_order INTEGER DEFAULT 100,
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL,
+                UNIQUE(entity_type, field_key)
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_cfd_entity ON custom_field_defs(entity_type, is_active)')
+
+            # api_keys — spoljni sistemi (Zapier, custom bots) mogu da pristupe /api/v1/*
+            # koriscenjem Bearer <key>. Cuvamo samo hash (SHA-256).
+            c.execute('''CREATE TABLE IF NOT EXISTS api_keys (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                key_hash TEXT NOT NULL UNIQUE,
+                key_prefix TEXT NOT NULL,       -- prvih 8 char, prikazano u UI za identifikaciju
+                owner_user_id TEXT NOT NULL,
+                scope TEXT DEFAULT 'read',      -- read | write | admin
+                rate_limit_per_min INTEGER DEFAULT 60,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                revoked INTEGER DEFAULT 0,
+                revoked_at TEXT
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_apikey_owner ON api_keys(owner_user_id, revoked)')
+
+            # outbound_webhooks — admin registruje URL + event mask ("deal.created,offer.sent")
+            # server salje POST kada se event desi, sa HMAC potpisom.
+            c.execute('''CREATE TABLE IF NOT EXISTS outbound_webhooks (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                target_url TEXT NOT NULL,
+                events TEXT NOT NULL,           -- CSV: deal.created,invoice.paid,offer.accepted
+                secret TEXT NOT NULL,           -- za HMAC verifikaciju
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL,
+                created_by TEXT,
+                last_fired_at TEXT,
+                last_status TEXT,               -- 'ok' | '4xx' | '5xx' | 'timeout'
+                fail_count INTEGER DEFAULT 0
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_webhook_active ON outbound_webhooks(is_active)')
+
+            # webhook_deliveries — audit log outbound webhook slanja
+            c.execute('''CREATE TABLE IF NOT EXISTS webhook_deliveries (
+                id TEXT PRIMARY KEY,
+                webhook_id TEXT NOT NULL,
+                event TEXT NOT NULL,
+                payload_hash TEXT,
+                status_code INTEGER,
+                response_snippet TEXT,
+                delivered_at TEXT NOT NULL,
+                duration_ms INTEGER
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_delivery_webhook ON webhook_deliveries(webhook_id, delivered_at)')
+
             # v22: file_text — OCR/text extract cache za KYC uploads.
             # Kada admin trazi "svi partneri koji imaju rec X u dokumentima",
             # ova tabela je full-text search index. Popunjava se u background
