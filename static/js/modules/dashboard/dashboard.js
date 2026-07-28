@@ -127,7 +127,45 @@ window.renderDashboardView = async function() {
     // Live market widget-i su nezavisni od Chart.js
     loadFxTable();
     loadCommodityTable();
+
+    // Dashboard insights — overdue count, new deals, stale partners
+    loadInsights();
 };
+
+async function loadInsights() {
+    try {
+        const r = await fetch('/api/dashboard/insights');
+        if (!r.ok) return;
+        const j = await r.json();
+        const el = document.getElementById('dash-kpis');
+        if (!el) return;
+        // Ubaci 4 dodatne mini kartice iznad postojecih
+        const html = `
+            <div class="col-span-2 md:col-span-4 grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
+                ${_insightTile('⏰', j.overdue_deals, 'Overdue payments', j.overdue_deals > 0 ? 'rose' : 'slate')}
+                ${_insightTile('📅', j.due_this_week, 'Due this week', j.due_this_week > 5 ? 'amber' : 'slate')}
+                ${_insightTile('✨', j.new_deals_this_week, 'New deals (7d)', 'indigo')}
+                ${_insightTile('👥', j.active_partners_30d, 'Active partners (30d)', 'emerald')}
+            </div>` + el.innerHTML;
+        el.innerHTML = html;
+    } catch(_) {}
+}
+function _insightTile(icon, val, label, color) {
+    const colors = {
+        rose: 'bg-rose-50 border-rose-200 text-rose-800',
+        amber: 'bg-amber-50 border-amber-200 text-amber-800',
+        indigo: 'bg-indigo-50 border-indigo-200 text-indigo-800',
+        emerald: 'bg-emerald-50 border-emerald-200 text-emerald-800',
+        slate: 'bg-slate-50 border-slate-200 text-slate-700',
+    };
+    return `<div class="rounded-xl border ${colors[color] || colors.slate} p-2 flex items-center gap-2">
+        <span class="text-xl">${icon}</span>
+        <div class="min-w-0">
+            <div class="text-lg font-bold leading-none">${val}</div>
+            <div class="text-[10px] opacity-70 truncate">${label}</div>
+        </div>
+    </div>`;
+}
 
 
 function loadChartJs() {

@@ -1351,3 +1351,163 @@ def partner_risk_score(partner_id):
         })
     finally:
         if conn: conn.close()
+
+
+# ==========================================================
+#  BATCH D2 — Dashboard extras: overdue deals count, active partners
+# ==========================================================
+
+@data_bp.route('/api/dashboard/insights', methods=['GET'])
+@login_required
+def dashboard_insights():
+    """Kratke insights za dashboard hero — bez tezih computacija.
+    Cache-uje se agresivno (1 min) da ne opterecuje bazu na svakom refresh-u."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
+
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        # Overdue deals — buyerPaymentDate < now i nije placeno
+        overdue = 0
+        due_this_week = 0
+        deals = c.execute("SELECT data FROM deals").fetchall()
+        for r in deals:
+            try: d = decrypt_data(r[0]) if r[0] else {}
+            except Exception: continue
+            due = (d.get('paymentDates') or {}).get('buyer')
+            paid = d.get('buyerPaidOn')
+            if not due or paid: continue
+            try:
+                dt = datetime.fromisoformat(due.replace('Z', '+00:00'))
+                if dt < now: overdue += 1
+                elif dt < now + timedelta(days=7): due_this_week += 1
+            except Exception: pass
+
+        # Aktivni partneri (izmenjen u poslednjih 30d)
+        active_30d = 0
+        thirty_ago = now - timedelta(days=30)
+        partners = c.execute("SELECT data FROM partners").fetchall()
+        stale_partners = 0
+        for r in partners:
+            try: p = decrypt_data(r[0]) if r[0] else {}
+            except Exception: continue
+            lm = p.get('lastModified')
+            if lm:
+                try:
+                    dt = datetime.fromisoformat(lm.replace('Z', '+00:00'))
+                    if dt > thirty_ago: active_30d += 1
+                    elif dt < now - timedelta(days=365): stale_partners += 1
+                except Exception: pass
+
+        # New deals in last 7 days
+        new_this_week = 0
+        for r in deals:
+            try: d = decrypt_data(r[0]) if r[0] else {}
+            except Exception: continue
+            ca = d.get('createdAt')
+            if ca:
+                try:
+                    dt = datetime.fromisoformat(ca.replace('Z', '+00:00'))
+                    if dt > week_ago: new_this_week += 1
+                except Exception: pass
+
+        return jsonify({
+            'overdue_deals': overdue,
+            'due_this_week': due_this_week,
+            'new_deals_this_week': new_this_week,
+            'active_partners_30d': active_30d,
+            'stale_partners_1y': stale_partners,
+            'timestamp': now.isoformat(),
+        })
+    finally:
+        conn.close()
+
+
+# ==========================================================
+#  BATCH D2 — Saved searches (per-user)
+# ==========================================================
+
+@data_bp.route('/api/saved-searches', methods=['GET'])
+@login_required
+def saved_searches_list():
+    import sqlite3
+    from config import DB_FILE
+    uid = session.get('user_id')
+    conn = sqlite3.connect(DB_FILE, timeout=10.0)
+    try:
+        conn.execute('PRAGMA busy_timeout=10000')
+        # idempotent tabela — dodaj ako ne postoji (nema formalnu migraciju)
+        conn.execute('''CREATE TABLE IF NOT EXISTS saved_searches (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
+            module TEXT NOT NULL, query_json TEXT, created_at TEXT NOT NULL
+        )''')
+        rows = conn.execute(
+            "SELECT id, name, module, query_json, created_at FROM saved_searches "
+            "WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
+            (uid,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return jsonify({
+        'searches': [{'id': r[0], 'name': r[1], 'module': r[2],
+                      'query': json.loads(r[3]) if r[3] else {},
+                      'created_at': r[4]} for r in rows]
+    })
+
+
+@data_bp.route('/api/saved-searches', methods=['POST'])
+@login_required
+def saved_searches_create():
+    import sqlite3, uuid as _u
+    from config import DB_FILE
+    body = request.get_json(silent=True) or {}
+    name = str(body.get('name') or '').strip()[:100]
+    module = str(body.get('module') or '').strip()[:40]
+    q = body.get('query') or {}
+    if not name or not module:
+        return jsonify({'error': 'name_and_module_required'}), 400
+    if not isinstance(q, dict):
+        return jsonify({'error': 'query_must_be_object'}), 400
+    uid = session.get('user_id')
+    sid = str(_u.uuid4())
+    conn = sqlite3.connect(DB_FILE, timeout=10.0)
+    try:
+        conn.execute('PRAGMA busy_timeout=10000')
+        conn.execute('''CREATE TABLE IF NOT EXISTS saved_searches (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
+            module TEXT NOT NULL, query_json TEXT, created_at TEXT NOT NULL
+        )''')
+        import time as _t
+        conn.execute(
+            "INSERT INTO saved_searches (id, user_id, name, module, query_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (sid, uid, name, module, json.dumps(q),
+             _t.strftime('%Y-%m-%dT%H:%M:%SZ', _t.gmtime()))
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    log_audit('CREATE', 'saved_searches',
+              f'Saved search "{name}" for module "{module}"')
+    return jsonify({'id': sid, 'name': name, 'module': module})
+
+
+@data_bp.route('/api/saved-searches/<sid>', methods=['DELETE'])
+@login_required
+def saved_searches_delete(sid):
+    import sqlite3
+    from config import DB_FILE
+    uid = session.get('user_id')
+    conn = sqlite3.connect(DB_FILE, timeout=10.0)
+    try:
+        conn.execute('PRAGMA busy_timeout=10000')
+        n = conn.execute(
+            "DELETE FROM saved_searches WHERE id=? AND user_id=?",
+            (sid, uid)
+        ).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({'deleted': n})

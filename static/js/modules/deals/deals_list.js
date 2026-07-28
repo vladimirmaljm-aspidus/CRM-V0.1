@@ -38,8 +38,17 @@ function renderDealsListView() {
         const buyerPaid = d.buyerPaidOn ? `<div class="text-success font-bold">${Utils.t('deals.buyerPaidPrefix')} ${new Date(d.buyerPaidOn).toLocaleDateString(Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US')}</div>` : `<div class="text-warning font-bold">${Utils.t('deals.buyerUnpaidPrefix')} ${d.paymentDates?.buyer ? new Date(d.paymentDates.buyer).toLocaleDateString(Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US') : 'N/A'}</div>`;
         const supplierPaid = d.supplierPaidOn ? `<div class="text-success font-bold">${Utils.t('deals.supplierPaidPrefix')} ${new Date(d.supplierPaidOn).toLocaleDateString(Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US')}</div>` : `<div class="text-warning font-bold">${Utils.t('deals.supplierUnpaidPrefix')} ${d.paymentDates?.supplier ? new Date(d.paymentDates.supplier).toLocaleDateString(Utils.getLang() === 'sr' ? 'sr-RS' : 'en-US') : 'N/A'}</div>`;
         
+        // v22.5: age warning — ako je deal stariji od 60 dana a nije zavrsen, badge
+        let ageBadge = '';
+        try {
+            if (d.createdAt && d.status !== 'completed') {
+                const daysOld = Math.floor((Date.now() - new Date(d.createdAt).getTime()) / (1000*60*60*24));
+                if (daysOld > 120) ageBadge = ` <span class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 uppercase" title="${daysOld} days old and still open">${daysOld}d</span>`;
+                else if (daysOld > 60) ageBadge = ` <span class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 uppercase" title="${daysOld} days old">${daysOld}d</span>`;
+            }
+        } catch(_) {}
         return `<tr class="table-row border-[var(--border)] transition-colors hover:bg-[var(--hover-bg)]">
-            <td class="px-4 py-4 align-top"><div class="clickable-row font-black text-main text-base cursor-pointer hover:underline text-blue-500" data-id="${d.id}">${Utils.escapeHtml(d.contractId || '')}</div><div class="text-xs text-[var(--muted)] mt-1">${Utils.escapeHtml(d.productName)} (${Utils.escapeHtml(d.incoterm || 'N/A')})</div></td>
+            <td class="px-4 py-4 align-top"><div class="clickable-row font-black text-main text-base cursor-pointer hover:underline text-blue-500" data-id="${d.id}">${Utils.escapeHtml(d.contractId || '')}${ageBadge}</div><div class="text-xs text-[var(--muted)] mt-1">${Utils.escapeHtml(d.productName)} (${Utils.escapeHtml(d.incoterm || 'N/A')})</div></td>
             <td class="px-4 py-4 align-top text-main font-medium">${Utils.formatCurrency(origPurchaseVal, pCur)} ${pCur !== sCur ? `<div class="text-xs text-[var(--muted)] mt-1">(${Utils.formatCurrency(purchaseValue, sCur)})</div>`: ''}</td>
             <td class="px-4 py-4 align-top text-main font-medium">${Utils.formatCurrency(saleValue, sCur)}</td>
             <td class="px-4 py-4 align-top text-base font-black ${netProfit >= 0 ? 'text-success':'text-danger'}">${Utils.formatCurrency(netProfit, sCur)}</td>

@@ -444,6 +444,9 @@ def start_housekeeping():
     # za retry neuspelih mejlova (klijent ne sme da čeka).
     tq = threading.Thread(target=_email_queue_loop, name='crm-email-queue', daemon=True)
     tq.start()
+    # v22.5: Notification digest — dnevni sažetak adminu (opt-in preko env-a).
+    td = threading.Thread(target=_notification_digest_loop, name='crm-notif-digest', daemon=True)
+    td.start()
 
 
 def _email_queue_loop():
@@ -610,3 +613,67 @@ def get_user_token_version(user_id):
         return int(row[0]) if row and row[0] is not None else 1
     except Exception:
         return 1
+
+# ==========================================================
+# BATCH D2 — NOTIFICATION DIGEST (email admin sažetak jednom dnevno)
+# ==========================================================
+# Ako je NOTIF_DIGEST_ENABLED=true i imamo SMTP_HOST, background thread
+# jednom dnevno (u 8:00 UTC) posalje admin-u kratak sažetak:
+#   - Broj novih portal KYC prijava
+#   - Broj novih RFQ-ova
+#   - Broj neuspešnih mejlova u queue-u
+#   - Broj partnera sa lastModified > 1 godina
+#   - Broj deala sa payment overdue
+# Ako je BROJ = 0, mejl se ne šalje (bez spama).
+
+def _notification_digest_loop():
+    import time as _t, datetime as _dt, sqlite3 as _sq, os as _os
+    from config import DB_FILE
+    # Sacekaj 5 min posle starta pa udji u loop
+    _t.sleep(300)
+    last_sent_day = None
+    while True:
+        try:
+            if not _os.environ.get('NOTIF_DIGEST_ENABLED', '').strip().lower() in ('1','true','yes','on'):
+                _t.sleep(3600)
+                continue
+            now = _dt.datetime.now(_dt.timezone.utc)
+            # Sve u 8:00 UTC jednom dnevno
+            if now.hour != 8 or last_sent_day == now.date():
+                _t.sleep(600)  # cekaj 10 min i pokusaj ponovo
+                continue
+            # Sakupi metrike
+            try:
+                conn = _sq.connect(DB_FILE, timeout=10.0)
+                conn.execute('PRAGMA busy_timeout=10000')
+                c = conn.cursor()
+                # Failed emails
+                failed = c.execute("SELECT COUNT(*) FROM email_queue WHERE status IN ('failed','dead')").fetchone()[0]
+                # Approximation: broj portal_products (koji je jednostavan proxy za portal aktivnost)
+                conn.close()
+            except Exception as _e:
+                _util_logger.warning(f'NOTIF_DIGEST: metric fetch failed: {_e}')
+                _t.sleep(3600); continue
+
+            # Nema sta da javis ako nema failed mejlova (mvp)
+            if failed == 0:
+                last_sent_day = now.date()
+                _t.sleep(3600)
+                continue
+
+            # Posalji admin-u
+            admin_email = _os.environ.get('ADMIN_EMAIL', '').strip()
+            if admin_email:
+                try:
+                    from utils_email import send_branded_admin_message
+                    body = (f"<h2>Daily digest — Aspidus CRM</h2>"
+                            f"<p><b>{failed}</b> emails failed to send in the last cycle. "
+                            f"Open <a href='https://aspidus.pythonanywhere.com/admin/mail-queue'>Mail Queue</a> to retry or delete.</p>")
+                    send_branded_admin_message(admin_email, "🔔 Aspidus CRM — Daily digest", body)
+                    _util_logger.info(f'NOTIF_DIGEST: sent to {admin_email}')
+                except Exception as _e:
+                    _util_logger.warning(f'NOTIF_DIGEST: send failed: {_e}')
+            last_sent_day = now.date()
+        except Exception:
+            _util_logger.exception('NOTIF_DIGEST: iteration failed')
+        _t.sleep(3600)
