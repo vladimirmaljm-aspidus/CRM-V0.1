@@ -150,28 +150,53 @@ def _fetch_ip_info(ip):
     return "UNKNOWN_IP_LOCATION", "N/A", "UNKNOWN_TIMEZONE"
 
 def get_client_ip():
-    ip_addr = request.headers.get('X-Forwarded-For', request.remote_addr)
+    # Bez request contexta (npr. iz background thread-a) request.headers baca
+    # RuntimeError. U tom slucaju nemamo IP i vraćamo None.
+    try:
+        ip_addr = request.headers.get('X-Forwarded-For', request.remote_addr)
+    except RuntimeError:
+        return None
     if ip_addr and ',' in ip_addr:
         ip_addr = ip_addr.split(',')[0].strip()
     return ip_addr
 
 def log_audit(action, module, details, is_suspicious=False, location="N/A"):
-    user_id = session.get('user_id', 'SYSTEM')
-    username = session.get('username', 'GUEST')
+    # BEZBEDNO IZ POZADINSKIH THREAD-OVA: session/request su Werkzeug LocalProxy
+    # objekti koji bacaju RuntimeError("Working outside of request context") ako se
+    # dohvate bez aktivnog HTTP zahteva. Migration thread, backup loop, digest
+    # loop — svi zovu log_audit i ranije su padali (vidi server log 2026-07-27
+    # 18:00:17 i dalje). Sada svaka proxy operacija ide u try/except sa fallback-om.
+    try:
+        user_id = session.get('user_id', 'SYSTEM')
+        username = session.get('username', 'SYSTEM_THREAD')
+    except RuntimeError:
+        user_id = 'SYSTEM'
+        username = 'SYSTEM_THREAD'
 
-    ip_addr = get_client_ip()
+    try:
+        ip_addr = get_client_ip()
+    except RuntimeError:
+        ip_addr = None
 
-    browser_name = request.user_agent.browser or "UNKNOWN_BROWSER"
-    browser_version = request.user_agent.version or ""
-    os_platform = request.user_agent.platform or "UNKNOWN_OS"
-    formatted_user_agent = f"{browser_name} {browser_version} ({os_platform})"
+    try:
+        browser_name = request.user_agent.browser or "UNKNOWN_BROWSER"
+        browser_version = request.user_agent.version or ""
+        os_platform = request.user_agent.platform or "UNKNOWN_OS"
+        formatted_user_agent = f"{browser_name} {browser_version} ({os_platform})"
+    except RuntimeError:
+        formatted_user_agent = "SYSTEM/THREAD"
 
-    http_method = request.method
-    requested_url = request.path
+    try:
+        http_method = request.method
+        requested_url = request.path
+    except RuntimeError:
+        http_method = "THREAD"
+        requested_url = "-"
+
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
 
     # Geolokacija je sada kesirana (vidi get_ip_info) pa vise ne usporava svaki upis.
-    network_info, ip_location, tz_info = get_ip_info(ip_addr)
+    network_info, ip_location, tz_info = get_ip_info(ip_addr) if ip_addr else ("SYSTEM_THREAD", "N/A", "N/A")
 
     if location in ["N/A", "Unknown", "GPS_DENIED", "DENIED"]:
         if ip_location != "N/A":

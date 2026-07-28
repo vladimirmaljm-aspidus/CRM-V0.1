@@ -501,9 +501,17 @@ def _run_migration_thread(tables=None):
             _migration_state["finished_at"] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
             _migration_state["error"] = f"{e.__class__.__name__}: {e}"
 
-    log_audit('EDIT', 'system',
-              f'Supabase migration finished (error={_migration_state.get("error")})',
-              is_suspicious=False)
+    # Ovo trci u thread-u van request contexta; log_audit je vec sa
+    # try/except iz thread-safe patcha (utils.py), ali dodatni guard
+    # ovde stiti od bilo koje buduce promene u log_audit.
+    try:
+        log_audit('EDIT', 'system',
+                  f'Supabase migration finished (error={_migration_state.get("error")})',
+                  is_suspicious=False)
+    except Exception as _log_err:
+        import logging
+        logging.getLogger(__name__).warning(
+            'log_audit from migration thread failed: %s', _log_err)
 
 
 @supabase_admin_bp.route('/api/supabase/migrate', methods=['POST'])
@@ -1020,3 +1028,111 @@ def admin_backup_list():
             pass
     files.sort(key=lambda x: x['mtime'], reverse=True)
     return jsonify({'files': files, 'total': len(files)})
+
+
+@supabase_admin_bp.route('/api/admin/backup/restore', methods=['POST'])
+@login_required
+def admin_backup_restore():
+    """Vrati SQLite bazu iz Fernet backup fajla.
+    Body: {"backup_file": "aspidus_crm.db.20261228T080000Z.fernet",
+           "target": "crm" | "portal" | "audit",
+           "confirm": true}
+    Ako confirm=false -> samo vrati info, ne dira nista.
+    Ovo je DESTRUKTIVNA operacija — pravi backup postojeceg DB-a pre restore-a."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    import os as _os, sqlite3 as _sq, tempfile as _tf
+    from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE, DATA_DIR
+    from utils import cipher_suite, log_audit as _log
+
+    body = request.get_json(silent=True) or {}
+    fname = str(body.get('backup_file') or '').strip()
+    target = str(body.get('target') or '').strip().lower()
+    confirm = bool(body.get('confirm'))
+
+    if not fname or '/' in fname or '..' in fname or not fname.endswith('.fernet'):
+        return jsonify({'error': 'invalid_backup_file'}), 400
+    target_map = {'crm': DB_FILE, 'portal': PORTAL_DB_FILE, 'audit': AUDIT_DB_FILE}
+    if target not in target_map:
+        return jsonify({'error': 'target_must_be_crm_portal_or_audit'}), 400
+
+    backups_dir = _os.path.join(DATA_DIR, 'backups')
+    src_path = _os.path.join(backups_dir, fname)
+    if not _os.path.isfile(src_path):
+        return jsonify({'error': 'backup_not_found'}), 404
+
+    target_path = target_map[target]
+
+    # Dry-run: pokazi info sto ce se desiti
+    if not confirm:
+        try:
+            src_size = _os.path.getsize(src_path)
+            tgt_size = _os.path.getsize(target_path) if _os.path.exists(target_path) else 0
+            return jsonify({
+                'confirm_required': True,
+                'backup_file': fname,
+                'backup_size_mb': round(src_size / (1024 * 1024), 2),
+                'target': target,
+                'target_current_size_mb': round(tgt_size / (1024 * 1024), 2),
+                'target_path': target_path,
+                'warning': ('This will REPLACE the current database. '
+                            'The existing DB will be quarantined as .pre_restore.<ts>. '
+                            'Pass confirm=true to proceed.')
+            })
+        except Exception as e:
+            return jsonify({'error': str(e)[:200]}), 500
+
+    # Real restore
+    import time as _t, datetime as _dt
+    ts = _dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    try:
+        # 1) Decrypt backup u temp fajl
+        with open(src_path, 'rb') as f:
+            enc = f.read()
+        try:
+            raw = cipher_suite.decrypt(enc)
+        except Exception as e:
+            return jsonify({'error': 'decrypt_failed',
+                            'detail': f'Wrong vault.key? {type(e).__name__}: {str(e)[:120]}'}), 500
+
+        # 2) Verifikuj da je validan SQLite (integrity check)
+        tmp = _tf.NamedTemporaryFile(delete=False, suffix='.sqlite', dir=backups_dir)
+        tmp.write(raw); tmp.close()
+        try:
+            tconn = _sq.connect(tmp.name, timeout=15.0)
+            integ = tconn.execute('PRAGMA integrity_check').fetchone()
+            tconn.close()
+            if not (integ and integ[0] == 'ok'):
+                _os.remove(tmp.name)
+                return jsonify({'error': 'integrity_check_failed',
+                                'detail': str(integ)}), 500
+        except Exception as e:
+            try: _os.remove(tmp.name)
+            except Exception: pass
+            return jsonify({'error': 'not_valid_sqlite', 'detail': str(e)[:200]}), 500
+
+        # 3) Kvarantiraj postojeci DB kao .pre_restore.<ts>
+        if _os.path.exists(target_path):
+            quarantine = f'{target_path}.pre_restore.{ts}'
+            _os.rename(target_path, quarantine)
+        else:
+            quarantine = None
+
+        # 4) Move decrypted temp na pravo mesto
+        _os.rename(tmp.name, target_path)
+        try: _os.chmod(target_path, 0o600)
+        except Exception: pass
+
+        _log('CRITICAL_ADMIN', 'system',
+             f'DB RESTORE: {target} <- {fname} (previous quarantined at {quarantine})',
+             is_suspicious=True)
+
+        return jsonify({
+            'ok': True, 'target': target, 'restored_from': fname,
+            'quarantined_previous_db': quarantine,
+            'warning': 'Restart the web app to pick up the new DB file.',
+            'timestamp': ts,
+        })
+    except Exception as e:
+        record_error('/api/admin/backup/restore', e)
+        return jsonify({'error': 'restore_failed', 'detail': str(e)[:200]}), 500

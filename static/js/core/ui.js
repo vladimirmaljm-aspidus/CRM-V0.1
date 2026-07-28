@@ -21,6 +21,7 @@ const NAV_ICONS = {
   health: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   errors: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
   mail_queue: '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>',
+  reports: '<path d="M3 3v18h18"/><rect x="6" y="10" width="3" height="8"/><rect x="11" y="6" width="3" height="12"/><rect x="16" y="13" width="3" height="5"/>',
   new_deal: '<path d="M12 5v14M5 12h14"/>',
   new_partner: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11v6M19 14h6"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>'
@@ -49,7 +50,8 @@ let fullNavigationItems = [
   { view:'ext:/admin/supabase',   icon:'supabase', label: 'Supabase', adminOnly: true, group: 'system' },
   { view:'ext:/admin/health',     icon:'health',   label: 'System Health', adminOnly: true, group: 'system' },
   { view:'ext:/admin/errors',     icon:'errors',   label: 'Error Log',     adminOnly: true, group: 'system', badge: 'errors_recent' },
-  { view:'ext:/admin/mail-queue', icon:'mail_queue', label: 'Mail Queue',  adminOnly: true, group: 'system', badge: 'mail_failed' }
+  { view:'ext:/admin/mail-queue', icon:'mail_queue', label: 'Mail Queue',  adminOnly: true, group: 'system', badge: 'mail_failed' },
+  { view:'ext:/admin/reports',    icon:'reports', label: 'Custom Reports',  adminOnly: true, group: 'system' }
 ];
 
 // Trenutne pending count vrednosti (postavlja checkAllNotifications preko _push)
