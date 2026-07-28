@@ -118,9 +118,28 @@
     applyPrefs(getPrefs());
 
     // --- Preferences modal ---
-    function openPreferences() {
+    async function openPreferences() {
         const cur = getPrefs();
-        const user = (window.state && window.state.user) || {};
+        // Uvek dovuci svez profil sa servera — state.user moze biti stale.
+        let user = (window.state && window.state.user) || {};
+        try {
+            const r = await fetch('/api/users/me', { credentials: 'same-origin' });
+            if (r.ok) {
+                const fresh = await r.json();
+                user = Object.assign({}, user, fresh);
+                if (window.state && window.state.user) Object.assign(window.state.user, fresh);
+                // Restore notif checkboxes iz notif_prefs (server je izvor istine)
+                if (fresh.notif_prefs) {
+                    const np = fresh.notif_prefs;
+                    setPrefs({
+                        notifPortal: np.portal !== false,
+                        notifDeals:  np.deals !== false,
+                        notifEmail:  np.email === true,
+                        notifSound:  np.sound === true,
+                    });
+                }
+            }
+        } catch(_) {}
 
         const html = `
         <div class="pref-modal-overlay" onclick="if(event.target===this)closePreferences()">
@@ -189,6 +208,13 @@
                   </label>
                   <p class="pref-hint">Google Authenticator ili Authy app. Preporučeno za admin naloge.</p>
                   <button class="pref-btn pref-btn-secondary" onclick="open2FA()">Manage 2FA</button>
+                </div>
+
+                <hr style="margin:16px 0;border:none;border-top:1px solid #e5e7eb">
+                <div class="pref-field">
+                  <label>Sign out all other devices</label>
+                  <p class="pref-hint">Ako misliš da neko drugi ima pristup tvom nalogu, ovo odmah ukida SVE druge otvorene sesije (na drugim uređajima). Ova sesija ostaje aktivna.</p>
+                  <button class="pref-btn pref-btn-danger" onclick="killAllOtherSessions()">🚪 Kill all other sessions</button>
                 </div>
               </div>
 
@@ -614,6 +640,31 @@
         if (confirm('Sign out?')) window.location.href = '/logout';
     }
 
+    async function killAllOtherSessions() {
+        if (!confirm('Sign out ALL your other sessions on other devices?\n\nThis session (right now) stays active.')) return;
+        const csrf = (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '';
+        try {
+            const r = await fetch('/api/users/kill-all-sessions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+            });
+            let j = {};
+            try { j = await r.json(); } catch(_) {}
+            if (r.ok && j.status === 'ok') {
+                if (typeof showToast === 'function') showToast('✓ All other sessions signed out.', 'success', 5000);
+                else alert('All other sessions have been signed out.');
+            } else {
+                const msg = j.error || j.message || `HTTP ${r.status}`;
+                if (typeof showToast === 'function') showToast('Error: ' + msg, 'error', { requestId: j.request_id });
+                else alert('Error: ' + msg);
+            }
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Network error: ' + e.message, 'error');
+            else alert('Network error');
+        }
+    }
+    window.killAllOtherSessions = killAllOtherSessions;
+
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
     }
@@ -630,10 +681,10 @@
     window.open2FA = open2FA;
 
     // Keyboard shortcut Cmd/Ctrl + , to open
-    document.addEventListener('keydown', e => {
+    document.addEventListener('keydown', async e => {
         if ((e.metaKey || e.ctrlKey) && e.key === ',') {
             e.preventDefault();
-            openPreferences();
+            await openPreferences();
         }
     });
 

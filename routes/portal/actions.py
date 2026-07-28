@@ -2345,3 +2345,53 @@ def admin_restore_hidden_item():
               f'Admin restored hidden {entity_type} {entity_id} for partner {partner_id}',
               is_suspicious=False)
     return jsonify({"status": "success"})
+
+
+# ==========================================================
+#  BATCH D — NEW: Signed URL for portal files (Faza D prep)
+# ==========================================================
+
+@portal_bp.route('/api/portal/file/signed-url', methods=['GET'])
+def portal_file_signed_url():
+    """Za dati file_url (koji je vec autorizovan drugde), vrati privremeni
+    Supabase Storage signed URL da klijent moze direktno da download-uje
+    bez prolaska kroz Flask (skida load u velikoj kolicini).
+
+    Ako je USE_SUPABASE_STORAGE=false → vraca original path (fallback na
+    Flask serving).
+
+    Query params:
+      file_url — original URL (`/portal_uploads/<file>` ili slicno)
+      ttl      — sekunde (default 300, max 3600)
+    """
+    from flask import abort as _abort
+    file_url = (request.args.get('file_url') or '').strip()
+    try:
+        ttl = min(int(request.args.get('ttl') or 300), 3600)
+    except ValueError:
+        ttl = 300
+    if not file_url:
+        return jsonify({'error': 'file_url_required'}), 400
+    if not (file_url.startswith('/portal_uploads/') or file_url.startswith('/uploads/')):
+        return jsonify({'error': 'unsupported_url_prefix'}), 400
+
+    try:
+        import utils_storage as _st
+    except Exception:
+        return jsonify({'ok': False, 'reason': 'storage_module_missing', 'fallback_url': file_url})
+
+    if not _st.use_supabase_storage():
+        return jsonify({'ok': False, 'reason': 'storage_disabled', 'fallback_url': file_url})
+
+    # Za portal_uploads mapiramo u partner-docs bucket
+    fname = file_url.rsplit('/', 1)[-1]
+    # Trazimo path pod partners/<pid>/portal-uploads/... — al' bez pid-a moramo
+    # pretraziti sve. Jednostavnije: direktno pokusaj upload path patternom.
+    # Alternativno: cuvati mapiranje u file_text tabeli sa file_url → bucket_path.
+    # Za sad: fallback ako ne nadjemo.
+    return jsonify({
+        'ok': False,
+        'reason': 'signed_url_mapping_not_available_yet',
+        'hint': 'Storage mirror is best-effort; original URL is authoritative.',
+        'fallback_url': file_url
+    })

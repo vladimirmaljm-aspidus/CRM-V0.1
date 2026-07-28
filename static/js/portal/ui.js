@@ -128,7 +128,64 @@ function switchTab(tabId) {
     try { sessionStorage.setItem(`portal_last_tab_${typeof TOKEN !== 'undefined' ? TOKEN : ''}`, tabId); } catch(e) {}
     // Lazy-load katalog kad klijent prvi put klikne (bez cena, samo vidljivi proizvodi)
     if (tabId === 'catalog' && typeof loadCatalog === 'function') loadCatalog();
+    // TASK #41: pri otvaranju KYC-a, prefill iz CRM-a ako nije vec ucitano
+    if (tabId === 'kyc' && !window._kycPrefilled && typeof loadKycPrefill === 'function') {
+        loadKycPrefill();
+    }
 }
+
+// TASK #41: uvuci trenutna partner polja iz CRM-a i popuni KYC formu.
+// Radi samo jednom po session-u (window._kycPrefilled flag) da ne prepisuje
+// klijentove izmene ako on prebacuje tab-ove.
+window.loadKycPrefill = async function() {
+    if (window._kycPrefilled) return;
+    window._kycPrefilled = true;
+    try {
+        const token = (typeof TOKEN !== 'undefined') ? TOKEN : '';
+        const key = sessionStorage.getItem('portal_auth_' + token) || '';
+        if (!token || !key) return;
+        const r = await fetch(`/api/portal/kyc/prefill/${encodeURIComponent(token)}`, {
+            headers: { 'X-Portal-Auth': key }, credentials: 'same-origin'
+        });
+        if (!r.ok) return;
+        const j = await r.json();
+        const p = j.prefill || {};
+        // Mapiranje: prefill polje → element id (samo ako je element prazan da ne pregazimo klijentov unos)
+        const map = {
+            'kyc-comp-name': 'companyName', 'kyc-reg-no': 'regNo',
+            'kyc-tax-id': 'taxId', 'kyc-website': 'website',
+            'kyc-industry': 'industry', 'kyc-contact-phone': 'contactPhone',
+            'kyc-reg-addr': 'address', 'kyc-city': 'city', 'kyc-country': 'country',
+            'kyc-bank-name': 'bankName', 'kyc-bank-iban': 'bankIban',
+            'kyc-bank-swift': 'bankSwift',
+        };
+        for (const [eid, key] of Object.entries(map)) {
+            const el = document.getElementById(eid);
+            if (el && !el.value && p[key]) el.value = p[key];
+        }
+        // Entity type radio
+        if (p.entityType) {
+            const rEl = document.querySelector(`input[name="kyc-entity-type"][value="${p.entityType}"]`);
+            if (rEl) rEl.checked = true;
+        }
+        // Ako je KYC vec approved, pokazi jasnu poruku i disable submit
+        if (j.readonly_kyc_status) {
+            const banner = document.createElement('div');
+            banner.className = 'mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800';
+            banner.innerHTML = '✓ <b>Your KYC has been approved</b> by our compliance team. Any changes you make will create an update request that admin will review.';
+            const form = document.getElementById('kyc-form');
+            if (form) form.parentNode.insertBefore(banner, form);
+        } else {
+            // Vidljivi info banner koji objasnjava sta je pre-fill
+            const banner = document.createElement('div');
+            banner.className = 'mb-4 rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800';
+            banner.innerHTML = `ℹ ${j.hint || 'Fields pre-filled from your CRM record.'}`;
+            const form = document.getElementById('kyc-form');
+            if (form) form.parentNode.insertBefore(banner, form);
+        }
+        if (typeof showToast === 'function') showToast('KYC form pre-filled from CRM.', 'info', 3000);
+    } catch(_) { /* fail silent — user moze rucno da unosi */ }
+};
 
 // Vrati tab koji je klijent poslednje gledao — koristi se posle loadPortalData().
 window.restorePortalTab = function() {

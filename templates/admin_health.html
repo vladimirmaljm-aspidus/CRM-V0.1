@@ -55,6 +55,22 @@
         <div id="overall" class="mb-4"></div>
         <div id="services" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
         <div id="circuits" class="mt-6"></div>
+
+        <!-- BACKUP CENTER (v22.5) -->
+        <div class="card mt-6">
+            <div class="flex items-center justify-between mb-3">
+                <div>
+                    <b class="text-slate-900">🗄 Backup Center</b>
+                    <p class="text-xs text-slate-500 mt-0.5">Rucno pokreni Fernet snapshot i pregled dnevnih backup-ova. Off-site mirror u Supabase Storage kad je <code>BACKUP_OFFSITE=on</code>.</p>
+                </div>
+                <div class="flex gap-2">
+                    <button class="btn btn-primary" onclick="triggerBackup()">▶ Backup Now</button>
+                    <button class="btn btn-ghost" onclick="loadBackupList()">🔄 Refresh</button>
+                </div>
+            </div>
+            <div id="backup-list" class="text-xs text-slate-500">Click Refresh to load backup list…</div>
+        </div>
+
         <div class="text-xs text-slate-400 text-center mt-6">
             Last check: <span id="ts">—</span>
         </div>
@@ -69,6 +85,10 @@
             smtp:             { icon:'✉️', name:'SMTP Email Server',    cls:'smtp',    desc:'Slanje mejlova (invite, reset, notif).' },
             backup:           { icon:'🗄', name:'Fernet Backup System', cls:'backup',  desc:'Dnevni šifrovani snapshot baza.' },
             disk:             { icon:'💽', name:'Disk Space',           cls:'disk',    desc:'Slobodan prostor na PA serveru.' },
+            ocr:              { icon:'📄', name:'OCR / Text Extract',   cls:'sqlite',  desc:'PDF/image tekst extraction — pdfminer / pdftotext / tesseract.' },
+            mail_queue:       { icon:'📮', name:'Mail Queue',           cls:'smtp',    desc:'Broj parked mejlova (pending / failed / dead).' },
+            webhook:          { icon:'🪝', name:'Supabase Auth Webhook',cls:'auth',    desc:'Da li je WEBHOOK_SECRET podeSen (aktivan sync).' },
+            data_layer:       { icon:'🔀', name:'Data Layer Backend',   cls:'db',      desc:'Aktivan data_layer backend (REST vs Postgres direct).' },
         };
 
         async function refresh() {
@@ -156,7 +176,66 @@
 
         function escHtml(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
+        // ==========================================================
+        //  BACKUP CENTER (v22.5)
+        // ==========================================================
+        let csrfBk = '';
+        async function _bkCsrf() {
+            if (csrfBk) return csrfBk;
+            try { const r = await fetch('/api/csrf/token'); const j = await r.json(); csrfBk = j.csrf_token || ''; } catch(_) {}
+            return csrfBk;
+        }
+        async function triggerBackup() {
+            if (!confirm('Trigger a manual encrypted backup NOW?')) return;
+            const btn = event?.target;
+            if (btn) { btn.disabled = true; btn.textContent = '⏳ Backing up…'; }
+            try {
+                const r = await fetch('/api/admin/backup/trigger', {
+                    method: 'POST', headers: { 'X-CSRF-Token': await _bkCsrf() }
+                });
+                const j = await r.json();
+                if (r.ok && j.ok) {
+                    alert(`✓ Backup complete. Created ${j.created?.length || 0} files.`);
+                    loadBackupList();
+                } else {
+                    alert('✗ Backup failed: ' + (j.error || (j.errors && j.errors[0]?.error) || 'unknown'));
+                }
+            } catch (e) { alert('Network error: ' + e.message); }
+            finally { if (btn) { btn.disabled = false; btn.textContent = '▶ Backup Now'; } }
+        }
+        async function loadBackupList() {
+            const div = document.getElementById('backup-list');
+            div.innerHTML = '<span class="pulse">⏳ Loading…</span>';
+            try {
+                const r = await fetch('/api/admin/backup/list');
+                const j = await r.json();
+                if (!j.files || !j.files.length) {
+                    div.innerHTML = '<div class="text-center py-4">No backups yet. Click "Backup Now" to create the first one.</div>';
+                    return;
+                }
+                const rows = j.files.slice(0, 40).map(f => {
+                    const badge = f.is_manual
+                        ? '<span class="status-badge status-warn">MANUAL</span>'
+                        : '<span class="status-badge status-ok">DAILY</span>';
+                    return `<tr class="border-t border-slate-100">
+                        <td class="p-2 font-mono text-[11px]">${escHtml(f.name)}</td>
+                        <td class="p-2 text-right">${f.size_mb} MB</td>
+                        <td class="p-2 text-slate-500">${escHtml(f.mtime)}</td>
+                        <td class="p-2">${badge}</td>
+                    </tr>`;
+                }).join('');
+                div.innerHTML = `<div class="overflow-x-auto"><table class="w-full">
+                    <thead class="text-[10px] uppercase tracking-wider text-slate-500">
+                        <tr><th class="p-2 text-left">File</th><th class="p-2 text-right">Size</th><th class="p-2 text-left">Modified (UTC)</th><th class="p-2 text-left">Kind</th></tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table></div>
+                <div class="mt-2 text-slate-500">Total: ${j.total} file(s). Showing latest ${Math.min(40, j.total)}.</div>`;
+            } catch (e) { div.innerHTML = '<span class="text-red-600">Error: ' + escHtml(e.message) + '</span>'; }
+        }
+
         refresh();
+        loadBackupList();
         setInterval(refresh, 15000);
     </script>
 </body>

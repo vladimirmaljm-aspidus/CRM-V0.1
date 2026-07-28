@@ -542,11 +542,17 @@ def supabase_set_flag():
     value = str(body.get("value", "")).strip().lower()
 
     allowed = {"USE_SUPABASE_AUTH", "USE_SUPABASE_DB",
-               "USE_SUPABASE_STORAGE", "DUAL_WRITE_MODE"}
+               "USE_SUPABASE_STORAGE", "DUAL_WRITE_MODE",
+               "DB_BACKEND", "BACKUP_OFFSITE"}
     if flag not in allowed:
         return jsonify({"error": f"Flag '{flag}' not allowed."}), 400
-    if value not in {"true", "false", "1", "0", "yes", "no"}:
-        return jsonify({"error": "Value must be true/false."}), 400
+    # DB_BACKEND uzima 'rest' ili 'postgres', ostali su bool
+    if flag == "DB_BACKEND":
+        if value not in {"rest", "postgres", "pg"}:
+            return jsonify({"error": "DB_BACKEND must be 'rest' or 'postgres'."}), 400
+    else:
+        if value not in {"true", "false", "1", "0", "yes", "no"}:
+            return jsonify({"error": "Value must be true/false."}), 400
 
     old = os.environ.get(flag, "false")
     os.environ[flag] = value
@@ -781,3 +787,236 @@ def admin_mail_queue_drain():
         return jsonify({"ok": True, "stats": stats or {}})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}), 500
+
+
+# ==========================================================
+#  RECONCILE + SYNC-BACK (Operations Center)
+# ==========================================================
+
+@supabase_admin_bp.route('/api/supabase/reconcile', methods=['POST'])
+@login_required
+def supabase_reconcile():
+    r = _admin_only()
+    if r: return r
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        try:
+            from scripts.reconcile_sqlite_supabase import _get_supabase_client, _count_sqlite, _count_supabase, _open_db
+            from scripts.migrate_data_to_supabase import MIGRATION_PLAN
+        except ImportError as e:
+            return jsonify({'ok': False, 'error': f'reconcile module import failed: {e}'}), 500
+        client = _get_supabase_client()
+        conns = {src: _open_db(src) for src in ('crm', 'portal', 'audit')}
+        results = []
+        drift = False
+        for src, source_table, target_table, _ in MIGRATION_PLAN:
+            sq = _count_sqlite(conns.get(src), source_table)
+            sp_raw = _count_supabase(client, target_table)
+            sp = None; sp_err = None
+            if isinstance(sp_raw, dict) and '__err__' in sp_raw:
+                sp_err = sp_raw['__err__']
+            else:
+                sp = sp_raw
+            status = 'ok'
+            if sp_err: status = 'sp_error'
+            elif sq is None: status = 'sqlite_missing'
+            elif sq != sp: status = 'drift'; drift = True
+            results.append({
+                'source': src, 'source_table': source_table, 'target_table': target_table,
+                'sqlite_count': sq, 'supabase_count': sp,
+                'supabase_error': sp_err, 'status': status,
+            })
+        for c in conns.values():
+            if c is not None: c.close()
+        return jsonify({'ok': True, 'drift': drift, 'results': results})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'{type(e).__name__}: {str(e)[:200]}'}), 500
+
+
+@supabase_admin_bp.route('/api/supabase/sync-back', methods=['POST'])
+@login_required
+def supabase_sync_back():
+    r = _admin_only()
+    if r: return r
+    body = request.get_json(silent=True) or {}
+    confirm = bool(body.get('confirm'))
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        try:
+            from scripts.reconcile_sqlite_supabase import _get_supabase_client, _sample_ids_sqlite, _push_to_sqlite, _open_db
+            from scripts.migrate_data_to_supabase import MIGRATION_PLAN
+        except ImportError as e:
+            return jsonify({'ok': False, 'error': f'sync-back module import failed: {e}'}), 500
+        client = _get_supabase_client()
+        conns = {src: _open_db(src) for src in ('crm', 'portal', 'audit')}
+        results = []
+        total_pushed = 0
+        total_errors = 0
+        for src, source_table, target_table, _ in MIGRATION_PLAN:
+            sq_conn = conns.get(src)
+            sq_ids = set(map(str, _sample_ids_sqlite(sq_conn, source_table, 10000)))
+            sp_ids_all = []
+            try:
+                offset = 0
+                while offset < 50000:
+                    r2 = client.table(target_table).select('id').range(offset, offset + 999).execute()
+                    page = [row.get('id') for row in (r2.data or [])]
+                    if not page: break
+                    sp_ids_all.extend(page)
+                    if len(page) < 1000: break
+                    offset += 1000
+            except Exception as e:
+                results.append({'source_table': source_table, 'n_pushed': 0, 'errors': [str(e)[:120]]})
+                continue
+            sp_ids = set(map(str, sp_ids_all))
+            missing = list(sp_ids - sq_ids)
+            if not missing:
+                results.append({'source_table': source_table, 'n_pushed': 0, 'errors': []})
+                continue
+            n_pushed, errors = _push_to_sqlite(client, src, source_table, target_table, missing, dry_run=not confirm)
+            results.append({'source_table': source_table, 'n_pushed': n_pushed, 'errors': errors})
+            total_pushed += n_pushed
+            total_errors += len(errors)
+        for c in conns.values():
+            if c is not None: c.close()
+        log_audit('EDIT' if confirm else 'READ', 'system',
+                  f'Sync-back {"COMMIT" if confirm else "DRY-RUN"}: {total_pushed} rows, {total_errors} errors',
+                  is_suspicious=confirm)
+        return jsonify({
+            'ok': True, 'confirmed': confirm,
+            'total_pushed': total_pushed, 'total_errors': total_errors,
+            'results': results,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'{type(e).__name__}: {str(e)[:200]}'}), 500
+
+
+# ==========================================================
+#  BATCH D — NEW: KILL-ALL-SESSIONS, MANUAL BACKUP, SIGNED URL
+# ==========================================================
+
+@supabase_admin_bp.route('/api/users/kill-all-sessions', methods=['POST'])
+@login_required
+def users_kill_all_sessions():
+    """Bump token_version za trenutnog user-a — sve postojece sesije se
+    trenutno prekidaju osim ove koja je pozvala. Koristi se kad user
+    misli da je nalog kompromitovan (bez potrebe za password change)."""
+    import sqlite3
+    from config import DB_FILE
+    uid = session.get('user_id')
+    if not uid:
+        return jsonify({"error": "no_session"}), 401
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            conn.execute('PRAGMA busy_timeout=15000;')
+            row = conn.execute("SELECT token_version FROM users WHERE id=?", (uid,)).fetchone()
+            if not row:
+                return jsonify({"error": "user_not_found"}), 404
+            new_ver = int(row[0] or 1) + 1
+            conn.execute("UPDATE users SET token_version=? WHERE id=?", (new_ver, uid))
+            conn.commit()
+        # Osvezi trenutnu sesiju da NE ostanem odjavljen
+        session['token_version'] = new_ver
+        log_audit('SECURITY', 'users',
+                  f'User {session.get("username")} killed all other sessions (token_version→{new_ver}).',
+                  is_suspicious=True)
+        return jsonify({"status": "ok", "new_token_version": new_ver,
+                        "message": "All other sessions have been signed out."})
+    except Exception as e:
+        record_error('/api/users/kill-all-sessions', e)
+        return jsonify({"error": "server_error", "message": str(e)[:200]}), 500
+
+
+@supabase_admin_bp.route('/api/admin/backup/trigger', methods=['POST'])
+@login_required
+def admin_backup_trigger():
+    """Rucno pokreni Fernet backup snapshot odmah. Ne ceka noc.
+    Vraca listu kreiranih fajlova + off-site status."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    try:
+        import sqlite3, datetime as _dt, os as _os
+        from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE, DATA_DIR
+        from utils import cipher_suite
+        backups_dir = _os.path.join(DATA_DIR, 'backups')
+        _os.makedirs(backups_dir, exist_ok=True)
+        ts = _dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        created = []
+        errors = []
+        offsite = []
+        for db_path in (DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE):
+            if not _os.path.exists(db_path):
+                continue
+            tmp_copy = _os.path.join(backups_dir, f'.tmp_manual_{_os.path.basename(db_path)}')
+            try:
+                src_conn = sqlite3.connect(db_path, timeout=30.0)
+                dst_conn = sqlite3.connect(tmp_copy, timeout=30.0)
+                with dst_conn:
+                    src_conn.backup(dst_conn)
+                dst_conn.close(); src_conn.close()
+                with open(tmp_copy, 'rb') as f:
+                    raw = f.read()
+                enc = cipher_suite.encrypt(raw)
+                out = _os.path.join(backups_dir, f'{_os.path.basename(db_path)}.{ts}.MANUAL.fernet')
+                with open(out, 'wb') as f:
+                    f.write(enc)
+                _os.remove(tmp_copy)
+                try: _os.chmod(out, 0o600)
+                except Exception: pass
+                created.append({'file': _os.path.basename(out), 'size_bytes': len(enc)})
+                # Off-site mirror ako je enabled
+                if _os.environ.get('BACKUP_OFFSITE', '').strip().lower() in ('1','true','yes','on'):
+                    try:
+                        import utils_storage as _st
+                        if _st.use_supabase_storage():
+                            r = _st.upload_bytes('backups', f'manual/{_os.path.basename(out)}',
+                                                 enc, content_type='application/octet-stream')
+                            offsite.append({'file': _os.path.basename(out), 'ok': bool(r.get('ok'))})
+                    except Exception as ee:
+                        offsite.append({'file': _os.path.basename(out), 'error': str(ee)[:120]})
+            except Exception as e:
+                errors.append({'db': _os.path.basename(db_path), 'error': str(e)[:120]})
+                try:
+                    if _os.path.exists(tmp_copy): _os.remove(tmp_copy)
+                except Exception: pass
+        log_audit('CREATE', 'system',
+                  f'Manual backup triggered by {session.get("username")}: {len(created)} files, {len(errors)} errors',
+                  is_suspicious=False)
+        return jsonify({
+            'ok': len(errors) == 0,
+            'created': created,
+            'errors': errors,
+            'offsite': offsite,
+            'timestamp': ts,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'{type(e).__name__}: {str(e)[:200]}'}), 500
+
+
+@supabase_admin_bp.route('/api/admin/backup/list', methods=['GET'])
+@login_required
+def admin_backup_list():
+    """Lista svih .fernet backup fajlova sa metadata."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    import os as _os
+    from config import DATA_DIR
+    backups_dir = _os.path.join(DATA_DIR, 'backups')
+    if not _os.path.isdir(backups_dir):
+        return jsonify({'files': [], 'total': 0})
+    files = []
+    for name in _os.listdir(backups_dir):
+        if not name.endswith('.fernet'): continue
+        p = _os.path.join(backups_dir, name)
+        try:
+            st = _os.stat(p)
+            files.append({
+                'name': name, 'size_bytes': st.st_size,
+                'size_mb': round(st.st_size / (1024*1024), 2),
+                'mtime': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(st.st_mtime)),
+                'is_manual': '.MANUAL.' in name,
+            })
+        except Exception:
+            pass
+    files.sort(key=lambda x: x['mtime'], reverse=True)
+    return jsonify({'files': files, 'total': len(files)})

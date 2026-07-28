@@ -95,6 +95,11 @@ window.renderDashboardView = async function() {
     // vidljive čak i ako je CDN blokiran (npr. korporativni firewall).
     renderKpiCards();
 
+    // Admin-only System Health mini card (v22.5) — brzi uvid u probleme.
+    if (state.user?.role === 'admin') {
+        try { renderSystemHealthMini(); } catch(_) {}
+    }
+
     // Chart.js se učitava sa CDN-a — ako padne, grafovi ostaju prazni ali
     // KPI kartice i live market widget-i i dalje rade.
     let chartsAvailable = typeof Chart !== 'undefined';
@@ -350,3 +355,66 @@ async function loadCommodityTable() {
         el.innerHTML = '<div class="text-amber-600">⚠ Commodity API nedostupan.</div>';
     }
 }
+
+
+// ==========================================================
+//  BATCH D — System Health mini card (admin only)
+// ==========================================================
+async function renderSystemHealthMini() {
+    const main = document.getElementById('main-content');
+    if (!main) return;
+    // Ubaci karticu ispod KPI-eva ako vec ne postoji
+    let holder = document.getElementById('dash-sys-health');
+    if (!holder) {
+        holder = document.createElement('div');
+        holder.id = 'dash-sys-health';
+        holder.className = 'mb-6';
+        const kpis = document.getElementById('dash-kpis');
+        if (kpis && kpis.parentNode) kpis.parentNode.insertBefore(holder, kpis.nextSibling);
+    }
+    holder.innerHTML = `
+        <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+            <div class="flex items-center justify-between mb-3">
+                <b class="text-slate-900 text-sm uppercase tracking-widest">💚 System Health <span class="text-[10px] text-slate-400 font-normal">(admin)</span></b>
+                <a href="/admin/health" class="text-xs text-indigo-600 hover:underline">Full report →</a>
+            </div>
+            <div id="dash-sys-health-tiles" class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                <span class="text-slate-400 col-span-4">⏳ Loading probes…</span>
+            </div>
+        </div>`;
+    try {
+        const r = await fetch('/api/admin/health');
+        if (!r.ok) return;
+        const j = await r.json();
+        const checks = j.checks || {};
+        const tiles = [
+            { key: 'sqlite', label: 'SQLite', icon: '💾' },
+            { key: 'supabase_db', label: 'Supabase DB', icon: '☁️' },
+            { key: 'supabase_auth', label: 'Auth', icon: '🔐' },
+            { key: 'smtp', label: 'SMTP', icon: '✉️' },
+            { key: 'mail_queue', label: 'Mail Queue', icon: '📮' },
+            { key: 'disk', label: 'Disk', icon: '💽' },
+            { key: 'backup', label: 'Backup', icon: '🗄' },
+            { key: 'webhook', label: 'Webhook', icon: '🪝' },
+        ];
+        const html = tiles.map(t => {
+            const c = checks[t.key] || {};
+            const cls = c.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                : (c.status === 'disabled' || c.status === 'not_configured'
+                    ? 'bg-slate-50 border-slate-200 text-slate-500'
+                    : 'bg-rose-50 border-rose-200 text-rose-800');
+            const lbl = c.ok ? 'OK' : (c.status === 'disabled' ? 'off' : (c.status === 'not_configured' ? 'n/a' : 'FAIL'));
+            return `<a href="/admin/health" class="rounded-lg border ${cls} p-2 flex items-center gap-2 hover:brightness-95 no-underline">
+                <span class="text-base">${t.icon}</span>
+                <span class="flex-1 min-w-0">
+                    <span class="block font-bold truncate">${t.label}</span>
+                    <span class="block text-[10px] opacity-70 truncate">${(c.detail || '').substring(0, 32) || lbl}</span>
+                </span>
+                <span class="text-[10px] font-bold uppercase">${lbl}</span>
+            </a>`;
+        }).join('');
+        const el = document.getElementById('dash-sys-health-tiles');
+        if (el) el.innerHTML = html;
+    } catch(_) {}
+}
+window.renderSystemHealthMini = renderSystemHealthMini;
