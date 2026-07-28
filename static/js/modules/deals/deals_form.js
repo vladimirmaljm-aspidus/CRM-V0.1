@@ -120,6 +120,22 @@ function showDealForm({dealId = null, offerDetails = null} = {}) {
            </fieldset>
        </div>` : ''}
        
+       ${dealId ? `
+       <fieldset class="border border-[var(--border)] p-3 rounded-lg" id="deal-docs-fieldset">
+         <legend class="text-sm px-2 text-main font-bold">📄 Documents <span class="text-xs font-normal text-[var(--muted)]">(Faza 4)</span></legend>
+         <div class="flex flex-wrap gap-2 mb-3" id="deal-docs-actions">
+             <button type="button" class="btn small btn-primary" data-issue-doc="proforma"      title="Issue Proforma Invoice">📋 Proforma</button>
+             <button type="button" class="btn small btn-primary" data-issue-doc="contract"      title="Issue Contract">📝 Contract</button>
+             <button type="button" class="btn small btn-primary" data-issue-doc="delivery_note" title="Issue Delivery Note">📦 Delivery Note</button>
+             <button type="button" class="btn small btn-primary" data-issue-doc="credit_note"   title="Issue Credit Note">↩️ Credit Note</button>
+             <div class="flex-1"></div>
+             <button type="button" class="btn small btn-ghost" onclick="viewDealTimeline('${dealId}')">📜 Full Timeline</button>
+         </div>
+         <div id="deal-docs-list" class="text-xs text-[var(--muted)]">Loading documents…</div>
+         <p class="text-xs text-[var(--muted)] mt-2">Numbers are reserved atomically and idempotently. Clicking again returns the existing number.</p>
+       </fieldset>
+       ` : ''}
+
        <fieldset class="border border-[var(--border)] p-3 rounded-lg"><legend class="text-sm px-2 text-main font-bold">${Utils.t('fields.status')}</legend>
          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
              <label class="block text-sm text-main">${Utils.t('fields.paymentDueDateBuyer')}<input name="buyerPaymentDate" type="date" class="form-input mt-1" value="${Utils.escapeHtml(item.paymentDates?.buyer || '')}" /></label>
@@ -148,4 +164,106 @@ function showDealForm({dealId = null, offerDetails = null} = {}) {
      if (canViewCosts && typeof DealsCalculations !== 'undefined') {
          DealsCalculations.initFormEvents(document.getElementById('deal-form'));
      }
+
+     // FAZA 4 — Deal documents panel wiring
+     if (dealId) _wireDealDocumentsPanel(dealId);
+}
+
+// ==========================================================
+//  FAZA 4: Deal Documents panel — load list + issue new number
+// ==========================================================
+async function _wireDealDocumentsPanel(dealId) {
+    const listEl = document.getElementById('deal-docs-list');
+    if (!listEl) return;
+
+    const DOC_META = {
+        proforma:      { icon: '📋', label: 'Proforma',      color: 'bg-blue-100 text-blue-700 border-blue-200' },
+        contract:      { icon: '📝', label: 'Contract',      color: 'bg-purple-100 text-purple-700 border-purple-200' },
+        invoice:       { icon: '💵', label: 'Invoice',       color: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
+        offer:         { icon: '⭐', label: 'Offer',         color: 'bg-amber-100 text-amber-700 border-amber-200' },
+        delivery_note: { icon: '📦', label: 'Delivery Note', color: 'bg-slate-100 text-slate-700 border-slate-200' },
+        credit_note:   { icon: '↩️', label: 'Credit Note',   color: 'bg-red-100 text-red-700 border-red-200' },
+    };
+
+    const renderList = (docs) => {
+        if (!docs || docs.length === 0) {
+            listEl.innerHTML = `<div class="text-xs text-[var(--muted)] italic py-2">No documents issued for this deal yet. Click a button above to reserve a document number.</div>`;
+            return;
+        }
+        listEl.innerHTML = `
+            <div class="space-y-1.5">
+                ${docs.map(d => {
+                    const m = DOC_META[d.docType] || { icon: '📄', label: d.docType, color: 'bg-slate-100 text-slate-700 border-slate-200' };
+                    const isSuperseded = d.status === 'superseded';
+                    const dt = d.issuedAt ? new Date(d.issuedAt) : null;
+                    const dtStr = dt && !isNaN(dt) ? dt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) : (d.issuedAt || '—');
+                    return `
+                        <div class="flex items-center gap-2 py-1.5 px-2 rounded border ${m.color} ${isSuperseded ? 'opacity-60' : ''}">
+                            <span class="text-lg">${m.icon}</span>
+                            <div class="flex-1 min-w-0">
+                                <div class="text-sm font-semibold truncate">${Utils.escapeHtml(m.label)}: <code class="font-mono text-xs">${Utils.escapeHtml(d.docNumber)}</code>
+                                    ${d.revision > 0 ? `<span class="text-[10px] font-bold ml-1 opacity-70">R${d.revision}</span>` : ''}
+                                    ${isSuperseded ? `<span class="text-[10px] font-bold ml-1 uppercase">superseded</span>` : ''}
+                                </div>
+                                <div class="text-[10px] opacity-70">${Utils.escapeHtml(dtStr)} · by ${Utils.escapeHtml(d.issuedBy || 'system')}</div>
+                            </div>
+                            <button type="button" class="btn btn-ghost small text-[10px]"
+                                    onclick="navigator.clipboard.writeText('${d.docNumber}'); if(typeof showToast==='function') showToast('Copied ${d.docNumber}', 'success')">
+                                Copy
+                            </button>
+                        </div>`;
+                }).join('')}
+            </div>`;
+    };
+
+    const load = async () => {
+        try {
+            const r = await fetch(`/api/deals/${encodeURIComponent(dealId)}/documents`);
+            if (!r.ok) { listEl.innerHTML = `<div class="text-xs text-red-600">Failed to load (HTTP ${r.status})</div>`; return; }
+            const j = await r.json();
+            renderList(j.documents || []);
+        } catch (e) {
+            listEl.innerHTML = `<div class="text-xs text-red-600">Failed to load: ${e.message}</div>`;
+        }
+    };
+
+    // Initial load
+    load();
+
+    // Issue-document handlers
+    document.querySelectorAll('[data-issue-doc]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const docType = btn.dataset.issueDoc;
+            const meta = DOC_META[docType] || { label: docType };
+            btn.disabled = true;
+            const originalText = btn.textContent;
+            btn.textContent = '⏳ ' + meta.label;
+            try {
+                const csrf = (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '';
+                const r = await fetch(`/api/deals/${encodeURIComponent(dealId)}/issue-document`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                    body: JSON.stringify({ docType })
+                });
+                let body = {};
+                try { body = await r.json(); } catch (_) {}
+                if (r.ok && body.docNumber) {
+                    const msg = body.status === 'existing'
+                        ? `Existing ${meta.label} number: ${body.docNumber}`
+                        : `✓ ${meta.label} issued: ${body.docNumber}`;
+                    if (typeof showToast === 'function') showToast(msg, 'success');
+                    await load();
+                } else {
+                    const errMsg = body.error || body.message || `HTTP ${r.status}`;
+                    if (typeof showToast === 'function') showToast(`Failed to issue ${meta.label}: ${errMsg}`, 'error', { requestId: body.request_id });
+                    else alert(`Failed to issue ${meta.label}: ${errMsg}`);
+                }
+            } catch (e) {
+                if (typeof showToast === 'function') showToast('Network error: ' + e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        });
+    });
 }
