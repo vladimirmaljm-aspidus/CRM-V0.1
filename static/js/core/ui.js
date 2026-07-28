@@ -814,7 +814,7 @@ function setupGlobalListeners(){
   try {
     const isAdmin = state && state.user && state.user.role === 'admin';
     if (isAdmin) {
-      ['supabase-admin-link', 'admin-errors-link'].forEach(id => {
+      ['supabase-admin-link', 'admin-health-link', 'admin-errors-link'].forEach(id => {
         const el = document.getElementById(id);
         if (el) { el.classList.remove('hidden'); el.classList.add('flex'); }
       });
