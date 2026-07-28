@@ -209,6 +209,13 @@
                   <p class="pref-hint">Google Authenticator ili Authy app. Preporučeno za admin naloge.</p>
                   <button class="pref-btn pref-btn-secondary" onclick="open2FA()">Manage 2FA</button>
                 </div>
+
+                <hr style="margin:16px 0;border:none;border-top:1px solid #e5e7eb">
+                <div class="pref-field">
+                  <label>Sign out all other devices</label>
+                  <p class="pref-hint">Ako misliš da neko drugi ima pristup tvom nalogu, ovo odmah ukida SVE druge otvorene sesije (na drugim uređajima). Ova sesija ostaje aktivna.</p>
+                  <button class="pref-btn pref-btn-danger" onclick="killAllOtherSessions()">🚪 Kill all other sessions</button>
+                </div>
               </div>
 
               <!-- APPEARANCE -->
@@ -632,6 +639,31 @@
     function logoutNow() {
         if (confirm('Sign out?')) window.location.href = '/logout';
     }
+
+    async function killAllOtherSessions() {
+        if (!confirm('Sign out ALL your other sessions on other devices?\n\nThis session (right now) stays active.')) return;
+        const csrf = (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '';
+        try {
+            const r = await fetch('/api/users/kill-all-sessions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+            });
+            let j = {};
+            try { j = await r.json(); } catch(_) {}
+            if (r.ok && j.status === 'ok') {
+                if (typeof showToast === 'function') showToast('✓ All other sessions signed out.', 'success', 5000);
+                else alert('All other sessions have been signed out.');
+            } else {
+                const msg = j.error || j.message || `HTTP ${r.status}`;
+                if (typeof showToast === 'function') showToast('Error: ' + msg, 'error', { requestId: j.request_id });
+                else alert('Error: ' + msg);
+            }
+        } catch (e) {
+            if (typeof showToast === 'function') showToast('Network error: ' + e.message, 'error');
+            else alert('Network error');
+        }
+    }
+    window.killAllOtherSessions = killAllOtherSessions;
 
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));

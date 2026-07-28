@@ -256,7 +256,53 @@
             if (overlay) { document.body.removeChild(overlay); overlay = null; }
         }
 
-        input.addEventListener('input', () => { activeIdx = 0; render(); });
+        // OCR search je async — koristimo debounce da ne spamujemo endpoint.
+        let ocrHits = [];
+        let ocrTimer = null;
+        function scheduleOcrSearch(q) {
+            if (ocrTimer) clearTimeout(ocrTimer);
+            if (!q || q.length < 3) { ocrHits = []; return; }
+            ocrTimer = setTimeout(async () => {
+                try {
+                    const r = await fetch('/api/documents/search?q=' + encodeURIComponent(q));
+                    if (!r.ok) return;
+                    const j = await r.json();
+                    ocrHits = (j.results || []).slice(0, 5).map(h => ({
+                        id: 'ocr-' + (h.file_url || ''),
+                        icon: '📎',
+                        group: 'Document contents (OCR)',
+                        title: (h.filename || h.file_url || '').split('/').pop(),
+                        subtitle: (h.preview || '').substring(0, 100),
+                        run: () => { window.open(h.file_url, '_blank'); },
+                        score: 0.6,  // niži od direct name match
+                    }));
+                    render();
+                } catch(_) {}
+            }, 300);
+        }
+        // Ubaci OCR hitove u result assembly (patch — najniže prioriteta)
+        const _origRender = render;
+        render = function() {
+            _origRender();
+            if (ocrHits.length && input.value.trim().length >= 3) {
+                // append u listu ako nisu tu
+                items.push(...ocrHits);
+                // ponovo pozovi originalni render sa updated items — al' zapravo
+                // items je vec renderovan; jednostavnije: re-invoke _origRender
+                // sa novom listom. Da izbegnemo rekurziju, pritisnimo flag.
+                if (!window._cmdkOcrRePainted) {
+                    window._cmdkOcrRePainted = true;
+                    _origRender();
+                    window._cmdkOcrRePainted = false;
+                }
+            }
+        };
+
+        input.addEventListener('input', () => {
+            activeIdx = 0;
+            scheduleOcrSearch(input.value.trim());
+            render();
+        });
         input.addEventListener('keydown', (e) => {
             if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); render(); }
             else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0); render(); }

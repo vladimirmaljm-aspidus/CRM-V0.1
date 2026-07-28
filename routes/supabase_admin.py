@@ -889,3 +889,134 @@ def supabase_sync_back():
         })
     except Exception as e:
         return jsonify({'ok': False, 'error': f'{type(e).__name__}: {str(e)[:200]}'}), 500
+
+
+# ==========================================================
+#  BATCH D — NEW: KILL-ALL-SESSIONS, MANUAL BACKUP, SIGNED URL
+# ==========================================================
+
+@supabase_admin_bp.route('/api/users/kill-all-sessions', methods=['POST'])
+@login_required
+def users_kill_all_sessions():
+    """Bump token_version za trenutnog user-a — sve postojece sesije se
+    trenutno prekidaju osim ove koja je pozvala. Koristi se kad user
+    misli da je nalog kompromitovan (bez potrebe za password change)."""
+    import sqlite3
+    from config import DB_FILE
+    uid = session.get('user_id')
+    if not uid:
+        return jsonify({"error": "no_session"}), 401
+    try:
+        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+            conn.execute('PRAGMA busy_timeout=15000;')
+            row = conn.execute("SELECT token_version FROM users WHERE id=?", (uid,)).fetchone()
+            if not row:
+                return jsonify({"error": "user_not_found"}), 404
+            new_ver = int(row[0] or 1) + 1
+            conn.execute("UPDATE users SET token_version=? WHERE id=?", (new_ver, uid))
+            conn.commit()
+        # Osvezi trenutnu sesiju da NE ostanem odjavljen
+        session['token_version'] = new_ver
+        log_audit('SECURITY', 'users',
+                  f'User {session.get("username")} killed all other sessions (token_version→{new_ver}).',
+                  is_suspicious=True)
+        return jsonify({"status": "ok", "new_token_version": new_ver,
+                        "message": "All other sessions have been signed out."})
+    except Exception as e:
+        record_error('/api/users/kill-all-sessions', e)
+        return jsonify({"error": "server_error", "message": str(e)[:200]}), 500
+
+
+@supabase_admin_bp.route('/api/admin/backup/trigger', methods=['POST'])
+@login_required
+def admin_backup_trigger():
+    """Rucno pokreni Fernet backup snapshot odmah. Ne ceka noc.
+    Vraca listu kreiranih fajlova + off-site status."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    try:
+        import sqlite3, datetime as _dt, os as _os
+        from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE, DATA_DIR
+        from utils import cipher_suite
+        backups_dir = _os.path.join(DATA_DIR, 'backups')
+        _os.makedirs(backups_dir, exist_ok=True)
+        ts = _dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        created = []
+        errors = []
+        offsite = []
+        for db_path in (DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE):
+            if not _os.path.exists(db_path):
+                continue
+            tmp_copy = _os.path.join(backups_dir, f'.tmp_manual_{_os.path.basename(db_path)}')
+            try:
+                src_conn = sqlite3.connect(db_path, timeout=30.0)
+                dst_conn = sqlite3.connect(tmp_copy, timeout=30.0)
+                with dst_conn:
+                    src_conn.backup(dst_conn)
+                dst_conn.close(); src_conn.close()
+                with open(tmp_copy, 'rb') as f:
+                    raw = f.read()
+                enc = cipher_suite.encrypt(raw)
+                out = _os.path.join(backups_dir, f'{_os.path.basename(db_path)}.{ts}.MANUAL.fernet')
+                with open(out, 'wb') as f:
+                    f.write(enc)
+                _os.remove(tmp_copy)
+                try: _os.chmod(out, 0o600)
+                except Exception: pass
+                created.append({'file': _os.path.basename(out), 'size_bytes': len(enc)})
+                # Off-site mirror ako je enabled
+                if _os.environ.get('BACKUP_OFFSITE', '').strip().lower() in ('1','true','yes','on'):
+                    try:
+                        import utils_storage as _st
+                        if _st.use_supabase_storage():
+                            r = _st.upload_bytes('backups', f'manual/{_os.path.basename(out)}',
+                                                 enc, content_type='application/octet-stream')
+                            offsite.append({'file': _os.path.basename(out), 'ok': bool(r.get('ok'))})
+                    except Exception as ee:
+                        offsite.append({'file': _os.path.basename(out), 'error': str(ee)[:120]})
+            except Exception as e:
+                errors.append({'db': _os.path.basename(db_path), 'error': str(e)[:120]})
+                try:
+                    if _os.path.exists(tmp_copy): _os.remove(tmp_copy)
+                except Exception: pass
+        log_audit('CREATE', 'system',
+                  f'Manual backup triggered by {session.get("username")}: {len(created)} files, {len(errors)} errors',
+                  is_suspicious=False)
+        return jsonify({
+            'ok': len(errors) == 0,
+            'created': created,
+            'errors': errors,
+            'offsite': offsite,
+            'timestamp': ts,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'{type(e).__name__}: {str(e)[:200]}'}), 500
+
+
+@supabase_admin_bp.route('/api/admin/backup/list', methods=['GET'])
+@login_required
+def admin_backup_list():
+    """Lista svih .fernet backup fajlova sa metadata."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    import os as _os
+    from config import DATA_DIR
+    backups_dir = _os.path.join(DATA_DIR, 'backups')
+    if not _os.path.isdir(backups_dir):
+        return jsonify({'files': [], 'total': 0})
+    files = []
+    for name in _os.listdir(backups_dir):
+        if not name.endswith('.fernet'): continue
+        p = _os.path.join(backups_dir, name)
+        try:
+            st = _os.stat(p)
+            files.append({
+                'name': name, 'size_bytes': st.st_size,
+                'size_mb': round(st.st_size / (1024*1024), 2),
+                'mtime': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(st.st_mtime)),
+                'is_manual': '.MANUAL.' in name,
+            })
+        except Exception:
+            pass
+    files.sort(key=lambda x: x['mtime'], reverse=True)
+    return jsonify({'files': files, 'total': len(files)})
