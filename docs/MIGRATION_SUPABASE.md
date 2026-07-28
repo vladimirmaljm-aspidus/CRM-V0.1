@@ -247,3 +247,133 @@ Radim po fazama i posle svake ti šaljem "kraj faze N" javu sa listom šta da te
 ---
 
 **Sledeći korak**: pokreni tačke 1-5 iz Faze 0 gore, pa mi javi. Onda krećem sa Fazom 1.
+
+---
+
+# Dodatak (v22.2, decembar 2026) — Faze 4/5/6 + display customization
+
+Ovaj deo dokumentuje šta je uradjeno **posle** originalnog plana Faza
+0–5, kao proširenje aplikacije koje ide **paralelno** sa migracijom.
+
+## Faza 4 — Deal enrichment (Proforma / Contract / Delivery Note binding)
+
+**Šta radi:** iz forme za edit posla admin klikne jedno dugme i sistem
+atomski rezerviše broj dokumenta (`document_register` tabela) i veže ga
+za `entityId=dealId`. Idempotentno je — ako već postoji aktivan broj za
+tu (docType, dealId) kombinaciju, vraća postojeći bez pravljenja novog.
+
+**Backend:**
+- `POST /api/deals/<deal_id>/issue-document` sa `{"docType": "proforma|contract|delivery_note|credit_note"}`
+- `GET  /api/deals/<deal_id>/documents` — lista svih izdatih brojeva
+
+**Frontend:**
+- Nova sekcija "📄 Documents" u deal edit formi (samo za postojeće poslove).
+- 4 one-click dugmeta + live lista sa Copy dugmetom po svakom broju.
+
+**Šta klijent vidi:** ništa — svi izdati brojevi su interni CRM tracking.
+Ako se broj kasnije ubaci u PDF ponude/fakture, klijent ga vidi tamo.
+
+## Faza 5 — Per-partner inventory tracking
+
+**Šta radi:** za svakog partnera (dobavljača, obično) admin može da
+prati stanje po SKU-u — koliko ima na stanju (`on_hand`), koliko je
+rezervisano (`reserved`), koliko je slobodno (`free = on_hand - reserved`).
+Svaka promena je append-only movement (IN / OUT / ADJUST / RESERVE / RELEASE)
+sa opcionim `deal_id` za traceability.
+
+**Nova šema (SQLite `aspidus_crm.db`):**
+```sql
+partner_inventory   (partner_id, product_id, qty_on_hand, qty_reserved, unit, last_movement_at)
+inventory_movements (id, partner_id, product_id, kind, qty, unit, deal_id, note, created_at, created_by)
+```
+
+**Backend endpointi** (svi admin-only):
+- `GET  /api/partners/<pid>/inventory` — trenutno stanje
+- `POST /api/partners/<pid>/inventory/movements` — nova operacija
+- `GET  /api/partners/<pid>/inventory/movements` — istorija (filter po product_id / deal_id)
+
+**Frontend:** dugme "📦 Inventory" na partner detail-u otvara modal sa:
+- Grid kartica po SKU-u (Free / Reserved / On hand + "Out" badge kada je free ≤ 0)
+- Forma za post movement-a
+- Istorija poslednjih 50 movementa sa color-coded chip-ovima po kind-u
+
+**Napomena za Supabase migraciju:** ove 2 tabele još **NISU** dodate u
+`schemas/supabase_schema.sql`. Kad dođe vreme za punu migraciju, treba:
+1. Dodati CREATE TABLE za `partner_inventory` i `inventory_movements`
+   u Supabase schema fajl.
+2. Dodati u `MIGRATION_PLAN` u `scripts/migrate_data_to_supabase.py`.
+3. Pokrenuti reconcile posle prve migracije.
+
+## Faza 6 — Documentation timeline per deal
+
+**Šta radi:** za svaki posao, admin klikne 📜 Timeline i dobija
+hronoloski prikaz **svega** što se desilo — deal create/update,
+transakcije, izdati dokumenti, revizije, audit log entries.
+
+**Backend endpoint:** `GET /api/deals/<deal_id>/timeline?desc=0|1`
+- Sakuplja događaje iz 5 izvora (deals, transactions, document_register,
+  document_revisions, audit_log).
+- Vraća sortiran spisak sa `kind`, `icon`, `title`, `subtitle`, `timestamp`, `meta`.
+
+**Frontend:** vertikalna timeline sa:
+- Kind filter chip-ovi (klik toggle-uje visible)
+- Reverse order dugme (re-fetch sa `?desc=1`)
+- Color-coded dot-ovi po vrsti (indigo/emerald/blue/amber/slate)
+
+## Storage Init dugme (Faza 2 finalizacija)
+
+`/admin/supabase` → **Supabase Storage** kartica → **Init Buckets**
+- `POST /api/supabase/storage/init` — bootstrap 3 bucket-a (partner-docs,
+  offer-pdfs, portal-uploads) kao private, idempotent
+- `GET  /api/supabase/storage/status` — prikazuje broj fajlova + 3 najnovija
+  po bucket-u
+
+## Portal upload dual-write u Supabase Storage
+
+`/api/portal/upload/<token>` sada **paralelno**:
+1. Snima fajl lokalno u `data/portal_uploads/` (kao pre)
+2. **Best-effort mirror** u `partner-docs` bucket sa path-om
+   `partners/<partner_id>/portal-uploads/<file>`
+
+Ako Storage padne, mirror se preskače, lokalna kopija ostaje autoritativna.
+Greške upload-a idu u admin error buffer sa partner_id + filename.
+
+## Session heartbeat (CRM + Portal)
+
+- `static/js/core/session_heartbeat.js` — CRM heartbeat, warning modal 2 min pre isteka
+- `static/js/portal/heartbeat.js` — Portal heartbeat, warning modal 90s pre isteka
+- Backend: `GET /api/session/info` (CRM) i `GET /api/portal/heartbeat/<token>` (portal)
+
+## Display customization (v22.2)
+
+Novi kontroli u Preferences → Appearance:
+- Font size (S / M / L / XL), UI zoom (80–140%)
+- Modal width (Compact / Normal / Wide / Fullscreen)
+- Font family (System / Sans / Serif / Mono), Line height (Tight / Normal / Relaxed)
+- Density (Comfortable / Compact)
+- High contrast toggle (accessibility)
+- Reduce motion toggle (accessibility)
+
+Sve se čuva u localStorage kao `aspidus.prefs.v1`, primenjuje se live bez
+reload-a preko CSS custom props na `<html>`. Svaki modal (uključujući
+i Preferences panel sam) postuje `--user-modal-max`.
+
+## Reconcile alat
+
+```bash
+python3.13 scripts/reconcile_sqlite_supabase.py
+```
+
+Vidi `docs/DB_MAIL_ALIGNMENT.md` za detalje.
+
+## Email trigger audit
+
+```bash
+python3.13 scripts/audit_email_triggers.py
+```
+
+Vraća listu svih call site-ova za slanje mejlova (grouped by category:
+auth / transactional / admin / infra), sa fajl:linija i provider-om koji
+poziv koristi. Koristi se kada želiš da vidiš gde još treba dodati
+notifikaciju ili obrnuto — koje mejlove možda šalješ dvaput.
+
