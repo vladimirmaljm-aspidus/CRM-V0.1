@@ -88,6 +88,125 @@ def init_db():
                 c.execute("ALTER TABLE users ADD COLUMN phone TEXT")
             if 'notif_prefs' not in cols:
                 c.execute("ALTER TABLE users ADD COLUMN notif_prefs TEXT")
+            # v23 Round F — SECURITY UPGRADES: force password change, lockout, password age policy.
+            # must_change_password: admin postavi na 1 → sledeci uspesan login redirectuje user-a
+            #   na /profile/security#password i blokira sve druge rute dok se lozinka ne promeni.
+            # locked_until: ISO timestamp — self-lockout posle N neuspelih pokusaja; nakon isteka
+            #   se automatski otkljucava. Portal magic-link i admin unlock su alternativa.
+            # password_expires_at: kada je poslednja lozinka postavljena + policy period. Login
+            #   ne blokira po isteku (soft warning), samo pokazuje "please change".
+            if 'must_change_password' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+            if 'locked_until' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
+            if 'password_expires_at' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN password_expires_at TEXT")
+
+            # v23 Round F: user_sessions — per-session tracking sa individual revoke.
+            # Ranije smo imali samo token_version (globalno "kill all sesija"). Sada svaki
+            # login pravi row ovde sa jedinstvenim session_id-jem (uuid), i user u
+            # /profile/security vidi listu svih aktivnih sesija sa "Terminate"
+            # dugmetom po redu. login_required proverava (session_id, revoked=0).
+            c.execute('''CREATE TABLE IF NOT EXISTS user_sessions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                ip TEXT,
+                country TEXT,
+                user_agent TEXT,
+                ua_family TEXT,
+                device_label TEXT,
+                revoked INTEGER DEFAULT 0,
+                revoked_at TEXT,
+                revoked_reason TEXT
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_usersess_user ON user_sessions(user_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_usersess_active ON user_sessions(user_id, revoked)')
+
+            # v23 Round F: trusted_devices — 30-dnevni cookie koji preskace 2FA re-prompt na
+            # istom uredjaju. device_token je SHA-256 od (uuid + user_id + secret). NIKAD ne
+            # cuvamo raw token — samo hash, ista logika kao za passwords.
+            c.execute('''CREATE TABLE IF NOT EXISTS trusted_devices (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                label TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                last_seen_at TEXT,
+                last_ip TEXT,
+                revoked INTEGER DEFAULT 0
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_trusteddev_user ON trusted_devices(user_id, revoked)')
+
+            # v23 Round F: password_history — sprecava reuse poslednjih 5 lozinki.
+            # Cuva samo werkzeug scrypt hash, ne raw password. Cist za GDPR.
+            c.execute('''CREATE TABLE IF NOT EXISTS password_history (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                changed_at TEXT NOT NULL
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_pwhistory_user ON password_history(user_id, changed_at)')
+
+            # v23 Round F: known_ips — svaki uspesan login upisuje IP-ove koje user redovno koristi.
+            # Nova IP = email notifikacija ("New login from Belgrade, Serbia — was this you?").
+            c.execute('''CREATE TABLE IF NOT EXISTS known_ips (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                country TEXT,
+                city TEXT,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                login_count INTEGER DEFAULT 1,
+                UNIQUE(user_id, ip)
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_knownips_user ON known_ips(user_id)')
+
+            # v23 Round F: magic_login_tokens — passwordless login link za CRM (email-based).
+            # Alternativa za password reset flow. Jedan-put, TTL 15min, IP-bound.
+            c.execute('''CREATE TABLE IF NOT EXISTS magic_login_tokens (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                purpose TEXT NOT NULL,          -- 'login' | 'unlock' | 'reset' | 'break_glass'
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_at TEXT,
+                request_ip TEXT
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_magictok_user ON magic_login_tokens(user_id)')
+
+            # v23 Round G: user_tasks — todo list per user (personal or assigned).
+            c.execute('''CREATE TABLE IF NOT EXISTS user_tasks (
+                id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                due_at TEXT,
+                priority INTEGER DEFAULT 2,     -- 1=high 2=normal 3=low
+                status TEXT DEFAULT 'open',     -- open | done | canceled
+                linked_entity_type TEXT,
+                linked_entity_id TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_usertasks_owner ON user_tasks(owner_user_id, status)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_usertasks_due ON user_tasks(due_at)')
+
+            # v23 Round G: saved_filters — user cuva svoje "views" (partneri po zemlji, deals u pipeline itd).
+            c.execute('''CREATE TABLE IF NOT EXISTS saved_filters (
+                id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                filter_json TEXT NOT NULL,
+                is_shared INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_savedfilters_owner ON saved_filters(owner_user_id, entity_type)')
 
             # v22: file_text — OCR/text extract cache za KYC uploads.
             # Kada admin trazi "svi partneri koji imaju rec X u dokumentima",

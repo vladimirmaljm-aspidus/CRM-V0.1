@@ -60,13 +60,28 @@ def login():
         with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
             conn.execute('PRAGMA busy_timeout=30000;')
             c = conn.cursor()
-            c.execute('SELECT id, username, password, role, permissions, signature, totp_secret, totp_enabled, totp_recovery FROM users WHERE LOWER(username)=LOWER(?)', (username,))
+            c.execute('SELECT id, username, password, role, permissions, signature, totp_secret, totp_enabled, totp_recovery, locked_until FROM users WHERE LOWER(username)=LOWER(?)', (username,))
             user = c.fetchone()
     except Exception as e:
         # Detaljno logovanje u server log (Render) radi dijagnostike; klijent dobija generičku poruku.
         logger.error(f"LOGIN DB ERROR for user '{username}': {e}", exc_info=True)
         log_audit('CRITICAL_ERROR', 'system', f'Login failed due to database error: {e}', is_suspicious=True, location=location)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
+
+    # ROUND F: account-level lockout — nezavisno od IP blacklist-a.
+    # Napadac iz razlicitih IP-a moze i dalje pokusati previse puta protiv istog user-a;
+    # sada, nakon N neuspelih pokusaja, konkretan nalog se zakljucava na M minuta.
+    if user and len(user) > 9 and user[9]:
+        try:
+            _until = datetime.datetime.fromisoformat(user[9].replace('Z', '+00:00'))
+            _now_dt = datetime.datetime.now(datetime.timezone.utc)
+            if _until > _now_dt:
+                remaining = int((_until - _now_dt).total_seconds())
+                log_audit('SECURITY', 'system', f'Blocked login attempt on locked account: {username}',
+                          is_suspicious=True, location=location)
+                return jsonify({"error": "ACCOUNT_LOCKED", "retry_after_seconds": remaining}), 423
+        except Exception:
+            pass
 
     # Dijagnostika (samo u server log): razlog neuspeha, bez otkrivanja klijentu.
     if not user:
@@ -157,21 +172,119 @@ def login():
         except Exception:
             logger.warning('anomaly detection failed', exc_info=True)
 
+        # ROUND F: per-session tracking + known-IP notification
+        try:
+            from routes.security_center import (_create_session_row, record_login_ip,
+                                                send_new_ip_alert)
+            session['session_id'] = _create_session_row(user[0])
+            if client_ip:
+                is_new_ip = record_login_ip(user[0], client_ip)
+                if is_new_ip:
+                    send_new_ip_alert(user[0], client_ip)
+        except Exception:
+            logger.warning('session_row/known_ip tracking failed', exc_info=True)
+
+        # ROUND F: must-change-password gate — postavi flag u response da frontend
+        # gura na Security > Password. Ne blokiramo login (jer je password check prosao),
+        # samo obavestimo klijenta i login_required ce nakon toga blokirati sve
+        # ne-security rute dok se lozinka ne promeni.
+        must_change = False
+        try:
+            with sqlite3.connect(DB_FILE, timeout=5.0) as _pc:
+                _r = _pc.execute("SELECT must_change_password FROM users WHERE id=?", (user[0],)).fetchone()
+                must_change = bool(_r and _r[0])
+        except Exception:
+            pass
+
         full_details = f"Successful login. Device: {device_info}"
         log_audit('LOGIN', 'system', full_details, location=location)
-        return jsonify({"status": "success", "user": {"id": user[0], "username": user[1], "role": user[3], "permissions": json.loads(user[4]) if user[4] else {}, "signature": user[5] if len(user) > 5 else None}})
+        return jsonify({
+            "status": "success",
+            "user": {
+                "id": user[0], "username": user[1], "role": user[3],
+                "permissions": json.loads(user[4]) if user[4] else {},
+                "signature": user[5] if len(user) > 5 else None,
+            },
+            "must_change_password": must_change,
+        })
     
     # 5. Neuspešna prijava - beleženje pokušaja
     if client_ip not in FirewallCache.login_attempts:
         FirewallCache.login_attempts[client_ip] = []
     FirewallCache.login_attempts[client_ip].append(datetime.datetime.now(datetime.timezone.utc).timestamp())
-    
+
     now = datetime.datetime.now(datetime.timezone.utc).timestamp()
     FirewallCache.login_attempts[client_ip] = [t for t in FirewallCache.login_attempts[client_ip] if now - t < 300]
-    
+
     if len(FirewallCache.login_attempts[client_ip]) >= FirewallCache.settings.get('max_login', 10):
         FirewallCache.blacklist.add(client_ip)
         log_audit('SECURITY', 'firewall', f"Auto-blacklisted IP {client_ip} due to brutal force attempts.", is_suspicious=True, location=location)
+
+    # ROUND F: account-level lockout — ako je user postojao (samo pogresna lozinka),
+    # trag brojimo per-user. Nakon N neuspelih pokusaja (bilo iz kog IP-a) zakljucaj
+    # nalog na M minuta. Admin i sam korisnik (magic-link) mogu da otkljucaju.
+    if user:
+        try:
+            from routes.security_center import _get_policy
+            policy = _get_policy()
+            max_attempts = int(policy.get('max_login_attempts', 10))
+            lockout_min = int(policy.get('lockout_minutes', 15))
+            # Count recent failed logins iz audit_logs za ovog user-a (poslednjih 15 min)
+            cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                      - datetime.timedelta(minutes=lockout_min)).isoformat().replace('+00:00', 'Z')
+            from config import AUDIT_DB_FILE
+            with sqlite3.connect(AUDIT_DB_FILE, timeout=5.0) as _ac:
+                # user_id nije jos postavljen na login (guest); brojimo po username-u u details.
+                _pattern = f"%Failed login attempt: {username}.%"
+                _fail_count = _ac.execute(
+                    "SELECT COUNT(*) FROM audit_logs WHERE action='SECURITY' "
+                    "AND details LIKE ? AND timestamp>=?",
+                    (_pattern, cutoff)
+                ).fetchone()[0]
+            if _fail_count + 1 >= max_attempts:
+                until_iso = (datetime.datetime.now(datetime.timezone.utc)
+                             + datetime.timedelta(minutes=lockout_min)).isoformat().replace('+00:00', 'Z')
+                with sqlite3.connect(DB_FILE, timeout=10.0) as _lc:
+                    _lc.execute('PRAGMA busy_timeout=10000')
+                    _lc.execute("UPDATE users SET locked_until=? WHERE id=?", (until_iso, user[0]))
+                log_audit('SECURITY', 'system',
+                          f'Auto-locked account {username} for {lockout_min}min after {_fail_count+1} failed attempts',
+                          is_suspicious=True, location=location)
+                # Emailuj user-a sa unlock magic-link-om
+                try:
+                    with sqlite3.connect(DB_FILE, timeout=5.0) as _uc:
+                        _u = _uc.execute("SELECT email FROM users WHERE id=?", (user[0],)).fetchone()
+                    if _u and _u[0]:
+                        from routes.security_center import _hash_token, _now_iso
+                        import secrets
+                        tok = secrets.token_urlsafe(48)
+                        expires = (datetime.datetime.now(datetime.timezone.utc)
+                                   + datetime.timedelta(hours=2)).isoformat().replace('+00:00', 'Z')
+                        with sqlite3.connect(DB_FILE, timeout=5.0) as _tc:
+                            _tc.execute(
+                                "INSERT INTO magic_login_tokens (token, user_id, purpose, created_at, expires_at, request_ip) "
+                                "VALUES (?, ?, 'unlock', ?, ?, ?)",
+                                (_hash_token(tok), user[0], _now_iso(), expires, client_ip)
+                            )
+                        base = request.host_url.rstrip('/')
+                        link = f"{base}/login/magic?t={tok}"
+                        from utils_email import send_email_now
+                        send_email_now(
+                            _u[0], 'Aspidus — Account locked, unlock link',
+                            f"<p>Hi {username},</p>"
+                            f"<p>Your account was temporarily locked after {_fail_count+1} failed sign-in attempts. "
+                            f"It will unlock automatically in {lockout_min} minutes.</p>"
+                            f"<p>To unlock immediately, click: <a href=\"{link}\">Unlock my account</a> (valid 2h).</p>"
+                            f"<p>If this wasn't you, someone is trying to guess your password — change it after signing in.</p>",
+                            body_type='html'
+                        )
+                except Exception:
+                    pass
+                return jsonify({"error": "ACCOUNT_LOCKED",
+                                "retry_after_seconds": lockout_min * 60,
+                                "message": "Too many failed attempts. Check your email for an unlock link."}), 423
+        except Exception:
+            pass
 
     log_audit('SECURITY', 'system', f'Failed login attempt: {username}. Device: {device_info}', is_suspicious=True, location=location)
     return jsonify({"error": "AUTH_ERROR"}), 401
@@ -252,14 +365,29 @@ def change_password():
     except Exception:
         pass
 
+    # ROUND F: password history — zabrani reuse poslednjih N lozinki
+    try:
+        from routes.security_center import check_password_reuse, add_password_history
+        if check_password_reuse(session['user_id'], new_password):
+            return jsonify({
+                "error": "PASSWORD_REUSED",
+                "message": "This password matches one you've used recently. Please choose a different one.",
+            }), 400
+    except Exception:
+        pass
+
     try:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
+        pw_hash = generate_password_hash(new_password, method='scrypt:32768:8:1')
         with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
             conn.execute('PRAGMA busy_timeout=30000;')
             c = conn.cursor()
-            pw_hash = generate_password_hash(new_password, method='scrypt:32768:8:1')
             c.execute('UPDATE users SET password=?, last_password_change_at=? WHERE id=?', (pw_hash, now_iso, session['user_id']))
             conn.commit()
+        try:
+            add_password_history(session['user_id'], pw_hash)
+        except Exception:
+            pass
     except Exception:
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
 
