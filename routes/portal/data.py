@@ -39,6 +39,36 @@ def view_portal(token):
     if ip and ',' in ip: ip = ip.split(',')[0].strip()
     if not check_portal_rate_limit(ip):
         abort(429, description="DDoS Protection: Rate limit exceeded.")
+
+    # Provera da li token uopste postoji u sistemu — ako ne, umesto praznog
+    # portal.html-a koji potom radi 401, pokazi jasnu poruku.
+    conn = sqlite3.connect(DB_FILE, timeout=10.0)
+    try:
+        c = conn.cursor()
+        partner_id, partner = find_partner_by_token(c, token, enforce_active=False)
+    finally:
+        conn.close()
+
+    if not partner_id:
+        log_audit('SECURITY', 'portal',
+                  f'Invalid portal token access attempt from {ip}: {token[:12]}…',
+                  is_suspicious=True)
+        return render_template('portal_error.html',
+                               title='Link Not Recognized',
+                               reason='invalid_token',
+                               message='This portal link is not recognized. It may have been mistyped, expired, or revoked. Please request a new link from your account manager.',
+                               contact='Contact your Aspidus account manager for a fresh invitation.'), 404
+
+    if partner.get('isPortalActive') is False:
+        log_audit('SECURITY', 'portal',
+                  f'Access attempt to revoked portal (partner {partner_id}) from {ip}',
+                  is_suspicious=True)
+        return render_template('portal_error.html',
+                               title='Portal Access Suspended',
+                               reason='revoked',
+                               message='This account has been temporarily suspended. Please contact your account manager to restore access.',
+                               contact=f'If you believe this is an error, reach out to compliance@aspidus.co.'), 403
+
     return render_template('portal.html', token=token)
 
 @portal_bp.route('/api/portal/data/<token>', methods=['GET'])
