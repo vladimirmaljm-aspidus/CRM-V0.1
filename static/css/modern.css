@@ -413,3 +413,161 @@ header, .topbar {
   .card { border-radius: 12px !important; }
   aside nav button:hover, aside nav a:hover { transform: none; }
 }
+
+/* =========================================
+   SIDEBAR REDESIGN (v22.1)
+   Utility grid + quick actions + badges
+   ========================================= */
+
+/* Kompaktna utility traka (Refresh, Notif, Profile, Settings) */
+.sb-util-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border-radius: 8px;
+  color: var(--muted, #94a3b8);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.1s;
+  cursor: pointer;
+}
+.sb-util-btn:hover {
+  color: var(--accent, #4f46e5);
+  background: var(--hover-bg, #f1f5f9);
+  border-color: rgba(79, 70, 229, 0.15);
+}
+.sb-util-btn:active { transform: scale(0.94); }
+
+/* Kad je sidebar collapsed, utility grid postaje 1-column */
+body.sidebar-collapsed .sidebar-utility-grid {
+  grid-template-columns: 1fr;
+  gap: 0.4rem;
+}
+
+/* Quick action tastere (New Deal, Partner, Search) */
+.nav-quick-btn {
+  cursor: pointer;
+  min-height: 56px;
+}
+.nav-quick-btn svg {
+  width: 18px;
+  height: 18px;
+}
+body.sidebar-collapsed .nav-quick {
+  display: none;   /* stedi vertikalu kad je usko */
+}
+
+/* Nav badge — subtil sjaj kad je vrednost > 0 */
+.nav-badge {
+  box-shadow: 0 0 0 2px var(--panel, #fff);
+  animation: navBadgePulse 3s ease-in-out infinite;
+}
+@keyframes navBadgePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(0.95); }
+}
+body.sidebar-collapsed .nav-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 16px !important;
+  height: 16px !important;
+  font-size: 9px !important;
+}
+
+/* User avatar/status dot */
+#user-status-dot { animation: statusPulse 2s ease-in-out infinite; }
+@keyframes statusPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+  50% { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
+}
+
+/* Sidebar group title — malo tanje sa razdvojnom linijom */
+.nav-group-title {
+  position: relative;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+.nav-group-title:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+body.sidebar-collapsed .nav-group-title {
+  border: none !important;
+  padding: 0.5rem 0 0 !important;
+}
+
+/* =========================================
+   USER DISPLAY CUSTOMIZATION (v22.2)
+   Consumes CSS vars set by preferences.js
+   ========================================= */
+
+:root {
+  --user-font-size: 14px;
+  --user-line-height: 1.55;
+  --user-font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --user-modal-max: 800px;
+  --user-zoom: 1;
+}
+
+/* Global body typography — svi tekstovi bez posebnog inline font-size prate ovo */
+body {
+  font-family: var(--user-font-family);
+  font-size: var(--user-font-size);
+  line-height: var(--user-line-height);
+}
+
+/* Inputs / dugmadi / select nasledjuju font-family i base size */
+input, select, textarea, button {
+  font-family: inherit;
+}
+
+/* Existing app modal — postuj korisnicki modal-max width umesto tvrdog 4xl */
+#modal-content {
+  max-width: min(var(--user-modal-max), 96vw) !important;
+  width: 100% !important;
+}
+[data-modal-size="full"] #modal-content {
+  max-width: 96vw !important;
+  height: 92vh;
+  max-height: 92vh;
+}
+[data-modal-size="compact"] #modal-content {
+  max-width: min(520px, 96vw) !important;
+}
+
+/* Preferences modal takodje — i on mora da postuje user-modal-max */
+.pref-modal {
+  max-width: min(720px, var(--user-modal-max), 96vw) !important;
+}
+
+/* Density (compact) — smanji padding-e globalno */
+[data-density="compact"] .card,
+[data-density="compact"] table td,
+[data-density="compact"] table th {
+  padding-top: 0.375rem !important;
+  padding-bottom: 0.375rem !important;
+}
+[data-density="compact"] .btn { padding: 6px 12px; font-size: 12px; }
+
+/* High contrast toggle */
+[data-high-contrast="on"] {
+  --border: #0f172a;
+  --muted: #0f172a;
+  --hover-bg: #fef3c7;
+}
+[data-high-contrast="on"] body { color: #000; }
+[data-high-contrast="on"] .card { border-width: 2px !important; border-color: #0f172a !important; }
+[data-high-contrast="on"] .btn { border: 2px solid currentColor !important; }
+[data-high-contrast="on"] a { text-decoration: underline; }
+
+/* Reduce motion — ubij sve animacije i tranzicije */
+[data-reduce-motion="on"] *,
+[data-reduce-motion="on"] *::before,
+[data-reduce-motion="on"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}

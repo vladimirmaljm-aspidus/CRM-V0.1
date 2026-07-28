@@ -139,8 +139,9 @@ const DealsCalculations = {
                         setTimeout(() => exRateInp.classList.remove('bg-green-100'), 500);
                         formEl.dispatchEvent(new Event('input'));
                     }
-                } else { 
-                    alert(Utils.t('misc.apiRateError')); 
+                } else {
+                    if (typeof showToast === 'function') showToast(Utils.t('misc.apiRateError'), 'error');
+                    else alert(Utils.t('misc.apiRateError'));
                 }
             });
         }

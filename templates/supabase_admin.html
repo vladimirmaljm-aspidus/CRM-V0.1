@@ -134,6 +134,23 @@
             </div>
             <pre class="log" id="migration-log">-- (no migration run yet) --</pre>
         </div>
+
+        <!-- FAZA 2: SUPABASE STORAGE -->
+        <div class="card p-5 mb-4">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="font-semibold text-slate-900 flex items-center gap-2"><span>📁</span> Supabase Storage <span class="text-xs font-normal text-slate-500">(Faza 2)</span></h2>
+                <div class="flex gap-2">
+                    <button class="btn btn-ghost" onclick="refreshStorage()">🔄 Refresh</button>
+                    <button class="btn btn-primary" onclick="initStorageBuckets()" id="btn-init-storage">✨ Init Buckets</button>
+                </div>
+            </div>
+            <div class="rounded-xl bg-slate-50 border border-slate-200 p-4 text-xs text-slate-600 leading-relaxed mb-3">
+                <strong class="text-slate-800">Init Buckets</strong> idempotentno kreira <code class="bg-white px-1.5 py-0.5 rounded border">partner-docs</code>,
+                <code class="bg-white px-1.5 py-0.5 rounded border">offer-pdfs</code> i <code class="bg-white px-1.5 py-0.5 rounded border">portal-uploads</code>
+                kao private bucket-ove. Sme se pozvati vise puta bez efekta. Prvo ukljuci <code class="bg-white px-1.5 py-0.5 rounded border">USE_SUPABASE_STORAGE</code>.
+            </div>
+            <div id="storage-status"><span class="text-sm text-slate-400">Click Refresh to load bucket status…</span></div>
+        </div>
     </div>
 
     <!-- IN-APP MODAL (za confirm / alert / prompt) -->
@@ -340,6 +357,84 @@
                     toast('Error: ' + (data.error || 'Unknown'), 'error');
                 }
             } catch (e) { toast('Network error.', 'error'); }
+        }
+
+        // ==========================================================
+        //  FAZA 2: STORAGE bucket management
+        // ==========================================================
+
+        async function initStorageBuckets() {
+            const ok = await appModal({
+                title: 'Initialize Storage buckets?',
+                body: 'This will idempotently create <code>partner-docs</code>, <code>offer-pdfs</code>, and <code>portal-uploads</code> as <b>private</b> buckets in your Supabase project. Safe to run multiple times.<br><br>Requires <code>USE_SUPABASE_STORAGE=true</code>.',
+                okText: 'Init Buckets',
+            });
+            if (!ok) return;
+            const btn = document.getElementById('btn-init-storage');
+            btn.disabled = true; btn.textContent = '⏳ Working…';
+            try {
+                const res = await api('/api/supabase/storage/init', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    const cr = (data.created || []).length;
+                    const sk = (data.skipped || []).length;
+                    toast(`✓ Storage ready — created: ${cr}, existed: ${sk}`, 'success');
+                    refreshStorage();
+                } else {
+                    toast('✗ ' + (data.error || 'Init failed'), 'error');
+                    if (data.hint) toast(data.hint, 'info');
+                }
+            } catch (e) {
+                toast('Network error initializing storage.', 'error');
+            } finally {
+                btn.disabled = false; btn.textContent = '✨ Init Buckets';
+            }
+        }
+
+        async function refreshStorage() {
+            const holder = document.getElementById('storage-status');
+            holder.innerHTML = '<span class="text-sm text-slate-400">⏳ Loading bucket status…</span>';
+            try {
+                const res = await fetch('/api/supabase/storage/status');
+                const data = await res.json();
+                if (!data.enabled) {
+                    holder.innerHTML = `<div class="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
+                        <b>Storage is disabled.</b> Turn on <code>USE_SUPABASE_STORAGE</code> to enable cloud storage.
+                    </div>`;
+                    return;
+                }
+                if (!data.ok) {
+                    holder.innerHTML = `<div class="rounded-lg bg-red-50 border border-red-200 p-3 text-xs text-red-800">
+                        <b>Error:</b> ${(data.error || 'unknown').toString().replace(/</g,'&lt;')}
+                    </div>`;
+                    return;
+                }
+                let html = '<div class="grid grid-cols-1 md:grid-cols-3 gap-3">';
+                for (const b of (data.buckets || [])) {
+                    const badge = b.exists
+                        ? '<span class="badge badge-green">exists</span>'
+                        : '<span class="badge badge-slate">missing</span>';
+                    let recentList = '';
+                    if (b.recent && b.recent.length) {
+                        recentList = '<ul class="mt-2 text-xs text-slate-500 space-y-0.5">'
+                            + b.recent.map(r => `<li class="truncate">• ${(r.name||'').replace(/</g,'&lt;')} <span class="text-slate-400">(${Math.round((r.size||0)/1024)} kB)</span></li>`).join('')
+                            + '</ul>';
+                    }
+                    html += `<div class="rounded-xl border border-slate-200 p-3 bg-white">
+                        <div class="flex items-center justify-between mb-1">
+                            <b class="text-sm text-slate-900">${b.name}</b>
+                            ${badge}
+                        </div>
+                        <div class="text-xs text-slate-500">Files: <b class="text-slate-800">${b.file_count || 0}</b></div>
+                        ${recentList}
+                        ${b.error ? `<div class="text-xs text-red-600 mt-1">${b.error.replace(/</g,'&lt;')}</div>` : ''}
+                    </div>`;
+                }
+                html += '</div>';
+                holder.innerHTML = html;
+            } catch (e) {
+                holder.innerHTML = `<div class="text-xs text-red-600">Network error: ${e.message}</div>`;
+            }
         }
 
         (async () => {

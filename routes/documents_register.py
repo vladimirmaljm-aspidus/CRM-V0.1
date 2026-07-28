@@ -332,3 +332,115 @@ def register_list():
             'status': r[6], 'issuedAt': r[7], 'issuedBy': r[8]
         } for r in rows]
     })
+
+
+# ==========================================================
+#  FAZA 4: Per-deal quick-issue endpoint
+# ==========================================================
+# Convenience wrapper koji iz UI-ja (deal edit forma) rezervise sledeci broj
+# za dati docType i vezuje ga za deal.id kao entityId. Idempotentno je - ako
+# je vec izdat aktivni broj za taj (docType, dealId), vraca postojeci.
+#
+# POST /api/deals/<deal_id>/issue-document
+# Body: { "docType": "proforma" | "contract" | "delivery_note" | "credit_note" }
+
+@documents_register_bp.route('/api/deals/<deal_id>/issue-document', methods=['POST'])
+@login_required
+def issue_document_for_deal(deal_id):
+    if not deal_id:
+        return jsonify({'error': 'DEAL_ID_REQUIRED'}), 400
+    p = request.get_json(silent=True) or {}
+    doc_type = (p.get('docType') or '').strip().lower()
+    if doc_type not in DOC_TYPE_PREFIX:
+        return jsonify({'error': 'INVALID_DOC_TYPE',
+                        'allowed': list(DOC_TYPE_PREFIX.keys())}), 400
+
+    year = _current_year()
+    con = _get_db()
+    try:
+        cur = con.cursor()
+        # 1) Verifikuj da deal stvarno postoji (spreci pravljenje broja za tudju entity)
+        row = cur.execute("SELECT 1 FROM deals WHERE id=?", (deal_id,)).fetchone()
+        if not row:
+            return jsonify({'error': 'DEAL_NOT_FOUND'}), 404
+
+        # 2) Idempotentno: postojeci aktivan broj za (docType, dealId)?
+        existing = cur.execute(
+            'SELECT docNumber, seq, revision, issuedAt, issuedBy '
+            'FROM document_register '
+            'WHERE docType=? AND entityId=? AND revision=0',
+            (doc_type, deal_id)
+        ).fetchone()
+        if existing:
+            return jsonify({
+                'docNumber': existing[0],
+                'seq': existing[1],
+                'revision': existing[2],
+                'issuedAt': existing[3],
+                'issuedBy': existing[4],
+                'year': year,
+                'status': 'existing'
+            })
+
+        # 3) Rezervisi novi seq atomicno
+        seq = _next_seq(cur, doc_type, year)
+        number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        username = session.get('username') or 'system'
+        try:
+            cur.execute(
+                'INSERT INTO document_register '
+                '(docType, year, seq, docNumber, entityId, revision, status, issuedAt, issuedBy) '
+                'VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
+                (doc_type, year, seq, number, deal_id, 'active', now, username)
+            )
+            con.commit()
+        except sqlite3.IntegrityError as e:
+            # Race na UNIQUE(docNumber) - probaj jos jednom sa novim seq
+            logger.warning(f'Duplicate docNumber for deal {deal_id} {doc_type}: {e}')
+            seq = _next_seq(cur, doc_type, year)
+            number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
+            cur.execute(
+                'INSERT INTO document_register '
+                '(docType, year, seq, docNumber, entityId, revision, status, issuedAt, issuedBy) '
+                'VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
+                (doc_type, year, seq, number, deal_id, 'active', now, username)
+            )
+            con.commit()
+
+        log_audit('CREATE', 'documents',
+                  f'Deal {deal_id}: issued {doc_type.upper()} → {number}')
+        return jsonify({
+            'docNumber': number, 'seq': seq, 'revision': 0,
+            'year': year, 'issuedAt': now, 'issuedBy': username,
+            'status': 'newly_issued'
+        })
+    finally:
+        con.close()
+
+
+@documents_register_bp.route('/api/deals/<deal_id>/documents', methods=['GET'])
+@login_required
+def list_deal_documents(deal_id):
+    """Vrati sve dokumente izdate za dati deal, sortirano po issuedAt DESC."""
+    if not deal_id:
+        return jsonify({'error': 'DEAL_ID_REQUIRED'}), 400
+    con = _get_db()
+    try:
+        cur = con.cursor()
+        rows = cur.execute(
+            'SELECT docType, docNumber, revision, status, issuedAt, issuedBy '
+            'FROM document_register WHERE entityId=? '
+            'ORDER BY issuedAt DESC, revision DESC',
+            (deal_id,)
+        ).fetchall()
+    finally:
+        con.close()
+    return jsonify({
+        'dealId': deal_id,
+        'total': len(rows),
+        'documents': [{
+            'docType': r[0], 'docNumber': r[1], 'revision': r[2],
+            'status': r[3], 'issuedAt': r[4], 'issuedBy': r[5]
+        } for r in rows]
+    })

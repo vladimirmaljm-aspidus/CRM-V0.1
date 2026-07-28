@@ -1,4 +1,31 @@
 // static/js/modules/settings/settings_manager.js
+
+// Helper — prikazi rezultate audit provere kroz proper modal umesto alert()
+// koji se ne vidi na mobilnom i pravi lošu UX. Ako je issues[] prazan,
+// prikaži zelenu OK poruku; inace listu problema sa scroll-om.
+function _showAuditResults(title, issues, okMessage, tLang) {
+    const isOk = !issues || issues.length === 0;
+    const escape = (s) => String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    const body = isOk
+        ? `<div class="p-6 text-center">
+             <div class="w-16 h-16 mx-auto rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-3xl mb-3">✓</div>
+             <p class="text-lg font-semibold text-slate-900">${escape(okMessage)}</p>
+           </div>`
+        : `<div class="p-4">
+             <div class="flex items-center gap-3 mb-4 pb-3 border-b border-slate-200">
+               <div class="w-11 h-11 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-xl">⚠</div>
+               <div><b class="text-slate-900">${issues.length} ${tLang('problem(a) pronađeno', 'issue(s) found')}</b>
+                    <p class="text-xs text-slate-500 mt-0.5">${tLang('Pregledajte i popravite pre nastavka.', 'Review and fix before continuing.')}</p></div>
+             </div>
+             <ul class="space-y-1.5 max-h-[52vh] overflow-y-auto pr-1">
+               ${issues.map(i => `<li class="text-xs text-slate-700 leading-relaxed pl-3 py-1.5 border-l-2 border-amber-300 bg-amber-50/50 rounded-r">${escape(i)}</li>`).join('')}
+             </ul>
+           </div>`;
+    if (typeof openModal === 'function') openModal(title, body);
+    else if (typeof showToast === 'function') showToast(isOk ? okMessage : `${issues.length} issues found`, isOk ? 'success' : 'warn');
+    else alert(isOk ? okMessage : issues.join('\n'));
+}
+
 const SettingsManager = {
     init: function() {
         console.log("Settings Manager Initialized");
@@ -936,11 +963,12 @@ const SettingsManager = {
                 if(!state.data.partners.find(p => p.id === d.buyerId)) issues.push(tLang(`Zahtev klijenta za "${d.productName}": Kupac više ne postoji.`, `Demand for "${d.productName}": Buyer missing.`));
             });
 
-            if(issues.length === 0) {
-                alert(tLang("Nema prekinutih veza! Baza je savršeno konzistentna.", "No broken links! Database is perfectly consistent."));
-            } else {
-                alert(tLang("Pronađeni problemi u vezama podataka:\n\n", "Issues found in data relations:\n\n") + issues.join('\n'));
-            }
+            _showAuditResults(
+                tLang('Provera integriteta veza', 'Data relations integrity check'),
+                issues,
+                tLang('Nema prekinutih veza! Baza je savršeno konzistentna.', 'No broken links — database is perfectly consistent.'),
+                tLang
+            );
         });
 
         document.getElementById('btn-financial-check')?.addEventListener('click', () => {
@@ -954,11 +982,12 @@ const SettingsManager = {
                     issues.push(tLang(`Posao ${d.contractId}: Različite valute, a kurs je 0.`, `Deal ${d.contractId}: Different currencies but 0 exchange rate.`));
                 }
             });
-            if(issues.length === 0) {
-                alert(tLang("Matematika poslova i transakcija je potpuno ispravna.", "Deal and transaction mathematics are fully valid."));
-            } else {
-                alert(tLang("Pronađene finansijske nelogičnosti:\n\n", "Financial inconsistencies found:\n\n") + issues.join('\n'));
-            }
+            _showAuditResults(
+                tLang('Finansijska provera', 'Financial audit'),
+                issues,
+                tLang('Matematika poslova i transakcija je potpuno ispravna.', 'Deal and transaction mathematics are fully valid.'),
+                tLang
+            );
         });
 
         document.getElementById('btn-storage-check')?.addEventListener('click', () => {
@@ -973,10 +1002,28 @@ const SettingsManager = {
             let limitKb = 5000; 
             let percentage = ((total / 1024) / limitKb * 100).toFixed(1);
             
-            alert(tLang(
-                `Vaš pretraživač trenutno koristi ${kb} KB (${mb} MB) lokalne memorije.\nTo je otprilike ${percentage}% prosečnog maksimalnog limita.\n\nStanje: ${percentage > 80 ? 'Kritično! Očistite keš.' : 'Stabilno.'}`,
-                `Your browser uses ${kb} KB (${mb} MB) of local storage.\nThis is roughly ${percentage}% of the average max limit.\n\nStatus: ${percentage > 80 ? 'Critical! Clear cache.' : 'Stable.'}`
-            ));
+            const critical = percentage > 80;
+            const html = `
+                <div class="p-4 space-y-4">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="rounded-xl border border-slate-200 p-3 bg-slate-50">
+                            <div class="text-[10px] uppercase font-bold text-slate-500 tracking-wide">${tLang('Zauzeto', 'Used')}</div>
+                            <div class="text-2xl font-bold text-slate-900">${kb} <span class="text-sm text-slate-500">KB</span></div>
+                            <div class="text-xs text-slate-500">${mb} MB</div>
+                        </div>
+                        <div class="rounded-xl border ${critical?'border-red-200 bg-red-50':'border-emerald-200 bg-emerald-50'} p-3">
+                            <div class="text-[10px] uppercase font-bold ${critical?'text-red-700':'text-emerald-700'} tracking-wide">${tLang('Status', 'Status')}</div>
+                            <div class="text-2xl font-bold ${critical?'text-red-800':'text-emerald-800'}">${percentage}%</div>
+                            <div class="text-xs ${critical?'text-red-700':'text-emerald-700'}">${critical ? tLang('Kritično — očistite keš.', 'Critical — clear cache.') : tLang('Stabilno.', 'Stable.')}</div>
+                        </div>
+                    </div>
+                    <div class="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+                        <div class="h-full ${critical?'bg-red-500':'bg-emerald-500'}" style="width:${Math.min(100, percentage)}%"></div>
+                    </div>
+                    <p class="text-xs text-slate-500 leading-relaxed">${tLang('Prosečan browser limit je ~5 MB per domain. Preporučuje se export/backup pre nego što se ovaj procent primakne 100%.', 'Average browser limit is ~5 MB per domain. Recommended to export/backup before this approaches 100%.')}</p>
+                </div>`;
+            if (typeof openModal === 'function') openModal(tLang('Analiza lokalne memorije', 'Local storage analysis'), html);
+            else alert(`${kb} KB used (${percentage}%)`);
         });
 
         document.getElementById('btn-export-audit')?.addEventListener('click', async () => {
@@ -990,7 +1037,8 @@ const SettingsManager = {
                 a.download = `aspidus_audit_logs_${Date.now()}.json`; 
                 a.click();
             } catch(e) {
-                alert(tLang("Greška pri preuzimanju logova. Da li imate admin prava?", "Error downloading logs. Do you have admin rights?"));
+                if (typeof showToast === 'function') showToast(tLang('Greška pri preuzimanju logova. Da li imate admin prava?', 'Error downloading logs. Do you have admin rights?'), 'error');
+                else alert(tLang("Greška pri preuzimanju logova. Da li imate admin prava?", "Error downloading logs. Do you have admin rights?"));
             }
         });
 
@@ -1119,7 +1167,7 @@ const SettingsManager = {
                     showToast(tLang('Konfiguracija uspešno sačuvana.',
                                     'Configuration saved successfully.'), 'success');
                 } else {
-                    alert(tLang('Konfiguracija uspešno sačuvana.',
+                    (typeof showToast === 'function' ? showToast : alert)(tLang('Konfiguracija uspešno sačuvana.',
                                 'System Configuration Saved Successfully.'));
                 }
                 closeModal();

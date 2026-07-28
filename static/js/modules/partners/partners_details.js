@@ -231,6 +231,7 @@ function renderPartnerDetailView(partnerId) {
                    <button id="b2b-portal-btn" class="w-full btn bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs py-2 shadow-sm border border-slate-900">🌐 ${Utils.t('misc.b2bLinkBtn')}</button>
                    <button id="portal-invite-btn" class="w-full btn bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 shadow-sm border border-blue-800">📧 Send Portal Invite / Reset</button>
                    <button id="portal-setpwd-btn" class="w-full btn bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs py-2 shadow-sm border border-amber-800">🔑 Set Portal Password</button>
+                   <button id="partner-inventory-btn" class="w-full btn bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2 shadow-sm border border-emerald-800" title="Track stock on hand and movements for this partner (Faza 5)">📦 Inventory</button>
                    ${partner.portalToken ? `<button id="portal-access-btn" class="w-full btn ${partner.isPortalActive === false ? 'bg-emerald-600 hover:bg-emerald-700 border-emerald-800' : 'bg-rose-600 hover:bg-rose-700 border-rose-800'} text-white font-bold text-xs py-2 shadow-sm border">${partner.isPortalActive === false ? '✅ ' + Utils.t('misc.portalReactivate') : '🔒 ' + Utils.t('misc.portalRevoke')}</button>` : ''}
                </div>
             </div>
@@ -403,6 +404,12 @@ function renderPartnerDetailView(partnerId) {
     
     document.getElementById('edit-partner-btn').addEventListener('click', () => showPartnerForm(partnerId));
     document.getElementById('docs-partner-btn').addEventListener('click', () => typeof showDocumentsModal === 'function' && showDocumentsModal('partners', partnerId));
+
+    const invBtn = document.getElementById('partner-inventory-btn');
+    if (invBtn) invBtn.addEventListener('click', () => {
+        if (typeof showPartnerInventoryModal === 'function') showPartnerInventoryModal(partnerId);
+        else showToast('Inventory module not loaded.', 'error');
+    });
     
     document.getElementById('delete-partner-btn').addEventListener('click', async () => {
         const _ok = await window.askConfirm('Obrisati partnera?', Utils.t('misc.confirmDelete'), { danger: true });

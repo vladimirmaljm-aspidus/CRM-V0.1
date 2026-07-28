@@ -43,6 +43,49 @@
         if (p.language && typeof window.setLanguage === 'function') {
             try { window.setLanguage(p.language); } catch(_) {}
         }
+
+        // === DISPLAY CUSTOMIZATION (v22.2) ===
+        // Sve vrednosti se prosleduju kao CSS custom props na <html> tako
+        // da svaki prozor/modal (osim onih sa hardcoded fixed size-ovima)
+        // odmah ih preuzme bez reload-a.
+
+        // Font size: 'sm' | 'md' (default) | 'lg' | 'xl'
+        const FONT_SIZE_MAP = { sm: '13px', md: '14px', lg: '16px', xl: '18px' };
+        const fs = FONT_SIZE_MAP[p.fontSize] || FONT_SIZE_MAP.md;
+        html.style.setProperty('--user-font-size', fs);
+
+        // UI zoom (85 / 100 / 115 / 130 %). Ne koristi CSS `zoom` (Firefox ga
+        // ne implementira), vec preko root font-size skaliranja.
+        const zoom = parseInt(p.zoom || 100, 10);
+        html.style.setProperty('--user-zoom', (zoom / 100).toString());
+        // Root font size je bazna jedinica za rem — sve `rem` u modern.css skaliraju.
+        html.style.fontSize = (16 * (zoom / 100)) + 'px';
+
+        // Modal size: 'compact' | 'normal' (default) | 'wide' | 'full'
+        const MODAL_MAX = { compact: '520px', normal: '800px', wide: '1120px', full: '96vw' };
+        html.style.setProperty('--user-modal-max', MODAL_MAX[p.modalSize] || MODAL_MAX.normal);
+        html.setAttribute('data-modal-size', p.modalSize || 'normal');
+
+        // Font family: 'system' (default) | 'sans' | 'serif' | 'mono'
+        const FONT_FAM = {
+            system: 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+            sans:   '"Helvetica Neue", Arial, sans-serif',
+            serif:  'Georgia, "Times New Roman", serif',
+            mono:   'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace',
+        };
+        html.style.setProperty('--user-font-family', FONT_FAM[p.fontFamily] || FONT_FAM.system);
+
+        // Line height: 'tight' | 'normal' (default) | 'relaxed'
+        const LH = { tight: '1.35', normal: '1.55', relaxed: '1.75' };
+        html.style.setProperty('--user-line-height', LH[p.lineHeight] || LH.normal);
+
+        // High contrast toggle (accessibility)
+        if (p.highContrast) html.setAttribute('data-high-contrast', 'on');
+        else html.removeAttribute('data-high-contrast');
+
+        // Reduce motion (accessibility) — kill animations/transitions
+        if (p.reduceMotion) html.setAttribute('data-reduce-motion', 'on');
+        else html.removeAttribute('data-reduce-motion');
     }
     // Apply on load
     applyPrefs(getPrefs());
@@ -126,32 +169,10 @@
               <div class="pref-pane" data-pane="appearance">
                 <div class="pref-field">
                   <label>Theme</label>
-                  <div class="pref-radio-group">
-                    <label class="pref-radio">
-                      <input type="radio" name="theme" value="auto" ${!cur.theme || cur.theme === 'auto' ? 'checked' : ''}>
-                      <span>🖥 Auto (follow system)</span>
-                    </label>
-                    <label class="pref-radio">
-                      <input type="radio" name="theme" value="light" ${cur.theme === 'light' ? 'checked' : ''}>
-                      <span>☀️ Light</span>
-                    </label>
-                    <label class="pref-radio">
-                      <input type="radio" name="theme" value="dark" ${cur.theme === 'dark' ? 'checked' : ''}>
-                      <span>🌙 Dark</span>
-                    </label>
-                  </div>
-                </div>
-                <div class="pref-field">
-                  <label>Density</label>
-                  <div class="pref-radio-group">
-                    <label class="pref-radio">
-                      <input type="radio" name="density" value="comfortable" ${!cur.density || cur.density === 'comfortable' ? 'checked' : ''}>
-                      <span>Comfortable (default)</span>
-                    </label>
-                    <label class="pref-radio">
-                      <input type="radio" name="density" value="compact" ${cur.density === 'compact' ? 'checked' : ''}>
-                      <span>Compact (više informacija na ekranu)</span>
-                    </label>
+                  <div class="pref-radio-group pref-grid-3">
+                    <label class="pref-radio"><input type="radio" name="theme" value="auto"  ${!cur.theme || cur.theme === 'auto' ? 'checked' : ''}><span>🖥 Auto</span></label>
+                    <label class="pref-radio"><input type="radio" name="theme" value="light" ${cur.theme === 'light' ? 'checked' : ''}><span>☀️ Light</span></label>
+                    <label class="pref-radio"><input type="radio" name="theme" value="dark"  ${cur.theme === 'dark' ? 'checked' : ''}><span>🌙 Dark</span></label>
                   </div>
                 </div>
                 <div class="pref-field">
@@ -161,8 +182,75 @@
                     <option value="en" ${cur.language === 'en' || !cur.language ? 'selected' : ''}>🇬🇧 English</option>
                   </select>
                 </div>
+
+                <hr style="margin:20px 0 16px;border:none;border-top:1px solid #e5e7eb">
+                <div class="pref-field-title">📐 Display &amp; Typography</div>
+                <p class="pref-hint" style="margin-bottom:12px">Live preview — sve promene se primenjuju odmah bez reload-a i traju u svim prozorima/modalima.</p>
+
+                <div class="pref-field">
+                  <label>Font size</label>
+                  <div class="pref-radio-group pref-grid-4">
+                    <label class="pref-radio"><input type="radio" name="fontSize" value="sm" ${cur.fontSize === 'sm' ? 'checked' : ''}><span>S · 13px</span></label>
+                    <label class="pref-radio"><input type="radio" name="fontSize" value="md" ${!cur.fontSize || cur.fontSize === 'md' ? 'checked' : ''}><span>M · 14px</span></label>
+                    <label class="pref-radio"><input type="radio" name="fontSize" value="lg" ${cur.fontSize === 'lg' ? 'checked' : ''}><span>L · 16px</span></label>
+                    <label class="pref-radio"><input type="radio" name="fontSize" value="xl" ${cur.fontSize === 'xl' ? 'checked' : ''}><span>XL · 18px</span></label>
+                  </div>
+                </div>
+
+                <div class="pref-field">
+                  <label>UI zoom · <span id="pref-zoom-val">${cur.zoom || 100}%</span></label>
+                  <input type="range" id="pref-zoom" min="80" max="140" step="5" value="${cur.zoom || 100}" style="width:100%">
+                  <p class="pref-hint">Skalira ceo interfejs, ne menja pojedinacan font. 100% je default.</p>
+                </div>
+
+                <div class="pref-field">
+                  <label>Modal / window width</label>
+                  <div class="pref-radio-group pref-grid-4">
+                    <label class="pref-radio"><input type="radio" name="modalSize" value="compact" ${cur.modalSize === 'compact' ? 'checked' : ''}><span>Compact</span></label>
+                    <label class="pref-radio"><input type="radio" name="modalSize" value="normal"  ${!cur.modalSize || cur.modalSize === 'normal' ? 'checked' : ''}><span>Normal</span></label>
+                    <label class="pref-radio"><input type="radio" name="modalSize" value="wide"    ${cur.modalSize === 'wide' ? 'checked' : ''}><span>Wide</span></label>
+                    <label class="pref-radio"><input type="radio" name="modalSize" value="full"    ${cur.modalSize === 'full' ? 'checked' : ''}><span>Fullscreen</span></label>
+                  </div>
+                </div>
+
+                <div class="pref-field">
+                  <label>Density</label>
+                  <div class="pref-radio-group pref-grid-2">
+                    <label class="pref-radio"><input type="radio" name="density" value="comfortable" ${!cur.density || cur.density === 'comfortable' ? 'checked' : ''}><span>Comfortable</span></label>
+                    <label class="pref-radio"><input type="radio" name="density" value="compact"     ${cur.density === 'compact' ? 'checked' : ''}><span>Compact</span></label>
+                  </div>
+                </div>
+
+                <div class="pref-field">
+                  <label>Font family</label>
+                  <div class="pref-radio-group pref-grid-4">
+                    <label class="pref-radio"><input type="radio" name="fontFamily" value="system" ${!cur.fontFamily || cur.fontFamily === 'system' ? 'checked' : ''}><span>System</span></label>
+                    <label class="pref-radio"><input type="radio" name="fontFamily" value="sans"   ${cur.fontFamily === 'sans' ? 'checked' : ''}><span>Sans</span></label>
+                    <label class="pref-radio"><input type="radio" name="fontFamily" value="serif"  ${cur.fontFamily === 'serif' ? 'checked' : ''}><span>Serif</span></label>
+                    <label class="pref-radio"><input type="radio" name="fontFamily" value="mono"   ${cur.fontFamily === 'mono' ? 'checked' : ''}><span>Mono</span></label>
+                  </div>
+                </div>
+
+                <div class="pref-field">
+                  <label>Line height</label>
+                  <div class="pref-radio-group pref-grid-3">
+                    <label class="pref-radio"><input type="radio" name="lineHeight" value="tight"   ${cur.lineHeight === 'tight' ? 'checked' : ''}><span>Tight</span></label>
+                    <label class="pref-radio"><input type="radio" name="lineHeight" value="normal"  ${!cur.lineHeight || cur.lineHeight === 'normal' ? 'checked' : ''}><span>Normal</span></label>
+                    <label class="pref-radio"><input type="radio" name="lineHeight" value="relaxed" ${cur.lineHeight === 'relaxed' ? 'checked' : ''}><span>Relaxed</span></label>
+                  </div>
+                </div>
+
+                <div class="pref-field">
+                  <label>Accessibility</label>
+                  <div class="pref-radio-group pref-grid-2">
+                    <label class="pref-radio"><input type="checkbox" id="pref-high-contrast" ${cur.highContrast ? 'checked' : ''}><span>🔆 High contrast</span></label>
+                    <label class="pref-radio"><input type="checkbox" id="pref-reduce-motion" ${cur.reduceMotion ? 'checked' : ''}><span>⏸ Reduce motion</span></label>
+                  </div>
+                </div>
+
                 <div class="pref-actions">
-                  <button class="pref-btn pref-btn-primary" onclick="saveAppearance()">Apply</button>
+                  <button class="pref-btn pref-btn-secondary" onclick="resetDisplay()">Reset defaults</button>
+                  <button class="pref-btn pref-btn-primary" onclick="saveAppearance()">Save Preferences</button>
                 </div>
               </div>
 
@@ -234,6 +322,38 @@
         refreshSession();
         // 2FA status
         check2FAStatus();
+
+        // === LIVE PREVIEW za display controls ===
+        // Svaka izmena se odmah primenjuje (bez klika na Save) — Save samo
+        // perzistira u localStorage. Ako user zatvori bez Save-a, apply se
+        // reset-uje pri sledecem otvaranju iz stored prefs.
+        const livePreview = () => {
+            const p = Object.assign({}, getPrefs(), {
+                theme:       document.querySelector('input[name="theme"]:checked')?.value,
+                density:     document.querySelector('input[name="density"]:checked')?.value,
+                fontSize:    document.querySelector('input[name="fontSize"]:checked')?.value,
+                zoom:        parseInt(document.getElementById('pref-zoom')?.value || 100, 10),
+                modalSize:   document.querySelector('input[name="modalSize"]:checked')?.value,
+                fontFamily:  document.querySelector('input[name="fontFamily"]:checked')?.value,
+                lineHeight:  document.querySelector('input[name="lineHeight"]:checked')?.value,
+                highContrast: !!document.getElementById('pref-high-contrast')?.checked,
+                reduceMotion: !!document.getElementById('pref-reduce-motion')?.checked,
+            });
+            applyPrefs(p);
+        };
+        wrap.querySelectorAll('input[name="theme"], input[name="density"], input[name="fontSize"], input[name="modalSize"], input[name="fontFamily"], input[name="lineHeight"]').forEach(el => {
+            el.addEventListener('change', livePreview);
+        });
+        const zoomEl = document.getElementById('pref-zoom');
+        const zoomVal = document.getElementById('pref-zoom-val');
+        if (zoomEl) zoomEl.addEventListener('input', (e) => {
+            if (zoomVal) zoomVal.textContent = e.target.value + '%';
+            livePreview();
+        });
+        ['pref-high-contrast', 'pref-reduce-motion'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', livePreview);
+        });
     }
 
     function closePreferences() {
@@ -291,12 +411,33 @@
     }
 
     function saveAppearance() {
-        const theme = document.querySelector('input[name="theme"]:checked')?.value;
-        const density = document.querySelector('input[name="density"]:checked')?.value;
-        const language = document.getElementById('pref-language')?.value;
-        setPrefs({ theme, density, language });
-        showToast && showToast('Appearance saved.', 'success');
+        setPrefs({
+            theme:       document.querySelector('input[name="theme"]:checked')?.value,
+            density:     document.querySelector('input[name="density"]:checked')?.value,
+            language:    document.getElementById('pref-language')?.value,
+            fontSize:    document.querySelector('input[name="fontSize"]:checked')?.value,
+            zoom:        parseInt(document.getElementById('pref-zoom')?.value || 100, 10),
+            modalSize:   document.querySelector('input[name="modalSize"]:checked')?.value,
+            fontFamily:  document.querySelector('input[name="fontFamily"]:checked')?.value,
+            lineHeight:  document.querySelector('input[name="lineHeight"]:checked')?.value,
+            highContrast: !!document.getElementById('pref-high-contrast')?.checked,
+            reduceMotion: !!document.getElementById('pref-reduce-motion')?.checked,
+        });
+        showToast && showToast('✓ Preferences saved & applied.', 'success');
     }
+
+    function resetDisplay() {
+        // Vrati sve display podesavanja na default, cuvajuci ostale prefs
+        setPrefs({
+            fontSize: 'md', zoom: 100, modalSize: 'normal',
+            fontFamily: 'system', lineHeight: 'normal', density: 'comfortable',
+            highContrast: false, reduceMotion: false,
+        });
+        closePreferences();
+        setTimeout(openPreferences, 100);
+        showToast && showToast('Display reset to defaults.', 'info');
+    }
+    window.resetDisplay = resetDisplay;
 
     function saveNotifications() {
         setPrefs({
@@ -392,9 +533,17 @@
         .pref-field input:disabled { background:#f8fafc; color:#94a3b8; }
         .pref-hint { color:#94a3b8; font-size:11px; margin-top:4px; }
         .pref-radio-group { display:flex; flex-direction:column; gap:10px; }
-        .pref-radio { display:flex; align-items:center; gap:10px; padding:10px 14px; border:1px solid #e2e8f0; border-radius:10px; cursor:pointer; font-size:13px; transition:all .15s; }
-        .pref-radio:has(input:checked) { border-color:#4f46e5; background:#eef2ff; }
-        .pref-radio input { margin:0; }
+        .pref-radio-group.pref-grid-2 { display:grid; grid-template-columns:repeat(2,1fr); }
+        .pref-radio-group.pref-grid-3 { display:grid; grid-template-columns:repeat(3,1fr); }
+        .pref-radio-group.pref-grid-4 { display:grid; grid-template-columns:repeat(2,1fr); }
+        @media (min-width:640px) { .pref-radio-group.pref-grid-4 { grid-template-columns:repeat(4,1fr); } }
+        .pref-radio { display:flex; align-items:center; justify-content:center; gap:8px; padding:9px 12px; border:1px solid #e2e8f0; border-radius:10px; cursor:pointer; font-size:12px; font-weight:500; transition:all .15s; text-align:center; }
+        .pref-radio:hover { border-color:#c7d2fe; }
+        .pref-radio:has(input:checked) { border-color:#4f46e5; background:#eef2ff; font-weight:600; color:#4338ca; }
+        .pref-radio input { margin:0; flex-shrink:0; }
+        .pref-radio input[type="radio"], .pref-radio input[type="checkbox"] { accent-color:#4f46e5; }
+        .pref-field-title { font-size:13px; font-weight:700; color:#0f172a; letter-spacing:-.01em; margin-bottom:4px; }
+        input[type="range"] { accent-color:#4f46e5; }
         .pref-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; padding-top:16px; border-top:1px solid #f1f5f9; }
         .pref-btn { padding:9px 18px; border-radius:10px; font-weight:600; font-size:13px; border:none; cursor:pointer; transition:all .15s; }
         .pref-btn-primary { background:linear-gradient(135deg,#4f46e5,#7c3aed); color:white; box-shadow:0 4px 12px -2px rgba(79,70,229,.35); }

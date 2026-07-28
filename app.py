@@ -25,6 +25,7 @@ from routes.logistics import logistics_bp
 from routes.geo import geo_bp
 from routes.sanctions import sanctions_bp, screen_batch as sanctions_screen_batch
 from routes.documents_register import documents_register_bp
+from routes.inventory import inventory_bp
 from routes.verify_public import verify_bp
 
 # Konfiguracija sistemskog logovanja (sprečava ispisivanje osetljivih grešaka korisnicima)
@@ -101,6 +102,7 @@ app.register_blueprint(logistics_bp)
 app.register_blueprint(geo_bp)
 app.register_blueprint(sanctions_bp)
 app.register_blueprint(documents_register_bp)
+app.register_blueprint(inventory_bp)
 # /verify/<VER-hash> — javni endpoint koji vodi na potvrdu dokumenta iz QR koda
 # na ponudi/fakturi. Bez registracije ovog bp-a, QR na PDF-u vodi u 404.
 app.register_blueprint(verify_bp)
@@ -111,31 +113,9 @@ from routes.supabase_admin import supabase_admin_bp, record_error  # noqa: E402
 app.register_blueprint(supabase_admin_bp)
 
 
-@app.errorhandler(500)
-def _catch_500(e):
-    """Sve 500 greške idu u admin error buffer + vraćaju request_id klijentu."""
-    import uuid
-    req_id = uuid.uuid4().hex[:12]
-    try:
-        record_error(
-            context=request.path,
-            exc=e,
-            request_id=req_id,
-            meta={
-                "method": request.method,
-                "ip": request.headers.get('X-Forwarded-For', request.remote_addr),
-                "user_agent": request.headers.get('User-Agent', ''),
-                "referrer": request.headers.get('Referer', ''),
-            },
-        )
-    except Exception:
-        pass
-    return jsonify({
-        "error": "Internal Server Error",
-        "message": "Došlo je do interne greške. Administrator je obavešten. Ako se ponovi, javi ga sa ID-em.",
-        "request_id": req_id,
-        "hint": "Detalji su vidljivi u /admin/errors stranici (admin only).",
-    }), 500
+# NOTE: postojao je duplirani @app.errorhandler(500) handler ispod ove tacke
+# (internal_server_error) koji je _overridovao_ ovaj i klijentu nije vracao
+# request_id. Merged u jedan handler dole (linija ~213).
 
 @app.before_request
 def enforce_csrf():
@@ -213,14 +193,36 @@ def not_found_error(error):
 @app.errorhandler(500)
 def internal_server_error(error):
     """
-    Apsolutna zaštita: Ako kod pukne, napadač ne dobija Python Traceback.
-    Sve se beleži isključivo u zaštićeni interni log.
+    Napadaču ne curimo Python traceback — klijentu vraćamo generičku poruku
+    + kratak request_id da može admin da nađe traceback u /admin/errors.
     """
-    logger.error(f"Internal Server Error: {request.path} - {str(error)}", exc_info=True)
-    log_audit('CRITICAL_ERROR', 'system', f"Endpoint {request.path} failed.", is_suspicious=True)
+    import uuid
+    req_id = uuid.uuid4().hex[:12]
+
+    logger.error(f"Internal Server Error [{req_id}]: {request.path} - {str(error)}", exc_info=True)
+    log_audit('CRITICAL_ERROR', 'system', f"Endpoint {request.path} failed (req={req_id}).", is_suspicious=True)
+    try:
+        record_error(
+            context=request.path,
+            exc=error,
+            request_id=req_id,
+            meta={
+                "method": request.method,
+                "ip": request.headers.get('X-Forwarded-For', request.remote_addr),
+                "user_agent": request.headers.get('User-Agent', ''),
+                "referrer": request.headers.get('Referer', ''),
+            },
+        )
+    except Exception:
+        pass
+
     if request.path.startswith('/api/'):
-        return jsonify({"error": "Internal Server Error. The issue has been logged and reported to the administrators."}), 500
-    # Dodat pravilan HTTP status kod
+        return jsonify({
+            "error": "Internal Server Error",
+            "message": "Došlo je do interne greške. Administrator je obavešten. Ako se ponovi, javi ga sa ID-em.",
+            "request_id": req_id,
+            "hint": "Detalji su vidljivi u /admin/errors stranici (admin only).",
+        }), 500
     return render_template('index.html'), 500
 
 @app.errorhandler(405)

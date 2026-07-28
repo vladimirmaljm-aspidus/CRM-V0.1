@@ -44,7 +44,7 @@ function renderDealsListView() {
             <td class="px-4 py-4 align-top text-main font-medium">${Utils.formatCurrency(saleValue, sCur)}</td>
             <td class="px-4 py-4 align-top text-base font-black ${netProfit >= 0 ? 'text-success':'text-danger'}">${Utils.formatCurrency(netProfit, sCur)}</td>
             <td class="px-4 py-4 align-top text-xs">${buyerPaid}${supplierPaid}</td>
-            <td class="px-4 py-4 align-top text-right whitespace-nowrap"><button class="invoice-deal btn small bg-accent text-white shadow-sm" data-id="${d.id}">📄 ${Utils.t('actions.invoice')}</button><button class="ics-deal text-blue-600 mx-2 font-bold hover:underline" data-id="${d.id}" title="Export dates to calendar">📅</button><button class="edit-deal text-warning mx-2 font-bold hover:underline" data-id="${d.id}">✏️ ${Utils.t('actions.edit')}</button><button class="delete-deal text-danger font-bold hover:underline" data-id="${d.id}">✕ ${Utils.t('actions.delete')}</button></td>
+            <td class="px-4 py-4 align-top text-right whitespace-nowrap"><button class="invoice-deal btn small bg-accent text-white shadow-sm" data-id="${d.id}">📄 ${Utils.t('actions.invoice')}</button><button class="ics-deal text-blue-600 mx-2 font-bold hover:underline" data-id="${d.id}" title="Export dates to calendar">📅</button><button class="timeline-deal text-indigo-600 mx-2 font-bold hover:underline" data-id="${d.id}" title="Timeline">📜</button><button class="edit-deal text-warning mx-2 font-bold hover:underline" data-id="${d.id}">✏️ ${Utils.t('actions.edit')}</button><button class="delete-deal text-danger font-bold hover:underline" data-id="${d.id}">✕ ${Utils.t('actions.delete')}</button></td>
         </tr>`;
     }).join('') || `<tr><td colspan="6" class="p-10 text-center text-[var(--muted)] font-bold border-dashed border-2">${Utils.t('finances.noData')}</td></tr>`}</tbody>`;
 
@@ -53,6 +53,10 @@ function renderDealsListView() {
 
     container.querySelectorAll('.edit-deal, .clickable-row').forEach(b => b.addEventListener('click', e => showDealForm({dealId: e.currentTarget.dataset.id})));
     container.querySelectorAll('.invoice-deal').forEach(b => b.addEventListener('click', e => { if(typeof renderInvoiceModal === 'function') renderInvoiceModal(e.currentTarget.dataset.id); }));
+    container.querySelectorAll('.timeline-deal').forEach(b => b.addEventListener('click', e => {
+        e.stopPropagation();
+        if (typeof viewDealTimeline === 'function') viewDealTimeline(e.currentTarget.dataset.id);
+    }));
     container.querySelectorAll('.ics-deal').forEach(b => b.addEventListener('click', e => {
         e.stopPropagation();
         const deal = (state.data.deals || []).find(d => d.id === e.currentTarget.dataset.id);

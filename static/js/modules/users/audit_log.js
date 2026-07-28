@@ -172,18 +172,19 @@ function renderAuditLogView() {
                                     body: JSON.stringify(fwData)
                                 });
                                 
+                                const _n = (m, t) => (typeof showToast === 'function' ? showToast(m, t) : alert(m));
                                 if(saveRes.ok) {
-                                    alert(`IP adresa ${ip} je uspešno ubačena u Firewall Blacklist.`);
+                                    _n(`IP ${ip} added to Firewall Blacklist.`, 'success');
                                 } else {
-                                    alert("Greška pri čuvanju Firewall pravila.");
+                                    _n('Error saving firewall rules.', 'error');
                                 }
                             } else {
-                                alert(`IP adresa ${ip} se već nalazi na crnoj listi.`);
+                                (typeof showToast === 'function' ? showToast : alert)(`IP ${ip} is already blacklisted.`, 'info');
                             }
                         }
                     } catch(err) {
                         console.error(err);
-                        alert("Sistemska greška prilikom blokiranja IP adrese.");
+                        (typeof showToast === 'function' ? showToast : alert)('System error while blocking IP.', 'error');
                     }
                 }
             });

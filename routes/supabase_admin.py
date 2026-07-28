@@ -501,3 +501,64 @@ def supabase_set_flag():
         "new": value,
         "note": "In-process only. For permanent change, edit .env and Reload.",
     })
+
+
+# ==========================================================
+#  FAZA 2: SUPABASE STORAGE — bucket init + status
+# ==========================================================
+
+@supabase_admin_bp.route('/api/supabase/storage/init', methods=['POST'])
+@login_required
+def supabase_storage_init():
+    """Idempotentno kreira sve poznate bucket-ove (partner-docs, offer-pdfs,
+    portal-uploads) kao PRIVATE. Sme se pozvati vise puta bez efekta."""
+    r = _admin_only()
+    if r: return r
+    try:
+        from utils_storage import bootstrap_storage, use_supabase_storage
+        if not use_supabase_storage():
+            return jsonify({
+                "ok": False,
+                "error": "USE_SUPABASE_STORAGE=false",
+                "hint": "Prvo ukljuci flag USE_SUPABASE_STORAGE na Supabase admin panelu."
+            }), 400
+        result = bootstrap_storage()
+        log_audit('CREATE', 'system',
+                  f'Storage bootstrap: created={result.get("created")} skipped={result.get("skipped")}',
+                  is_suspicious=False)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}), 500
+
+
+@supabase_admin_bp.route('/api/supabase/storage/status', methods=['GET'])
+@login_required
+def supabase_storage_status():
+    """Vraca listu bucket-ova sa velicinom (broj fajlova + ukupna velicina).
+    Koristi se u admin panelu za pregled sta je vec u Supabase-u."""
+    r = _admin_only()
+    if r: return r
+    try:
+        from utils_storage import use_supabase_storage, _client, _KNOWN_BUCKETS
+        if not use_supabase_storage():
+            return jsonify({"ok": False, "enabled": False, "reason": "USE_SUPABASE_STORAGE=false"})
+        c = _client()
+        buckets_info = []
+        for name in _KNOWN_BUCKETS:
+            info = {"name": name, "exists": False, "file_count": 0}
+            try:
+                files = c.storage.from_(name).list("", {"limit": 1000, "sortBy": {"column": "created_at", "order": "desc"}})
+                info["exists"] = True
+                info["file_count"] = len(files) if files else 0
+                if files:
+                    info["recent"] = [
+                        {"name": f.get("name"), "size": (f.get("metadata") or {}).get("size", 0),
+                         "created_at": f.get("created_at")}
+                        for f in files[:3]
+                    ]
+            except Exception as e:
+                info["error"] = str(e)[:120]
+            buckets_info.append(info)
+        return jsonify({"ok": True, "enabled": True, "buckets": buckets_info})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}), 500

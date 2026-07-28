@@ -64,7 +64,7 @@ const Comms = {
         document.getElementById('exec-send-email').addEventListener('click', async () => {
             const btn = document.getElementById('exec-send-email');
             const to = document.getElementById('send-email-to').value.trim();
-            if(!to) return alert('Unesite email adresu!');
+            if (!to) { if (typeof showToast === 'function') showToast('Please enter an email address.', 'error'); else alert('Please enter an email address.'); return; }
             
             btn.innerHTML = '⏳ Slanje...'; btn.disabled = true;
 

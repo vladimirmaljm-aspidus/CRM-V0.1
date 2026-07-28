@@ -970,18 +970,26 @@
                     headers: { 'Content-Type': 'application/json', 'X-Portal-Auth': authKey },
                     body: JSON.stringify({ portal_token: portalToken, current_password: cur, new_password: nw })
                 });
-                const body = await res.json();
+                let body = {};
+                try { body = await res.json(); } catch (_) {}
                 if (res.ok && body.status === 'success') {
                     msg.textContent = '✓ ' + (body.message || 'Password changed.');
                     msg.classList.add('text-emerald-600');
                     document.getElementById('pwd-current').value = '';
                     document.getElementById('pwd-new').value = '';
+                    if (typeof showToast === 'function') showToast('Password updated successfully.', 'success');
                 } else {
-                    msg.textContent = body.error || 'Error changing password.';
+                    const errTxt = body.error || body.message || 'Error changing password.';
+                    msg.textContent = errTxt;
                     msg.classList.add('text-red-600');
+                    // 500 sa request_id → prikazi ID u toastu da klijent moze da javi adminu
+                    if (res.status >= 500 && body.request_id && typeof showToast === 'function') {
+                        showToast(errTxt, 'error', { requestId: body.request_id });
+                    }
                 }
             } catch (e) {
                 msg.textContent = 'Network error.'; msg.classList.add('text-red-600');
+                if (typeof showToast === 'function') showToast('Network error while changing password.', 'error');
             }
         }
     </script>
@@ -1317,6 +1325,7 @@
     <script src="/static/js/portal/i18n.js"></script>
     <script src="/static/js/portal/ui.js"></script>
     <script src="/static/js/portal/api.js"></script>
+    <script src="/static/js/portal/heartbeat.js"></script>
     <script src="/static/js/modules/logistics/planner.js"></script>
 </body>
 </html>

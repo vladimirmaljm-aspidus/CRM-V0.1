@@ -1090,3 +1090,145 @@ def generate_offer_pdf_endpoint(offer_id):
         pass
 
     return jsonify({"status": "success", "documentId": doc_id, "fileUrl": file_url})
+
+
+# ==========================================================
+#  FAZA 6: TIMELINE PER DEAL
+#  GET /api/deals/<deal_id>/timeline
+# ==========================================================
+# Vraća objedinjenu hronologiju svega vezanog za jedan posao:
+#   1) Sam deal (create + last modified)
+#   2) Sve transakcije (dealId=X ili invoiceNumber=contractId)
+#   3) Sve izdate dokumente iz document_register (entityId=X ili
+#      docNumber contains contractId)
+#   4) Sve revizije dokumenata (document_revisions)
+#   5) Audit log stavke koje pominju contractId ili dealId
+# Sortirano od najstarijeg ka najnovijem, ili obrnuto ako je ?desc=1.
+
+@data_bp.route('/api/deals/<deal_id>/timeline', methods=['GET'])
+@login_required
+def deal_timeline(deal_id):
+    from config import AUDIT_DB_FILE
+    desc = str(request.args.get('desc', '')).lower() in ('1', 'true', 'yes')
+
+    events = []
+
+    def _add(ts, kind, title, subtitle='', meta=None, icon=None):
+        events.append({
+            'timestamp': ts or '',
+            'kind': kind,
+            'title': title,
+            'subtitle': subtitle,
+            'meta': meta or {},
+            'icon': icon or ''
+        })
+
+    contract_id = None
+    conn = None
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        # 1) Deal sam
+        row = c.execute('SELECT data FROM deals WHERE id=?', (deal_id,)).fetchone()
+        if not row:
+            return jsonify({'error': 'deal_not_found'}), 404
+        deal = decrypt_data(row[0]) if row[0] else {}
+        contract_id = deal.get('contractId', '')
+
+        created = deal.get('createdAt') or deal.get('created_at') or ''
+        modified = deal.get('lastModified') or deal.get('updatedAt') or ''
+        _add(created, 'deal', f'Deal created — {contract_id}',
+             f"Buyer: {deal.get('buyerName', '')}  ·  Product: {deal.get('productName', '')}",
+             meta={'dealId': deal_id}, icon='📝')
+        if modified and modified != created:
+            _add(modified, 'deal', f'Deal updated — {contract_id}',
+                 f"Status: {deal.get('status', 'unknown')}", meta={'dealId': deal_id}, icon='✏️')
+
+        # 2) Transactions
+        for tx_row in c.execute("SELECT id, data FROM transactions"):
+            try:
+                tx = decrypt_data(tx_row[1]) if tx_row[1] else {}
+            except Exception:
+                continue
+            if tx.get('dealId') != deal_id and tx.get('invoiceNumber') != contract_id:
+                continue
+            ts = tx.get('date') or tx.get('createdAt') or ''
+            amt = tx.get('amount', 0)
+            cur = tx.get('currency', '')
+            typ = tx.get('type', '')
+            title = f"{'💰 Income' if typ == 'income' else '💸 Expense'}: {amt} {cur}"
+            _add(ts, 'transaction', title,
+                 f"{tx.get('category', '')} — {tx.get('source', '')}",
+                 meta={'transactionId': tx.get('id', tx_row[0])},
+                 icon='💰' if typ == 'income' else '💸')
+
+        # 3) Documents from register — entityId match OR docNumber contains contractId
+        try:
+            for doc_row in c.execute(
+                'SELECT docType, docNumber, revision, status, issuedAt, issuedBy '
+                'FROM document_register WHERE entityId=? OR docNumber LIKE ? '
+                'ORDER BY issuedAt ASC',
+                (deal_id, f'%{contract_id}%' if contract_id else '__nope__')
+            ):
+                doc_type, doc_num, rev, status, issued_at, issued_by = doc_row
+                title = f"📄 {doc_type.upper()} issued: {doc_num}"
+                sub = f"Revision {rev}  ·  Status: {status}  ·  By: {issued_by or 'system'}"
+                _add(issued_at, 'document', title, sub,
+                     meta={'docNumber': doc_num, 'docType': doc_type, 'revision': rev},
+                     icon='📄')
+        except sqlite3.OperationalError:
+            pass  # tabela nije još kreirana
+
+        # 4) Document revisions with reason
+        try:
+            for rev_row in c.execute(
+                'SELECT docNumber, revision, changeReason, changedBy, changedAt '
+                'FROM document_revisions WHERE entityId=? '
+                'ORDER BY changedAt ASC',
+                (deal_id,)
+            ):
+                _add(rev_row[4], 'revision',
+                     f"🔁 Revision R{rev_row[1]} of {rev_row[0]}",
+                     f"Reason: {rev_row[2]}  ·  By: {rev_row[3]}",
+                     meta={'docNumber': rev_row[0], 'revision': rev_row[1]},
+                     icon='🔁')
+        except sqlite3.OperationalError:
+            pass
+    finally:
+        if conn:
+            conn.close()
+
+    # 5) Audit log — mentions
+    try:
+        aconn = sqlite3.connect(AUDIT_DB_FILE, timeout=15.0)
+        aconn.execute('PRAGMA busy_timeout=15000')
+        needle = (contract_id or deal_id).strip()
+        if needle:
+            cur_a = aconn.cursor()
+            try:
+                rows = cur_a.execute(
+                    "SELECT action, module, details, username, timestamp FROM audit_log "
+                    "WHERE details LIKE ? OR details LIKE ? "
+                    "ORDER BY timestamp ASC LIMIT 100",
+                    (f'%{needle}%', f'%{deal_id}%')
+                ).fetchall()
+                for a_action, a_module, a_details, a_user, a_ts in rows:
+                    _add(a_ts, 'audit', f"🛡️ {a_action}",
+                         f"{a_module}: {(a_details or '')[:180]}  ·  By: {a_user or 'system'}",
+                         meta={'action': a_action, 'module': a_module},
+                         icon='🛡️')
+            except sqlite3.OperationalError:
+                pass
+        aconn.close()
+    except Exception:
+        pass
+
+    # Sortiraj hronoloski
+    events.sort(key=lambda e: e.get('timestamp') or '', reverse=desc)
+
+    return jsonify({
+        'dealId': deal_id,
+        'contractId': contract_id,
+        'total': len(events),
+        'events': events,
+    })
