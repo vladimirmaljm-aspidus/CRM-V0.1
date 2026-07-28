@@ -40,6 +40,11 @@
       <button id="btn-back" class="btn btn-ghost">← Back</button>
       <button id="btn-draft" class="btn btn-primary">💾 Save draft</button>
       <button id="btn-final" class="btn btn-success">✔ Save final (locks doc #)</button>
+      <!-- V23.1 #7 — convert button visible SAMO ako je ovo finalizovana ponuda -->
+      <div id="convert-actions" class="hidden flex gap-2">
+        <button id="btn-to-invoice" class="btn" style="background:#0ea5e9;color:white">→ Invoice</button>
+        <button id="btn-to-proforma" class="btn" style="background:#7c3aed;color:white">→ Proforma</button>
+      </div>
     </div>
   </div>
 
@@ -58,13 +63,15 @@
         <div class="pt-2"><span id="f-status" class="status-pill status-draft">Draft</span></div>
       </div>
 
-      <div>
-        <label>Partner ID</label>
-        <input id="f-partnerId" placeholder="Partner UUID">
+      <div class="relative">
+        <label>Partner (autocomplete)</label>
+        <input id="f-partnerSearch" placeholder="Type company name…" autocomplete="off">
+        <div id="partner-dropdown" class="hidden absolute z-10 left-0 right-0 bg-white border border-slate-200 rounded-lg shadow max-h-56 overflow-y-auto text-sm mt-1"></div>
+        <input id="f-partnerId" type="hidden">
       </div>
       <div>
-        <label>Partner Name</label>
-        <input id="f-partnerName" placeholder="Client name">
+        <label>Partner Name (auto-filled)</label>
+        <input id="f-partnerName" placeholder="Client name" readonly class="bg-slate-50">
       </div>
       <div>
         <label>Currency</label>
@@ -247,6 +254,87 @@ document.getElementById('btn-final').addEventListener('click', () => {
   save(true);
 });
 document.getElementById('btn-back').addEventListener('click', () => history.back());
+
+// V23.1 #7 — convert offer → invoice / proforma
+async function convert(target) {
+  if (!currentDoc.docNumber || currentDoc.status !== 'final') {
+    alert('Ponuda mora biti finalizovana (Save final) pre konverzije.');
+    return;
+  }
+  if (!confirm(`Konvertujem ovu ponudu (${currentDoc.docNumber}) u ${target === 'invoice' ? 'INVOICE' : 'PROFORMA'}?\n\nPodaci se prenose 1:1, izdaje se nov broj dokumenta.`)) return;
+  const csrfTok = await _csrf();
+  const r = await fetch('/api/documents/convert', {
+    method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token':csrfTok},
+    body: JSON.stringify({ source_type: 'offer', source_id: DOC_ID, target_type: target })
+  });
+  const j = await r.json();
+  if (r.ok) {
+    alert(`✔ Kreirano: ${j.docNumber}`);
+    location.href = j.redirect;
+  } else {
+    alert('✗ ' + (j.error || r.status));
+  }
+}
+document.getElementById('btn-to-invoice').addEventListener('click', () => convert('invoice'));
+document.getElementById('btn-to-proforma').addEventListener('click', () => convert('proforma'));
+
+// V23.1 — partner autocomplete
+let partnersCache = null;
+async function loadPartners() {
+  if (partnersCache) return partnersCache;
+  try {
+    const r = await fetch('/api/partners');
+    if (!r.ok) return partnersCache = [];
+    const j = await r.json();
+    partnersCache = (j.partners || j || []).filter(p => p && p.id);
+  } catch { partnersCache = []; }
+  return partnersCache;
+}
+async function wirePartnerAutocomplete() {
+  const inp = document.getElementById('f-partnerSearch');
+  const dd = document.getElementById('partner-dropdown');
+  const hidId = document.getElementById('f-partnerId');
+  const hidName = document.getElementById('f-partnerName');
+  // Pre-fill from currentDoc
+  if (currentDoc.partnerName) inp.value = currentDoc.partnerName;
+  inp.addEventListener('input', async () => {
+    const q = inp.value.trim().toLowerCase();
+    if (!q) { dd.classList.add('hidden'); return; }
+    const partners = await loadPartners();
+    const m = partners.filter(p => (p.name||'').toLowerCase().includes(q)).slice(0, 10);
+    if (!m.length) { dd.classList.add('hidden'); return; }
+    dd.innerHTML = m.map(p => `
+      <div data-pid="${esc(p.id)}" data-pname="${esc(p.name)}"
+           class="px-3 py-2 hover:bg-indigo-50 cursor-pointer border-b border-slate-100">
+        <b>${esc(p.name)}</b>
+        <span class="text-xs text-slate-500 ml-2">${esc(p.country||'')}</span>
+      </div>`).join('');
+    dd.classList.remove('hidden');
+    dd.querySelectorAll('[data-pid]').forEach(el => {
+      el.addEventListener('click', () => {
+        hidId.value = el.dataset.pid;
+        hidName.value = el.dataset.pname;
+        inp.value = el.dataset.pname;
+        currentDoc.partnerId = hidId.value;
+        currentDoc.partnerName = hidName.value;
+        dd.classList.add('hidden');
+      });
+    });
+  });
+  document.addEventListener('click', (e) => {
+    if (!dd.contains(e.target) && e.target !== inp) dd.classList.add('hidden');
+  });
+}
+
+// Nakon boot-a, show convert-actions ako je offer final
+const _origBoot = boot;
+boot = async function() {
+  await _origBoot();
+  wirePartnerAutocomplete();
+  if (DOC_TYPE === 'offer' && currentDoc.docNumber && currentDoc.status === 'final') {
+    document.getElementById('convert-actions').classList.remove('hidden');
+  }
+};
 
 boot();
 </script>

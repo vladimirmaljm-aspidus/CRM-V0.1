@@ -312,6 +312,44 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def require_perm(perm_key):
+    """V23.1 — dekorator koji proverava granular permission za tekućeg user-a.
+    Admin uvek prolazi. Za ostale: gleda users.permissions JSON dict.
+
+    Primer:
+        @require_perm('deals.delete')
+        def delete_deal(...): ...
+
+    Ako user nema permisiju, vraća 403 sa objašnjenjem. Zove ga se PORED
+    @login_required (mora prvo biti autentifikovan)."""
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            if session.get('role') == 'admin':
+                return f(*args, **kwargs)
+            uid = session.get('user_id')
+            if not uid:
+                return jsonify({'error': 'UNAUTHORIZED'}), 401
+            try:
+                with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
+                    r = conn.execute("SELECT permissions FROM users WHERE id=?", (uid,)).fetchone()
+                perms = json.loads(r[0]) if r and r[0] else {}
+            except Exception:
+                perms = {}
+            if not perms.get(perm_key):
+                log_audit('SECURITY', 'permissions',
+                          f'User {session.get("username")} blocked from action requiring {perm_key}',
+                          is_suspicious=True)
+                return jsonify({
+                    'error': 'PERMISSION_DENIED',
+                    'required_permission': perm_key,
+                    'message': f'You need "{perm_key}" permission for this action. Contact your admin.',
+                }), 403
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
 def safe_parse(val):
     """Sigurno parsiranje JSON-a iz baze podataka."""
     try:

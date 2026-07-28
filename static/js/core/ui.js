@@ -55,6 +55,8 @@ let fullNavigationItems = [
   { view:'ext:/admin/reports',             icon:'reports',    label: 'Custom Reports',       adminOnly: true, group: 'system' },
   { view:'ext:/admin/permissions',         icon:'audit',      label: 'Permissions Matrix',   adminOnly: true, group: 'system' },
   { view:'ext:/admin/portal-permissions',  icon:'portal_preview', label: 'Portal Permissions', adminOnly: true, group: 'system' },
+  { view:'ext:/admin/custom-fields',       icon:'documents',  label: 'Custom Fields',        adminOnly: true, group: 'system' },
+  { view:'ext:/admin/webhooks',            icon:'network',    label: 'Webhooks & API',       adminOnly: true, group: 'system' },
 
   // V23.1 — nove korisnicke stranice (svima dostupne)
   { view:'ext:/documents/register', icon:'documents', label: 'Document Register',   group: 'admin' },
@@ -195,7 +197,17 @@ function buildNavigation() {
           `;
 
           if (!isExternal) {
-              el.addEventListener('click', () => { state.currentView = item.view; state.detailViewId = null; resetFilters(); render(); });
+              el.addEventListener('click', () => {
+                  state.currentView = item.view;
+                  state.detailViewId = null;
+                  resetFilters();
+                  render();
+                  // V23.1 #8 — auto-breadcrumbs on view change
+                  if (window.setBreadcrumbs) {
+                      const label = (item.label || item.labelPath || item.view).split('.').pop();
+                      window.setBreadcrumbs([{ label: label.charAt(0).toUpperCase() + label.slice(1) }]);
+                  }
+              });
           }
           nav.appendChild(el);
       });

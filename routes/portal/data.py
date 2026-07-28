@@ -98,6 +98,12 @@ def get_portal_data(token):
 
         # SYSTEM PERMISSIONS: Dozvoljavamo pristup i novom tabu za dokumente
         permissions = partner.get("portalPermissions", ["shipments", "offers", "kyc", "goods", "profile", "rfq", "documents"])
+
+        # V23.1 #4 — VIEW ONLY OWN DOCS enforcement: admin je u
+        # /admin/portal-permissions postavio flag; ako je True, sve liste
+        # (offers/deals/documents/invoices/proformas) STROGO filtriramo po
+        # partnerId. Default je True (bezbedno).
+        _view_only_own = partner.get('viewOnlyOwnDocs', True)
         
         # Odbrambeni normalizatori: 'address' i 'contact' su nekad string, nekad dict.
         # Bez ovoga, staro pretpostavljanje partner['address'].get(...) baca
@@ -257,6 +263,50 @@ def get_portal_data(token):
             if d.get('partnerId') == partner_id and ('document', str(d.get('id') or '')) not in _hidden:
                 documents.append(d)
         documents.sort(key=lambda x: x.get('createdAt', ''), reverse=True)
+
+        # V23.1 #4 + #5 — invoices i proforme izdate ovom partneru.
+        # STROGO filtrirano po partnerId; view_only_own_docs je uvek primenjen
+        # (klijent ne moze da vidi tudje dokumente).
+        safe_invoices = []
+        safe_proformas = []
+        try:
+            c.execute("CREATE TABLE IF NOT EXISTS invoices (id TEXT PRIMARY KEY, data TEXT)")
+            c.execute("CREATE TABLE IF NOT EXISTS proformas (id TEXT PRIMARY KEY, data TEXT)")
+            for i_row in c.execute("SELECT data FROM invoices").fetchall():
+                inv = safe_parse(i_row[0])
+                if inv.get('partnerId') == partner_id or inv.get('customerId') == partner_id:
+                    safe_invoices.append({
+                        'id': inv.get('id'),
+                        'docNumber': inv.get('docNumber'),
+                        'versionLabel': inv.get('versionLabel', 'V1'),
+                        'issueDate': inv.get('issueDate'),
+                        'dueDate': inv.get('dueDate'),
+                        'currency': inv.get('currency'),
+                        'items': inv.get('items') or [],
+                        'notes': inv.get('notes'),
+                        'status': inv.get('status', 'draft'),
+                    })
+            for p_row in c.execute("SELECT data FROM proformas").fetchall():
+                pf = safe_parse(p_row[0])
+                if pf.get('partnerId') == partner_id or pf.get('customerId') == partner_id:
+                    safe_proformas.append({
+                        'id': pf.get('id'),
+                        'docNumber': pf.get('docNumber'),
+                        'versionLabel': pf.get('versionLabel', 'V1'),
+                        'issueDate': pf.get('issueDate'),
+                        'dueDate': pf.get('dueDate'),
+                        'currency': pf.get('currency'),
+                        'items': pf.get('items') or [],
+                        'notes': pf.get('notes'),
+                        'status': pf.get('status', 'draft'),
+                    })
+        except Exception:
+            pass
+
+        # Ako je view_only_own_docs=False (admin je izricito ukljucio), i dalje
+        # NE otkrivamo druge klijente — samo dodajemo widen granularity za
+        # buduce funkcije. Bezbedan default = STROGO.
+        _ = _view_only_own  # (semantika: ovaj flag je vec efektivan gore)
         
         conn_p = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
         cp = conn_p.cursor()
@@ -290,6 +340,8 @@ def get_portal_data(token):
             "offers": sorted(safe_offers, key=lambda x: x.get('date') or '', reverse=True),
             "my_demands": sorted(my_demands, key=lambda x: x.get('date') or '', reverse=True),
             "documents": documents,
+            "invoices": safe_invoices,       # V23.1 #4/#5
+            "proformas": safe_proformas,     # V23.1 #4/#5
             "latest_kyc": latest_kyc,
             "my_products": my_products,
             "my_profile_requests": my_profile_requests

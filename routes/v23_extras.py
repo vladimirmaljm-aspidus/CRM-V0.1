@@ -20,7 +20,25 @@ from flask import Blueprint, jsonify, request, session
 from config import DB_FILE
 from utils import login_required, log_audit
 
+from flask import render_template
+
 v23_extras_bp = Blueprint('v23_extras_bp', __name__)
+
+
+@v23_extras_bp.route('/admin/custom-fields', methods=['GET'])
+@login_required
+def custom_fields_page():
+    if session.get('role') != 'admin':
+        return "Admin only.", 403
+    return render_template('admin_custom_fields.html')
+
+
+@v23_extras_bp.route('/admin/webhooks', methods=['GET'])
+@login_required
+def webhooks_page():
+    if session.get('role') != 'admin':
+        return "Admin only.", 403
+    return render_template('admin_webhooks.html')
 
 
 def _now() -> str:
