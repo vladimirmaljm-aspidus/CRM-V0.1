@@ -27,6 +27,7 @@ from routes.sanctions import sanctions_bp, screen_batch as sanctions_screen_batc
 from routes.documents_register import documents_register_bp
 from routes.inventory import inventory_bp
 from routes.supabase_webhook import supabase_webhook_bp
+from routes.entities_extras import entities_extras_bp
 from routes.verify_public import verify_bp
 
 # Konfiguracija sistemskog logovanja (sprečava ispisivanje osetljivih grešaka korisnicima)
@@ -105,6 +106,7 @@ app.register_blueprint(sanctions_bp)
 app.register_blueprint(documents_register_bp)
 app.register_blueprint(inventory_bp)
 app.register_blueprint(supabase_webhook_bp)
+app.register_blueprint(entities_extras_bp)
 # /verify/<VER-hash> — javni endpoint koji vodi na potvrdu dokumenta iz QR koda
 # na ponudi/fakturi. Bez registracije ovog bp-a, QR na PDF-u vodi u 404.
 app.register_blueprint(verify_bp)

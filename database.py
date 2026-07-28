@@ -106,6 +106,47 @@ def init_db():
             )''')
             c.execute('CREATE INDEX IF NOT EXISTS idx_filetext_partner ON file_text(partner_id)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_filetext_url ON file_text(file_url)')
+
+            # v22 Round A: entity_notes — nested notes per entity (partner/deal/offer/product)
+            c.execute('''CREATE TABLE IF NOT EXISTS entity_notes (
+                id TEXT PRIMARY KEY,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_by TEXT,
+                created_at TEXT NOT NULL,
+                pinned INTEGER DEFAULT 0
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_entnotes_entity ON entity_notes(entity_type, entity_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_entnotes_created_at ON entity_notes(created_at)')
+
+            # v22 Round A: deal_documents — arbitrary file attachments per deal
+            c.execute('''CREATE TABLE IF NOT EXISTS deal_documents (
+                id TEXT PRIMARY KEY,
+                deal_id TEXT NOT NULL,
+                file_url TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                doc_kind TEXT,
+                size_bytes INTEGER,
+                uploaded_by TEXT,
+                uploaded_at TEXT NOT NULL,
+                note TEXT
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_dealdocs_deal ON deal_documents(deal_id)')
+
+            # v22 Round B: custom_reports — admin-defined saved SELECT queries
+            c.execute('''CREATE TABLE IF NOT EXISTS custom_reports (
+                id TEXT PRIMARY KEY,
+                owner_user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                sql_query TEXT NOT NULL,
+                chart_type TEXT,        -- 'kpi' | 'bar' | 'line' | 'pie' | 'table'
+                is_shared INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_customreports_owner ON custom_reports(owner_user_id)')
             
             # Kreiranje tabela za sve entitete
             tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']

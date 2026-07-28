@@ -217,21 +217,59 @@
                     const badge = f.is_manual
                         ? '<span class="status-badge status-warn">MANUAL</span>'
                         : '<span class="status-badge status-ok">DAILY</span>';
+                    // Guess target from filename prefix
+                    let target = 'crm';
+                    if (f.name.startsWith('aspidus_portal.db.')) target = 'portal';
+                    else if (f.name.startsWith('aspidus_audit.db.')) target = 'audit';
                     return `<tr class="border-t border-slate-100">
                         <td class="p-2 font-mono text-[11px]">${escHtml(f.name)}</td>
                         <td class="p-2 text-right">${f.size_mb} MB</td>
                         <td class="p-2 text-slate-500">${escHtml(f.mtime)}</td>
                         <td class="p-2">${badge}</td>
+                        <td class="p-2 text-right">
+                            <button class="btn btn-danger" style="padding:4px 10px;font-size:11px;" onclick="restoreBackup('${escHtml(f.name)}', '${target}')" title="DESTRUCTIVE: replaces current DB, quarantines old one">↺ Restore</button>
+                        </td>
                     </tr>`;
                 }).join('');
                 div.innerHTML = `<div class="overflow-x-auto"><table class="w-full">
                     <thead class="text-[10px] uppercase tracking-wider text-slate-500">
-                        <tr><th class="p-2 text-left">File</th><th class="p-2 text-right">Size</th><th class="p-2 text-left">Modified (UTC)</th><th class="p-2 text-left">Kind</th></tr>
+                        <tr><th class="p-2 text-left">File</th><th class="p-2 text-right">Size</th><th class="p-2 text-left">Modified (UTC)</th><th class="p-2 text-left">Kind</th><th class="p-2 text-right">Action</th></tr>
                     </thead>
                     <tbody>${rows}</tbody>
                 </table></div>
                 <div class="mt-2 text-slate-500">Total: ${j.total} file(s). Showing latest ${Math.min(40, j.total)}.</div>`;
             } catch (e) { div.innerHTML = '<span class="text-red-600">Error: ' + escHtml(e.message) + '</span>'; }
+        }
+
+        async function restoreBackup(fname, target) {
+            const dry = await fetch('/api/admin/backup/restore', {
+                method: 'POST', headers: {'Content-Type':'application/json', 'X-CSRF-Token': await _bkCsrf()},
+                body: JSON.stringify({ backup_file: fname, target: target, confirm: false })
+            }).then(r => r.json()).catch(_ => null);
+            if (!dry) { alert('Failed to preview restore.'); return; }
+            if (dry.error) { alert('✗ ' + dry.error + ': ' + (dry.detail || '')); return; }
+            const msg = `RESTORE — this is DESTRUCTIVE.\n\n` +
+                        `Backup: ${fname}\nSize: ${dry.backup_size_mb} MB\n` +
+                        `Target: ${target} (${dry.target_current_size_mb} MB currently)\n\n` +
+                        `The current DB will be renamed to *.pre_restore.<timestamp>.\n` +
+                        `You will need to reload the web app after this completes.\n\n` +
+                        `Are you SURE you want to restore?`;
+            if (!confirm(msg)) return;
+            // second confirm — extra safety
+            const t = prompt('Type "RESTORE" (all caps) to proceed:');
+            if (t !== 'RESTORE') { alert('Cancelled.'); return; }
+            const r = await fetch('/api/admin/backup/restore', {
+                method: 'POST', headers: {'Content-Type':'application/json', 'X-CSRF-Token': await _bkCsrf()},
+                body: JSON.stringify({ backup_file: fname, target: target, confirm: true })
+            });
+            const j = await r.json();
+            if (r.ok && j.ok) {
+                alert('✓ Restore complete.\n\n' + (j.warning || '') +
+                      '\n\nPrevious DB quarantined at:\n' + (j.quarantined_previous_db || '—'));
+                loadBackupList();
+            } else {
+                alert('✗ Restore failed: ' + (j.error || 'unknown') + '\n' + (j.detail || ''));
+            }
         }
 
         refresh();

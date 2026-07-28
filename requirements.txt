@@ -13,3 +13,4 @@ pdfminer.six==20240706
 httpx>=0.24
 PyJWT>=2.8
 cryptography>=41.0
+openpyxl>=3.1

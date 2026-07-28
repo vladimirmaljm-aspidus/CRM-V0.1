@@ -323,3 +323,100 @@ CREATE INDEX IF NOT EXISTS storage_objects_archived_idx ON storage_objects (arch
 -- portal_hidden_items, portal_products, products, profile_change_requests,
 -- shared_documents, storage_objects
 -- (15 tabela)
+
+
+-- ==========================================================================
+-- v22 ADD-ONS — dodato u Batch D/D2 (2026 novembar/decembar)
+-- Bezbedno je pokrenuti na postojecoj bazi — sve je IF NOT EXISTS.
+-- ==========================================================================
+
+-- Users profile fields (za Preferences panel)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notif_prefs JSONB DEFAULT '{}'::jsonb;
+
+-- Per-partner inventory (Faza 5)
+CREATE TABLE IF NOT EXISTS partner_inventory (
+    id TEXT PRIMARY KEY,
+    partner_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    qty_on_hand NUMERIC NOT NULL DEFAULT 0,
+    qty_reserved NUMERIC NOT NULL DEFAULT 0,
+    unit TEXT,
+    last_movement_at TIMESTAMPTZ,
+    UNIQUE (partner_id, product_id)
+);
+CREATE INDEX IF NOT EXISTS idx_partinv_partner ON partner_inventory(partner_id);
+CREATE INDEX IF NOT EXISTS idx_partinv_product ON partner_inventory(product_id);
+
+CREATE TABLE IF NOT EXISTS inventory_movements (
+    id TEXT PRIMARY KEY,
+    partner_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('IN','OUT','ADJUST','RESERVE','RELEASE')),
+    qty NUMERIC NOT NULL,
+    unit TEXT,
+    deal_id TEXT,
+    note TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_invmov_partner ON inventory_movements(partner_id);
+CREATE INDEX IF NOT EXISTS idx_invmov_deal ON inventory_movements(deal_id);
+CREATE INDEX IF NOT EXISTS idx_invmov_at ON inventory_movements(created_at);
+
+-- OCR/text extract cache (v22 Faza D)
+CREATE TABLE IF NOT EXISTS file_text (
+    id TEXT PRIMARY KEY,
+    file_url TEXT NOT NULL UNIQUE,
+    partner_id TEXT,
+    filename TEXT,
+    content_type TEXT,
+    text_preview TEXT,
+    full_text TEXT,
+    char_count INTEGER,
+    extracted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_filetext_partner ON file_text(partner_id);
+-- Full-text search index (Postgres native) — mnogo brzi od LIKE za velike sadrzaje
+CREATE INDEX IF NOT EXISTS idx_filetext_fulltext_gin
+    ON file_text USING gin(to_tsvector('simple', COALESCE(full_text, '')));
+
+-- Saved searches per user (Batch D2)
+CREATE TABLE IF NOT EXISTS saved_searches (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    module TEXT NOT NULL,
+    query_json JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_savedsearches_user ON saved_searches(user_id);
+
+-- Entity notes (Round A — sledi u frontend)
+CREATE TABLE IF NOT EXISTS entity_notes (
+    id TEXT PRIMARY KEY,
+    entity_type TEXT NOT NULL,   -- 'partner' | 'deal' | 'offer' | 'product'
+    entity_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    pinned BOOLEAN DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_entnotes_entity ON entity_notes(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_entnotes_created_at ON entity_notes(created_at);
+
+-- Deal documents (Round A)
+CREATE TABLE IF NOT EXISTS deal_documents (
+    id TEXT PRIMARY KEY,
+    deal_id TEXT NOT NULL,
+    file_url TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    doc_kind TEXT,               -- 'contract' | 'proforma' | 'invoice' | 'other'
+    size_bytes INTEGER,
+    uploaded_by TEXT,
+    uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dealdocs_deal ON deal_documents(deal_id);
