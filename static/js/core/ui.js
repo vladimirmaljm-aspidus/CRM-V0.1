@@ -16,28 +16,55 @@ const NAV_ICONS = {
   audit: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9.5 12l1.8 1.8 3.2-3.6"/>',
   portal_activity: '<path d="M3 3v18h18"/><path d="M7 15l4-4 4 3 5-6"/>',
   portal_preview: '<circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>',
-  documents: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="18" x2="15" y2="18"/>'
+  documents: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/><line x1="9" y1="18" x2="15" y2="18"/>',
+  supabase: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 12v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>',
+  health: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  errors: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  new_deal: '<path d="M12 5v14M5 12h14"/>',
+  new_partner: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11v6M19 14h6"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>'
 };
 
 let fullNavigationItems = [
   { view:'dashboard', icon:'dashboard', labelPath:'nav.dashboard', group: 'sales' },
-  { view:'deals', icon:'deals', labelPath:'nav.deals', group: 'sales' },
-  { view:'offers', icon:'offers', labelPath:'nav.offers', group: 'sales' },
-  { view:'products', icon:'products', labelPath:'nav.products', group: 'sales' },
-  { view:'demands', icon:'demands', labelPath:'nav.demands', group: 'sales' },
+  { view:'deals', icon:'deals', labelPath:'nav.deals', group: 'sales', badge: 'deals_overdue' },
+  { view:'offers', icon:'offers', labelPath:'nav.offers', group: 'sales', badge: 'offer_responses' },
+  { view:'products', icon:'products', labelPath:'nav.products', group: 'sales', badge: 'portal_products' },
+  { view:'demands', icon:'demands', labelPath:'nav.demands', group: 'sales', badge: 'portal_rfqs' },
   { view:'product_search', icon:'product_search', labelPath:'nav.product_search', group: 'sales' },
 
   { view:'finances', icon:'finances', labelPath:'nav.finances', group: 'network' },
   { view:'cashflow', icon:'cashflow', labelPath:'nav.cashflow', group: 'network' },
-  { view:'partners', icon:'partners', labelPath:'nav.partners', group: 'network' },
+  { view:'partners', icon:'partners', labelPath:'nav.partners', group: 'network', badge: 'portal_kyc' },
   { view:'network', icon:'network', labelPath:'nav.network', group: 'network' },
 
   { view:'users', icon:'users', labelPath:'users.manage', adminOnly: true, group: 'admin' },
   { view:'audit', icon:'audit', labelPath:'audit.title', adminOnly: true, permKey: 'audit_view', group: 'admin' },
   { view:'portal_activity', icon:'portal_activity', labelPath:'portalActivity.navLabel', adminOnly: true, permKey: 'portal_activity_view', group: 'admin' },
   { view:'portal_preview', icon:'portal_preview', labelPath:'portalPreview.navLabel', adminOnly: true, permKey: 'portal_preview_manage', group: 'admin' },
-  { view:'documents', icon:'documents', labelPath:'documents.navLabel', adminOnly: true, group: 'admin' }
+  { view:'documents', icon:'documents', labelPath:'documents.navLabel', adminOnly: true, group: 'admin' },
+
+  // SYSTEM grupa — bila je u footer-u, sad je u nav-u da bude uredna sa ostalim
+  { view:'ext:/admin/supabase', icon:'supabase', label: 'Supabase', adminOnly: true, group: 'system' },
+  { view:'ext:/admin/health',   icon:'health',   label: 'System Health', adminOnly: true, group: 'system' },
+  { view:'ext:/admin/errors',   icon:'errors',   label: 'Error Log',     adminOnly: true, group: 'system', badge: 'errors_recent' }
 ];
+
+// Trenutne pending count vrednosti (postavlja checkAllNotifications preko _push)
+window._navBadgeCounts = window._navBadgeCounts || {
+    portal_kyc: 0, portal_products: 0, portal_rfqs: 0,
+    offer_responses: 0, deals_overdue: 0, errors_recent: 0
+};
+
+// Boje po vrsti — informativna, ne odvraća paznju
+const NAV_BADGE_COLOR = {
+    portal_kyc:      'bg-amber-500',
+    portal_products: 'bg-blue-500',
+    portal_rfqs:     'bg-indigo-500',
+    offer_responses: 'bg-emerald-500',
+    deals_overdue:   'bg-red-500',
+    errors_recent:   'bg-red-500'
+};
 
 function navIconSvg(key) {
   const path = NAV_ICONS[key] || NAV_ICONS.deals;
@@ -48,15 +75,61 @@ if (typeof DATA_KEYS !== 'undefined' && !DATA_KEYS.includes('offers')) {
     DATA_KEYS.push('offers');
 }
 
+// QUICK ACTIONS — cesto trazene komande, uvek na vrhu nav-a
+function _renderQuickActions(nav) {
+    const canDeal = typeof hasPerm !== 'function' || hasPerm('deals', 'edit');
+    const canPartner = typeof hasPerm !== 'function' || hasPerm('partners', 'edit');
+    const sr = Utils.getLang() === 'sr';
+    const wrap = document.createElement('div');
+    wrap.className = 'nav-quick mb-4 pt-1';
+    let html = '<div class="grid grid-cols-3 gap-1">';
+    const btn = (id, icon, label, title) =>
+        `<button data-qa="${id}" title="${title}" class="nav-quick-btn flex flex-col items-center justify-center gap-1 py-2.5 rounded-lg bg-slate-50 hover:bg-[var(--accent-soft)] hover:text-[var(--accent)] text-slate-500 transition-colors border border-slate-100 hover:border-[var(--accent)]/20">
+            ${navIconSvg(icon)}
+            <span class="nav-text text-[10px] font-semibold uppercase tracking-wide leading-none">${label}</span>
+         </button>`;
+    if (canDeal)    html += btn('new-deal',    'new_deal',    sr?'Dil':'Deal',    sr?'Novi dil':'New deal');
+    if (canPartner) html += btn('new-partner', 'new_partner', sr?'Partner':'Partner', sr?'Novi partner':'New partner');
+    html += btn('search', 'search', sr?'Traži':'Search', 'Ctrl+K');
+    html += '</div>';
+    wrap.innerHTML = html;
+    nav.appendChild(wrap);
+
+    // Handlers
+    wrap.querySelectorAll('[data-qa]').forEach(el => {
+        el.addEventListener('click', () => {
+            const kind = el.dataset.qa;
+            if (kind === 'new-deal' && typeof showDealForm === 'function') { showDealForm(); }
+            else if (kind === 'new-partner' && typeof showPartnerForm === 'function') { showPartnerForm(); }
+            else if (kind === 'search') {
+                // Cmd+K palette
+                if (typeof window.openCommandPalette === 'function') window.openCommandPalette();
+                else document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+            }
+        });
+    });
+}
+
+function _navBadge(item) {
+    const c = window._navBadgeCounts || {};
+    if (!item.badge || !c[item.badge]) return '';
+    const color = NAV_BADGE_COLOR[item.badge] || 'bg-red-500';
+    return `<span class="nav-badge ml-auto ${color} text-white text-[10px] font-bold px-1.5 min-w-[18px] h-[18px] rounded-full flex items-center justify-center leading-none">${c[item.badge] > 99 ? '99+' : c[item.badge]}</span>`;
+}
+
 function buildNavigation() {
-  const nav = document.getElementById('navigation'); 
+  const nav = document.getElementById('navigation');
   if(!nav) return;
   nav.innerHTML = '';
-  
+
+  _renderQuickActions(nav);
+
+  const sr = Utils.getLang() === 'sr';
   const groups = {
-      'sales': { label: Utils.getLang() === 'sr' ? 'Prodaja i Inventar' : 'Sales & Inventory', items: [] },
-      'network': { label: Utils.getLang() === 'sr' ? 'Finansije i Mreža' : 'Finances & Network', items: [] },
-      'admin': { label: Utils.getLang() === 'sr' ? 'Administracija' : 'System Admin', items: [] }
+      'sales':   { label: sr ? 'Prodaja i Inventar'  : 'Sales & Inventory',  items: [] },
+      'network': { label: sr ? 'Finansije i Mreža'   : 'Finances & Network', items: [] },
+      'admin':   { label: sr ? 'Administracija'       : 'System Admin',       items: [] },
+      'system':  { label: sr ? 'Sistem'               : 'System',             items: [] }
   };
 
   const userPerms = (state.user && state.user.permissions) || {};
@@ -74,34 +147,42 @@ function buildNavigation() {
 
   Object.values(groups).forEach(grp => {
       if (grp.items.length === 0) return;
-      
+
       const grpHeader = document.createElement('div');
-      grpHeader.className = 'nav-group-title text-[10px] font-semibold text-slate-400 uppercase tracking-widest pl-3 mb-2 mt-6 transition-all duration-300';
+      grpHeader.className = 'nav-group-title text-[10px] font-semibold text-slate-400 uppercase tracking-widest pl-3 mb-2 mt-5 transition-all duration-300';
       grpHeader.innerText = grp.label;
       nav.appendChild(grpHeader);
 
       grp.items.forEach(item => {
-          const labelText = item.labelPath.startsWith('nav.') || item.labelPath.startsWith('users.') || item.labelPath.startsWith('audit.') || item.labelPath.startsWith('portalActivity.') || item.labelPath.startsWith('portalPreview.') || item.labelPath.startsWith('documents.') ? t(item.labelPath) : item.labelPath;
-          const isActive = state.currentView === item.view;
+          // Label izvor: prevodni ključ ako je labelPath, inače literal iz item.label
+          const isTranslated = item.labelPath && (item.labelPath.startsWith('nav.') || item.labelPath.startsWith('users.') || item.labelPath.startsWith('audit.') || item.labelPath.startsWith('portalActivity.') || item.labelPath.startsWith('portalPreview.') || item.labelPath.startsWith('documents.'));
+          const labelText = isTranslated ? t(item.labelPath) : (item.label || item.labelPath || item.view);
+          const isExternal = typeof item.view === 'string' && item.view.startsWith('ext:');
+          const externalHref = isExternal ? item.view.slice(4) : null;
+          const isActive = !isExternal && state.currentView === item.view;
 
           const activeClasses = isActive
               ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
               : 'text-[var(--muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--text-color)]';
 
-          const btn = document.createElement('button');
-          btn.className = `nav-item group relative flex items-center w-full text-left px-2.5 py-2 mb-0.5 rounded-lg transition-colors duration-200 ${activeClasses}`;
-          btn.title = labelText;
+          const el = document.createElement(isExternal ? 'a' : 'button');
+          if (isExternal) el.href = externalHref;
+          el.className = `nav-item group relative flex items-center w-full text-left px-2.5 py-2 mb-0.5 rounded-lg transition-colors duration-200 ${activeClasses}`;
+          el.title = labelText;
 
-          btn.innerHTML = `
+          el.innerHTML = `
               ${isActive ? '<span class="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-full bg-[var(--accent)]"></span>' : ''}
               <div class="flex items-center justify-center w-8 h-8 min-w-[2rem] ${isActive ? 'text-[var(--accent)]' : 'text-slate-400 group-hover:text-[var(--text-color)]'} transition-colors duration-200">
                   ${navIconSvg(item.icon)}
               </div>
-              <span class="nav-text ml-2.5 text-sm ${isActive ? 'font-semibold' : 'font-medium'}">${labelText}</span>
+              <span class="nav-text ml-2.5 text-sm ${isActive ? 'font-semibold' : 'font-medium'} truncate">${labelText}</span>
+              ${_navBadge(item)}
           `;
 
-          btn.addEventListener('click', () => { state.currentView = item.view; state.detailViewId = null; resetFilters(); render(); });
-          nav.appendChild(btn);
+          if (!isExternal) {
+              el.addEventListener('click', () => { state.currentView = item.view; state.detailViewId = null; resetFilters(); render(); });
+          }
+          nav.appendChild(el);
       });
   });
 }
@@ -535,8 +616,28 @@ function checkAllNotifications(){
               _push({ type: r.status === 'accepted' ? 'offer_accepted' : 'offer_declined',
                       message: label, goto: 'offers', offerId: r.offer_id });
           });
+          // Sidebar nav badge sync — vizuelni brojaci pored stavki
+          window._navBadgeCounts = window._navBadgeCounts || {};
+          window._navBadgeCounts.portal_kyc      = counts.kyc || 0;
+          window._navBadgeCounts.portal_products = counts.products || 0;
+          window._navBadgeCounts.portal_rfqs     = counts.rfqs || 0;
+          window._navBadgeCounts.offer_responses = (counts.offer_responses_detail || []).length;
+          // Deals overdue — izracunavamo lokalno iz notifikacija
+          window._navBadgeCounts.deals_overdue = state.notifications.filter(n => n.type === 'payment').length;
+          // Poziv za rebuild samo badge-eva (jeftinije od render())
+          if (typeof buildNavigation === 'function') buildNavigation();
           updateNotificationCounter();
       }).catch(() => {});
+
+      // Errors badge (samo admin) — polluje /api/admin/errors i broji poslednje
+      if (state.user && state.user.role === 'admin') {
+          fetch('/api/admin/errors?limit=1').then(r => r.ok ? r.json() : null).then(j => {
+              if (!j) return;
+              window._navBadgeCounts = window._navBadgeCounts || {};
+              window._navBadgeCounts.errors_recent = j.total || (j.errors || []).length || 0;
+              if (typeof buildNavigation === 'function') buildNavigation();
+          }).catch(() => {});
+      }
   }
 
   updateNotificationCounter();
@@ -810,16 +911,9 @@ function setupGlobalListeners(){
   const sb = document.getElementById('settings-btn');
   if(sb) sb.addEventListener('click', () => { if(typeof SettingsManager !== 'undefined') SettingsManager.showModal(); });
 
-  // Otkrij admin-only linkove (Supabase Migration, Error Log) samo ako je user admin
-  try {
-    const isAdmin = state && state.user && state.user.role === 'admin';
-    if (isAdmin) {
-      ['supabase-admin-link', 'admin-health-link', 'admin-errors-link'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) { el.classList.remove('hidden'); el.classList.add('flex'); }
-      });
-    }
-  } catch(_) {}
+  // Napomena: admin System linkovi (Supabase, Health, Errors) sada zive u
+  // levom navigacionom panelu (System grupa), ne u footeru. buildNavigation()
+  // se sam brine za adminOnly gating.
   
   const mcb = document.getElementById('modal-close-btn');
   if(mcb) mcb.addEventListener('click', closeModal);
@@ -919,7 +1013,33 @@ async function initialize(){
   
   const roleText = state.user.role === 'admin' ? (typeof t === 'function' ? t('users.adminRole').replace('👑 ', '') : 'ADMIN') : (typeof t === 'function' ? t('users.workerRole').replace('👷 ', '') : 'WORKER');
   const cud = document.getElementById('current-user-display');
-  if(cud) cud.innerText = `${state.user.username.toUpperCase()} [${roleText.toUpperCase()}]`;
+  if(cud) cud.innerText = state.user.username;
+  const roleChip = document.getElementById('user-role-chip');
+  if (roleChip) {
+      roleChip.textContent = roleText.toUpperCase();
+      // Admin: indigo, worker: slate
+      if (state.user.role === 'admin') {
+          roleChip.className = 'text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-100 text-indigo-700 uppercase tracking-wide';
+      } else {
+          roleChip.className = 'text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700 uppercase tracking-wide';
+      }
+  }
+  const avatar = document.getElementById('user-avatar-initials');
+  if (avatar) {
+      const uname = String(state.user.username || '').trim();
+      const initials = uname ? (uname.length === 1 ? uname.charAt(0) : uname.charAt(0) + uname.charAt(1)).toUpperCase() : '·';
+      avatar.textContent = initials;
+  }
+  // Online/offline connectivity indikator
+  const setConn = (online) => {
+      const dot = document.getElementById('user-status-dot');
+      const txt = document.getElementById('user-connectivity');
+      if (dot) dot.className = 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 shadow-sm ' + (online ? 'bg-emerald-500' : 'bg-slate-400');
+      if (txt) { txt.textContent = online ? 'online' : 'offline'; txt.className = 'text-[9px] ' + (online ? 'text-emerald-600' : 'text-slate-400'); }
+  };
+  setConn(navigator.onLine);
+  window.addEventListener('online',  () => setConn(true));
+  window.addEventListener('offline', () => setConn(false));
   
   if(state.user.role !== 'admin') {
       const sb = document.getElementById('settings-btn');

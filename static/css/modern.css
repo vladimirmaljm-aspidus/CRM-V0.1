@@ -413,3 +413,87 @@ header, .topbar {
   .card { border-radius: 12px !important; }
   aside nav button:hover, aside nav a:hover { transform: none; }
 }
+
+/* =========================================
+   SIDEBAR REDESIGN (v22.1)
+   Utility grid + quick actions + badges
+   ========================================= */
+
+/* Kompaktna utility traka (Refresh, Notif, Profile, Settings) */
+.sb-util-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border-radius: 8px;
+  color: var(--muted, #94a3b8);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.1s;
+  cursor: pointer;
+}
+.sb-util-btn:hover {
+  color: var(--accent, #4f46e5);
+  background: var(--hover-bg, #f1f5f9);
+  border-color: rgba(79, 70, 229, 0.15);
+}
+.sb-util-btn:active { transform: scale(0.94); }
+
+/* Kad je sidebar collapsed, utility grid postaje 1-column */
+body.sidebar-collapsed .sidebar-utility-grid {
+  grid-template-columns: 1fr;
+  gap: 0.4rem;
+}
+
+/* Quick action tastere (New Deal, Partner, Search) */
+.nav-quick-btn {
+  cursor: pointer;
+  min-height: 56px;
+}
+.nav-quick-btn svg {
+  width: 18px;
+  height: 18px;
+}
+body.sidebar-collapsed .nav-quick {
+  display: none;   /* stedi vertikalu kad je usko */
+}
+
+/* Nav badge — subtil sjaj kad je vrednost > 0 */
+.nav-badge {
+  box-shadow: 0 0 0 2px var(--panel, #fff);
+  animation: navBadgePulse 3s ease-in-out infinite;
+}
+@keyframes navBadgePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(0.95); }
+}
+body.sidebar-collapsed .nav-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 16px !important;
+  height: 16px !important;
+  font-size: 9px !important;
+}
+
+/* User avatar/status dot */
+#user-status-dot { animation: statusPulse 2s ease-in-out infinite; }
+@keyframes statusPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+  50% { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
+}
+
+/* Sidebar group title — malo tanje sa razdvojnom linijom */
+.nav-group-title {
+  position: relative;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+.nav-group-title:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+body.sidebar-collapsed .nav-group-title {
+  border: none !important;
+  padding: 0.5rem 0 0 !important;
+}
