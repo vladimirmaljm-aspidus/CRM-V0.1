@@ -26,6 +26,9 @@
         const initial = (user.username || '?').charAt(0).toUpperCase();
         const html = `
         <div id="topbar" class="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-slate-200 px-4 py-2.5 flex items-center gap-3">
+            <button id="tb-hamburger" title="Menu" class="lg:hidden p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 -ml-2" aria-label="Toggle sidebar">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="w-5 h-5"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+            </button>
             <div id="breadcrumbs-mount" class="flex-shrink min-w-0 flex-1"></div>
 
             <button id="tb-search" title="Global search (⌘K)" class="hidden md:flex items-center gap-2 px-3 py-1.5 text-xs text-slate-500 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg">
@@ -74,6 +77,21 @@
             document.body.insertBefore(mount, document.body.firstChild);
         }
         mount.innerHTML = html;
+
+        // Wire hamburger — off-canvas toggle on mobile
+        document.getElementById('tb-hamburger')?.addEventListener('click', () => {
+            document.body.classList.toggle('sidebar-mobile-open');
+        });
+        // Klik na overlay zatvara sidebar
+        document.body.addEventListener('click', (e) => {
+            if (document.body.classList.contains('sidebar-mobile-open')) {
+                const sb = document.getElementById('app-sidebar');
+                if (sb && !sb.contains(e.target) && e.target.id !== 'tb-hamburger'
+                    && !(e.target.closest && e.target.closest('#tb-hamburger'))) {
+                    document.body.classList.remove('sidebar-mobile-open');
+                }
+            }
+        });
 
         // Wire
         document.getElementById('tb-search')?.addEventListener('click', () => {

@@ -1827,6 +1827,31 @@ def portal_accept_offer(token, offer_id):
                 pass
 
         c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(offer), offer_id))
+
+        # V23.1 #7 — PORTAL ACCEPT TRACEABILITY: registruj u document_register
+        # da je klijent prihvatio ponudu. Ne pravi novu reviziju, samo audit
+        # zapis vezan za docNumber ponude (ako je finalizovana).
+        try:
+            if action == 'accept':
+                _doc_num = offer.get('docNumber') or offer.get('offerNo')
+                if _doc_num:
+                    c.execute(
+                        "INSERT INTO document_revisions (id, docNumber, revision, entityId, "
+                        "snapshot, changeReason, changedBy, changedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (str(uuid.uuid4()), _doc_num,
+                         int(offer.get('revision', 0)),
+                         partner_id, json.dumps({'event': 'portal_accept',
+                                                 'partner_id': partner_id,
+                                                 'accepted_at': now_iso,
+                                                 'signed': bool(signature_ok)}),
+                         f'Portal ACCEPT by {partner.get("companyName")}'
+                         + (' with signature' if signature_ok else ''),
+                         partner.get('companyName', 'client'), now_iso)
+                    )
+        except Exception as _ev_err:
+            # Ne rušimo accept flow ako document_revisions nema kolonu ili trenutno ne postoji
+            logger.warning(f'portal-accept register trace failed: {_ev_err}')
+
         conn.commit()
     finally:
         conn.close()
