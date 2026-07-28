@@ -46,24 +46,19 @@ let fullNavigationItems = [
   { view:'portal_preview', icon:'portal_preview', labelPath:'portalPreview.navLabel', adminOnly: true, permKey: 'portal_preview_manage', group: 'admin' },
   { view:'documents', icon:'documents', labelPath:'documents.navLabel', adminOnly: true, group: 'admin' },
 
-  // SYSTEM grupa — bila je u footer-u, sad je u nav-u da bude uredna sa ostalim
+  // SYSTEM grupa — samo admin sistem-nivo alati koji nisu u topbar-u useru pod menijem.
+  // Sve korisnicke stranice (Security Center, Document Register, Preferences, itd.)
+  // su u topbar-u (avatar meni) da NE dupliramo iste linkove u dva mesta.
   { view:'ext:/admin/supabase',            icon:'supabase',   label: 'Operations',           adminOnly: true, group: 'system' },
-  { view:'ext:/admin/supabase/merge',      icon:'supabase',   label: 'Supabase Merge Wizard',adminOnly: true, group: 'system' },
+  { view:'ext:/admin/supabase/merge',      icon:'supabase',   label: 'Supabase Merge',       adminOnly: true, group: 'system' },
   { view:'ext:/admin/health',              icon:'health',     label: 'System Health',        adminOnly: true, group: 'system' },
   { view:'ext:/admin/errors',              icon:'errors',     label: 'Error Log',            adminOnly: true, group: 'system', badge: 'errors_recent' },
   { view:'ext:/admin/mail-queue',          icon:'mail_queue', label: 'Mail Queue',           adminOnly: true, group: 'system', badge: 'mail_failed' },
   { view:'ext:/admin/reports',             icon:'reports',    label: 'Custom Reports',       adminOnly: true, group: 'system' },
-  { view:'ext:/admin/permissions',         icon:'audit',      label: 'Permissions Matrix',   adminOnly: true, group: 'system' },
-  { view:'ext:/admin/portal-permissions',  icon:'portal_preview', label: 'Portal Permissions', adminOnly: true, group: 'system' },
+  { view:'ext:/admin/permissions',         icon:'audit',      label: 'Permissions',          adminOnly: true, group: 'system' },
+  { view:'ext:/admin/portal-permissions',  icon:'portal_preview', label: 'Portal Access',    adminOnly: true, group: 'system' },
   { view:'ext:/admin/custom-fields',       icon:'documents',  label: 'Custom Fields',        adminOnly: true, group: 'system' },
-  { view:'ext:/admin/webhooks',            icon:'network',    label: 'Webhooks & API',       adminOnly: true, group: 'system' },
-
-  // V23.1 — nove korisnicke stranice (svima dostupne)
-  { view:'ext:/documents/register', icon:'documents', label: 'Document Register',   group: 'admin' },
-  { view:'ext:/documents/new/offer',    icon:'offers', label: 'New Offer',      group: 'sales' },
-  { view:'ext:/documents/new/invoice',  icon:'documents', label: 'New Invoice',    group: 'sales' },
-  { view:'ext:/documents/new/proforma', icon:'documents', label: 'New Proforma',   group: 'sales' },
-  { view:'ext:/profile/security',   icon:'audit', label: 'Security Center', group: 'admin' }
+  { view:'ext:/admin/webhooks',            icon:'network',    label: 'Webhooks & API',       adminOnly: true, group: 'system' }
 ];
 
 // Trenutne pending count vrednosti (postavlja checkAllNotifications preko _push)
@@ -1156,5 +1151,50 @@ document.addEventListener('DOMContentLoaded', () => {
         await fetch('/api/auth/logout', { method: 'POST' });
         window.location.reload();
     });
-    initialize();
+    initialize().then(() => {
+        // V23.1 — ?goto= i ?new= handleri koje Register / topbar koriste
+        // umesto duplog dokument editora. Otvara POSTOJEĆI modal ili view.
+        try {
+            const params = new URLSearchParams(location.search);
+            const goto = params.get('goto');
+            const newDoc = params.get('new');
+            if (goto) {
+                const [type, id] = goto.split(':');
+                if (type === 'offer' || type === 'invoice' || type === 'proforma') {
+                    // Ako je "number=OFF-2026-00001" — nadji id po docNumber
+                    let target = id;
+                    if (id && id.startsWith('number=')) {
+                        const num = id.slice(7);
+                        const found = (state.data.offers || []).find(o =>
+                            o.docNumber === num || o.offerNo === num);
+                        target = found ? found.id : null;
+                    }
+                    if (target) {
+                        state.currentView = 'offers';
+                        render();
+                        setTimeout(() => {
+                            document.dispatchEvent(new CustomEvent('createCustomerOffer',
+                                { detail: { savedOfferId: target } }));
+                        }, 300);
+                    } else {
+                        state.currentView = 'offers';
+                        render();
+                    }
+                } else if (type === 'partner') {
+                    state.currentView = 'partners';
+                    state.detailViewId = id;
+                    render();
+                }
+                // Cleanup URL
+                history.replaceState({}, '', location.pathname + location.hash);
+            } else if (newDoc === 'offer') {
+                state.currentView = 'offers';
+                render();
+                setTimeout(() => {
+                    document.dispatchEvent(new CustomEvent('createCustomerOffer', { detail: {} }));
+                }, 300);
+                history.replaceState({}, '', location.pathname + location.hash);
+            }
+        } catch (_) { /* graceful */ }
+    });
 });
