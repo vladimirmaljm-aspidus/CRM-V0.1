@@ -194,12 +194,30 @@ def me():
             with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
                 conn.execute('PRAGMA busy_timeout=30000;')
                 c = conn.cursor()
-                c.execute('SELECT permissions, signature FROM users WHERE id=?', (session['user_id'],))
+                c.execute('SELECT permissions, signature, full_name, email, phone, notif_prefs '
+                          'FROM users WHERE id=?', (session['user_id'],))
                 row = c.fetchone()
         except Exception:
             pass
 
-        return jsonify({"user": {"id": session['user_id'], "username": session['username'], "role": session['role'], "permissions": json.loads(row[0]) if row and row[0] else {}, "signature": (row[1] if row and len(row) > 1 else None)}})
+        notif_prefs = {}
+        if row and row[5]:
+            try: notif_prefs = json.loads(row[5])
+            except Exception: pass
+
+        return jsonify({
+            "user": {
+                "id": session['user_id'],
+                "username": session['username'],
+                "role": session['role'],
+                "permissions": json.loads(row[0]) if row and row[0] else {},
+                "signature": (row[1] if row and len(row) > 1 else None),
+                "full_name": (row[2] if row and len(row) > 2 else '') or '',
+                "email":     (row[3] if row and len(row) > 3 else '') or '',
+                "phone":     (row[4] if row and len(row) > 4 else '') or '',
+                "notif_prefs": notif_prefs,
+            }
+        })
     return jsonify({"error": "UNAUTHORIZED"}), 401
 
 @auth_bp.route('/api/auth/change_password', methods=['POST'])

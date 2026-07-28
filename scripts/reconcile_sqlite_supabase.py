@@ -205,14 +205,134 @@ def reconcile(sample_size=10, only=None, as_json=False):
     return 1 if drift else 0
 
 
+def _push_to_sqlite(client, source, source_table, target_table, missing_ids, dry_run):
+    """Za dati skup missing_ids, povuci iz Supabase-a i UPSERT u SQLite.
+    Vraca (n_pushed, errors)."""
+    if not missing_ids:
+        return 0, []
+
+    conn = _open_db(source)
+    if conn is None:
+        return 0, [f"SQLite ({source}) not available"]
+
+    errors = []
+    n_pushed = 0
+    try:
+        cur = conn.cursor()
+        for oid in missing_ids:
+            try:
+                r = client.table(target_table).select("*").eq("id", oid).limit(1).execute()
+                rows = r.data or []
+                if not rows:
+                    errors.append(f"{oid}: not found in Supabase")
+                    continue
+                row = rows[0]
+                # Postoji sema — SQLite ima (id, data). Prevedi row → JSON string data.
+                import json as _json
+                data_json = _json.dumps({k: v for k, v in row.items() if k != 'id'}, default=str)
+                if dry_run:
+                    n_pushed += 1
+                    continue
+                # UPSERT (INSERT OR REPLACE)
+                cur.execute(
+                    f"INSERT OR REPLACE INTO {source_table} (id, data) VALUES (?, ?)",
+                    (oid, data_json)
+                )
+                n_pushed += 1
+            except Exception as e:
+                errors.append(f"{oid}: {type(e).__name__}: {str(e)[:120]}")
+        if not dry_run:
+            conn.commit()
+    finally:
+        conn.close()
+    return n_pushed, errors
+
+
+def sync_back(sample_size=10, only=None, dry_run=True):
+    """Kopira sve Supabase-only redove nazad u SQLite (missing_in_sqlite iz reconcile-a).
+    Ovo je za slucaj da neko pise direktno u Postgres kroz Supabase Dashboard —
+    da SQLite ne ostane iza."""
+    try:
+        client = _get_supabase_client()
+    except Exception as e:
+        print(f"✗ Supabase konekcija nije uspela: {e}")
+        return 2
+
+    conns = {src: _open_db(src) for src in ("crm", "portal", "audit")}
+
+    total_pushed = 0
+    total_errors = 0
+    print("\n" + "=" * 78)
+    print(f"  ASPIDUS — SYNC-BACK (Supabase → SQLite) {'[DRY-RUN]' if dry_run else '[COMMIT]'}")
+    print("=" * 78)
+
+    for src, source_table, target_table, _ in MIGRATION_PLAN:
+        if only and source_table not in only and target_table not in only:
+            continue
+
+        sq_conn = conns.get(src)
+        sq_ids = set(map(str, _sample_ids_sqlite(sq_conn, source_table, 10000)))  # sve
+        sp_ids_all = []
+        try:
+            offset = 0
+            while offset < 50000:  # safety cap
+                r = client.table(target_table).select("id").range(offset, offset + 999).execute()
+                page = [row.get("id") for row in (r.data or [])]
+                if not page:
+                    break
+                sp_ids_all.extend(page)
+                if len(page) < 1000:
+                    break
+                offset += 1000
+        except Exception as e:
+            print(f"  ✗ {target_table}: nije uspeo Supabase list — {e}")
+            continue
+
+        sp_ids = set(map(str, sp_ids_all))
+        missing_in_sqlite = list(sp_ids - sq_ids)
+        if not missing_in_sqlite:
+            print(f"  ✓ {source_table} ↔ {target_table}: sinhronizovano.")
+            continue
+
+        n_pushed, errors = _push_to_sqlite(client, src, source_table, target_table, missing_in_sqlite, dry_run)
+        icon = '↓' if not dry_run else '?'
+        print(f"  {icon} {target_table} → {source_table}: "
+              f"{'push-uje' if not dry_run else 'trebalo bi push-ovati'} {n_pushed} redova"
+              f"{f' (od {len(missing_in_sqlite)})' if n_pushed != len(missing_in_sqlite) else ''}")
+        if errors:
+            for e in errors[:5]:
+                print(f"       · greska: {e}")
+            total_errors += len(errors)
+        total_pushed += n_pushed
+
+    for conn in conns.values():
+        if conn is not None:
+            conn.close()
+
+    print("\n" + "=" * 78)
+    print(f"  Ukupno: {total_pushed} redova {'sinhronizovano' if not dry_run else 'trebalo bi sinhronizovati'}, {total_errors} gresaka")
+    if dry_run:
+        print(f"  Ovo je bio DRY-RUN. Za pravu operaciju: --sync-back --confirm")
+    print("=" * 78)
+    return 0 if total_errors == 0 else 1
+
+
 def main():
-    ap = argparse.ArgumentParser(description="SQLite ↔ Supabase drift checker")
+    ap = argparse.ArgumentParser(description="SQLite ↔ Supabase drift checker + sync-back")
     ap.add_argument("--sample", type=int, default=10, help="How many IDs to sample per table (default 10)")
     ap.add_argument("--only", type=str, default="", help="Comma-separated table names to check (default: all)")
     ap.add_argument("--json", action="store_true", help="Machine-readable JSON output")
+    ap.add_argument("--sync-back", action="store_true",
+                    help="Push Supabase-only rows BACK to SQLite (za slucaj Supabase Dashboard izmena)")
+    ap.add_argument("--confirm", action="store_true",
+                    help="Bez ovog flag-a --sync-back radi samo dry-run")
     args = ap.parse_args()
 
     only = [t.strip() for t in args.only.split(",") if t.strip()] if args.only else None
+
+    if args.sync_back:
+        return sync_back(sample_size=args.sample, only=only, dry_run=not args.confirm)
+
     return reconcile(sample_size=args.sample, only=only, as_json=args.json)
 
 
