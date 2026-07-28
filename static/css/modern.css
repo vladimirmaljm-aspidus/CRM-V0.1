@@ -497,3 +497,77 @@ body.sidebar-collapsed .nav-group-title {
   border: none !important;
   padding: 0.5rem 0 0 !important;
 }
+
+/* =========================================
+   USER DISPLAY CUSTOMIZATION (v22.2)
+   Consumes CSS vars set by preferences.js
+   ========================================= */
+
+:root {
+  --user-font-size: 14px;
+  --user-line-height: 1.55;
+  --user-font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --user-modal-max: 800px;
+  --user-zoom: 1;
+}
+
+/* Global body typography — svi tekstovi bez posebnog inline font-size prate ovo */
+body {
+  font-family: var(--user-font-family);
+  font-size: var(--user-font-size);
+  line-height: var(--user-line-height);
+}
+
+/* Inputs / dugmadi / select nasledjuju font-family i base size */
+input, select, textarea, button {
+  font-family: inherit;
+}
+
+/* Existing app modal — postuj korisnicki modal-max width umesto tvrdog 4xl */
+#modal-content {
+  max-width: min(var(--user-modal-max), 96vw) !important;
+  width: 100% !important;
+}
+[data-modal-size="full"] #modal-content {
+  max-width: 96vw !important;
+  height: 92vh;
+  max-height: 92vh;
+}
+[data-modal-size="compact"] #modal-content {
+  max-width: min(520px, 96vw) !important;
+}
+
+/* Preferences modal takodje — i on mora da postuje user-modal-max */
+.pref-modal {
+  max-width: min(720px, var(--user-modal-max), 96vw) !important;
+}
+
+/* Density (compact) — smanji padding-e globalno */
+[data-density="compact"] .card,
+[data-density="compact"] table td,
+[data-density="compact"] table th {
+  padding-top: 0.375rem !important;
+  padding-bottom: 0.375rem !important;
+}
+[data-density="compact"] .btn { padding: 6px 12px; font-size: 12px; }
+
+/* High contrast toggle */
+[data-high-contrast="on"] {
+  --border: #0f172a;
+  --muted: #0f172a;
+  --hover-bg: #fef3c7;
+}
+[data-high-contrast="on"] body { color: #000; }
+[data-high-contrast="on"] .card { border-width: 2px !important; border-color: #0f172a !important; }
+[data-high-contrast="on"] .btn { border: 2px solid currentColor !important; }
+[data-high-contrast="on"] a { text-decoration: underline; }
+
+/* Reduce motion — ubij sve animacije i tranzicije */
+[data-reduce-motion="on"] *,
+[data-reduce-motion="on"] *::before,
+[data-reduce-motion="on"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
