@@ -41,7 +41,10 @@ function showDealForm({dealId = null, offerDetails = null} = {}) {
           <span class="text-sm text-[var(--muted)]">${Utils.t('deals.expectedProfit')}</span>
           <div class="text-3xl font-extrabold text-green-500" id="live-profit-amount">0.00</div>
        </div>
-       <div><label class="block text-sm font-medium text-main">${Utils.t('fields.dealId')}</label><input name="contractId" class="form-input mt-1" value="${Utils.escapeHtml(item.contractId || '')}" required /></div>
+       <div class="flex items-end gap-2">
+         <div class="flex-1"><label class="block text-sm font-medium text-main">${Utils.t('fields.dealId')}</label><input name="contractId" class="form-input mt-1" value="${Utils.escapeHtml(item.contractId || '')}" required /></div>
+         ${dealId ? `<button type="button" onclick="viewDealTimeline('${dealId}')" class="btn btn-ghost small whitespace-nowrap" title="Timeline of documents, transactions and audit events">📜 Timeline</button>` : ''}
+       </div>
        
        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
            ${canViewCosts ? `<div><label class="block text-sm font-medium text-main">${Utils.t('fields.supplier')}</label><select name="supplierId" class="form-input mt-1">${supplierOptions}</select></div>` : `<div class="bg-gray-100 p-2 rounded text-[var(--muted)] text-sm flex items-center justify-center border border-dashed">Supplier: *** HIDDEN ***</div>`}
