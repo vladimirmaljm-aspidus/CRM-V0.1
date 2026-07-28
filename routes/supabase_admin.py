@@ -501,9 +501,17 @@ def _run_migration_thread(tables=None):
             _migration_state["finished_at"] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
             _migration_state["error"] = f"{e.__class__.__name__}: {e}"
 
-    log_audit('EDIT', 'system',
-              f'Supabase migration finished (error={_migration_state.get("error")})',
-              is_suspicious=False)
+    # Ovo trci u thread-u van request contexta; log_audit je vec sa
+    # try/except iz thread-safe patcha (utils.py), ali dodatni guard
+    # ovde stiti od bilo koje buduce promene u log_audit.
+    try:
+        log_audit('EDIT', 'system',
+                  f'Supabase migration finished (error={_migration_state.get("error")})',
+                  is_suspicious=False)
+    except Exception as _log_err:
+        import logging
+        logging.getLogger(__name__).warning(
+            'log_audit from migration thread failed: %s', _log_err)
 
 
 @supabase_admin_bp.route('/api/supabase/migrate', methods=['POST'])
