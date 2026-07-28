@@ -521,6 +521,11 @@ def _create_session_row(uid: str) -> str:
     except Exception:
         pass
 
+    row = {
+        'id': sid, 'user_id': uid, 'created_at': now, 'last_seen_at': now,
+        'ip': ip, 'country': country, 'user_agent': ua,
+        'ua_family': ua_family, 'device_label': device_label,
+    }
     with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
         conn.execute('PRAGMA busy_timeout=10000')
         conn.execute(
@@ -528,6 +533,13 @@ def _create_session_row(uid: str) -> str:
             "user_agent, ua_family, device_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (sid, uid, now, now, ip, country, ua, ua_family, device_label)
         )
+    # V23.1 #1 — Supabase mirror (best-effort). Ako se sesija ne prenese,
+    # nista strasno — sledeci HEARTBEAT ce ponovo probati preko touch_session.
+    try:
+        from data_layer import upsert as _db_upsert
+        _db_upsert('user_sessions', row, on_conflict='id')
+    except Exception:
+        pass
     return sid
 
 
