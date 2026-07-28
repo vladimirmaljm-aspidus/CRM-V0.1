@@ -34,6 +34,7 @@ from routes.user_tasks import user_tasks_bp
 from routes.saved_filters import saved_filters_bp
 from routes.activity_feed import activity_feed_bp
 from routes.v23_admin import v23_admin_bp
+from routes.v23_extras import v23_extras_bp
 from routes.verify_public import verify_bp
 
 # Konfiguracija sistemskog logovanja (sprečava ispisivanje osetljivih grešaka korisnicima)
@@ -119,6 +120,7 @@ app.register_blueprint(user_tasks_bp)
 app.register_blueprint(saved_filters_bp)
 app.register_blueprint(activity_feed_bp)
 app.register_blueprint(v23_admin_bp)
+app.register_blueprint(v23_extras_bp)
 # /verify/<VER-hash> — javni endpoint koji vodi na potvrdu dokumenta iz QR koda
 # na ponudi/fakturi. Bez registracije ovog bp-a, QR na PDF-u vodi u 404.
 app.register_blueprint(verify_bp)
