@@ -20,6 +20,7 @@ const NAV_ICONS = {
   supabase: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.66 3.58 3 8 3s8-1.34 8-3V6"/><path d="M4 12v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>',
   health: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
   errors: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+  mail_queue: '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>',
   new_deal: '<path d="M12 5v14M5 12h14"/>',
   new_partner: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 11v6M19 14h6"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>'
@@ -45,15 +46,16 @@ let fullNavigationItems = [
   { view:'documents', icon:'documents', labelPath:'documents.navLabel', adminOnly: true, group: 'admin' },
 
   // SYSTEM grupa — bila je u footer-u, sad je u nav-u da bude uredna sa ostalim
-  { view:'ext:/admin/supabase', icon:'supabase', label: 'Supabase', adminOnly: true, group: 'system' },
-  { view:'ext:/admin/health',   icon:'health',   label: 'System Health', adminOnly: true, group: 'system' },
-  { view:'ext:/admin/errors',   icon:'errors',   label: 'Error Log',     adminOnly: true, group: 'system', badge: 'errors_recent' }
+  { view:'ext:/admin/supabase',   icon:'supabase', label: 'Supabase', adminOnly: true, group: 'system' },
+  { view:'ext:/admin/health',     icon:'health',   label: 'System Health', adminOnly: true, group: 'system' },
+  { view:'ext:/admin/errors',     icon:'errors',   label: 'Error Log',     adminOnly: true, group: 'system', badge: 'errors_recent' },
+  { view:'ext:/admin/mail-queue', icon:'mail_queue', label: 'Mail Queue',  adminOnly: true, group: 'system', badge: 'mail_failed' }
 ];
 
 // Trenutne pending count vrednosti (postavlja checkAllNotifications preko _push)
 window._navBadgeCounts = window._navBadgeCounts || {
     portal_kyc: 0, portal_products: 0, portal_rfqs: 0,
-    offer_responses: 0, deals_overdue: 0, errors_recent: 0
+    offer_responses: 0, deals_overdue: 0, errors_recent: 0, mail_failed: 0
 };
 
 // Boje po vrsti — informativna, ne odvraća paznju
@@ -63,7 +65,8 @@ const NAV_BADGE_COLOR = {
     portal_rfqs:     'bg-indigo-500',
     offer_responses: 'bg-emerald-500',
     deals_overdue:   'bg-red-500',
-    errors_recent:   'bg-red-500'
+    errors_recent:   'bg-red-500',
+    mail_failed:     'bg-rose-600'
 };
 
 function navIconSvg(key) {
@@ -566,7 +569,35 @@ window.resetDismissedNotifications = function() {
 function checkAllNotifications(){
   state.notifications = []; const now = new Date();
   const _dismissed = _loadDismissed();
-  const _push = (n) => { if (!_dismissed.has(_notifId(n))) state.notifications.push(n); };
+  // Notif preferences (Profile → Notifications tab). Default sve on.
+  // portal → sve portal_* + payment (deal), deals → payment/oldDemand/productAvailable
+  const _np = (state.user && state.user.notif_prefs) || {};
+  const _portalOn = _np.portal !== false;
+  const _dealsOn  = _np.deals !== false;
+  const _typeAllowed = (type) => {
+      if (type && type.indexOf('portal_') === 0) return _portalOn;
+      if (type === 'offer_accepted' || type === 'offer_declined') return _portalOn;
+      if (type === 'payment' || type === 'oldPartner' || type === 'oldDemand' ||
+          type === 'productAvailable' || type === 'recurring') return _dealsOn;
+      return true;
+  };
+  const _push = (n) => {
+      if (_dismissed.has(_notifId(n))) return;
+      if (!_typeAllowed(n.type)) return;
+      state.notifications.push(n);
+      // Zvuk (Profile → Notifications → notifSound)
+      if (_np.sound && !window._notifSoundThrottle) {
+          window._notifSoundThrottle = setTimeout(() => { window._notifSoundThrottle = null; }, 3000);
+          try {
+              const ctx = new (window.AudioContext || window.webkitAudioContext)();
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.connect(gain); gain.connect(ctx.destination);
+              osc.frequency.value = 660; gain.gain.value = 0.05;
+              osc.start(); osc.stop(ctx.currentTime + 0.12);
+          } catch(_) {}
+      }
+  };
   const warningDays = state.settings.paymentWarningDays || 7;
   
   if(state.data.deals) {
@@ -635,6 +666,14 @@ function checkAllNotifications(){
               if (!j) return;
               window._navBadgeCounts = window._navBadgeCounts || {};
               window._navBadgeCounts.errors_recent = j.total || (j.errors || []).length || 0;
+              if (typeof buildNavigation === 'function') buildNavigation();
+          }).catch(() => {});
+
+          // Mail queue badge — broj failed + dead
+          fetch('/api/admin/mail-queue?limit=1').then(r => r.ok ? r.json() : null).then(j => {
+              if (!j || !j.summary) return;
+              window._navBadgeCounts = window._navBadgeCounts || {};
+              window._navBadgeCounts.mail_failed = (j.summary.failed || 0) + (j.summary.dead || 0);
               if (typeof buildNavigation === 'function') buildNavigation();
           }).catch(() => {});
       }

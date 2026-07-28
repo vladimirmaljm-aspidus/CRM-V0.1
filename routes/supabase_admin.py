@@ -152,37 +152,90 @@ def two_fa_status_api():
     return jsonify({"enabled": enabled})
 
 
+@supabase_admin_bp.route('/api/users/me', methods=['GET'])
+@login_required
+def users_me_get():
+    """Vrati profil trenutnog user-a — full_name, email, phone, notif_prefs.
+    Koristi ga preferences.js pri otvaranju modala da popuni fields."""
+    import sqlite3, json as _json
+    from config import DB_FILE
+    uid = session.get('user_id')
+    if not uid:
+        return jsonify({"error": "no_session"}), 401
+    conn = sqlite3.connect(DB_FILE, timeout=15.0)
+    try:
+        c = conn.cursor()
+        c.execute("SELECT username, role, full_name, email, phone, notif_prefs "
+                  "FROM users WHERE id=?", (uid,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "user_not_found"}), 404
+    try:
+        prefs = _json.loads(row[5]) if row[5] else {}
+    except (ValueError, TypeError):
+        prefs = {}
+    return jsonify({
+        "username":  row[0],
+        "role":      row[1],
+        "full_name": row[2] or '',
+        "email":     row[3] or '',
+        "phone":     row[4] or '',
+        "notif_prefs": prefs,
+    })
+
+
 @supabase_admin_bp.route('/api/users/me', methods=['PATCH'])
 @login_required
 def users_me_patch():
-    """Update trenutnog user-a profil (fullName, email, phone)."""
+    """Update trenutnog user-a profil. Prihvata:
+      - full_name (ili fullName — kompatibilno sa starim frontend-om)
+      - email
+      - phone
+      - notif_prefs (dict)
+    Sve piše u prave kolone dodate v22 migracijom.
+    """
     import sqlite3, json as _json
     from config import DB_FILE
-    from utils import decrypt_data, encrypt_data
     body = request.get_json(silent=True) or {}
-    allowed = {k: body.get(k) for k in ('fullName', 'email', 'phone') if k in body}
-    if not allowed:
+    updates = {}
+    # Prihvata i camelCase i snake_case (frontend-agnostic)
+    if 'full_name' in body or 'fullName' in body:
+        updates['full_name'] = str(body.get('full_name') or body.get('fullName') or '')[:200]
+    if 'email' in body:
+        em = str(body.get('email') or '').strip().lower()
+        if em and '@' not in em:
+            return jsonify({"error": "invalid_email"}), 400
+        updates['email'] = em[:200]
+    if 'phone' in body:
+        updates['phone'] = str(body.get('phone') or '')[:60]
+    if 'notif_prefs' in body:
+        if not isinstance(body['notif_prefs'], dict):
+            return jsonify({"error": "notif_prefs_must_be_object"}), 400
+        updates['notif_prefs'] = _json.dumps(body['notif_prefs'])[:4000]
+
+    if not updates:
         return jsonify({"error": "No fields to update."}), 400
+
     uid = session.get('user_id')
     conn = sqlite3.connect(DB_FILE, timeout=15.0)
     try:
         c = conn.cursor()
-        c.execute("SELECT data FROM users WHERE id=?", (uid,))
-        row = c.fetchone()
-        if not row:
-            return jsonify({"error": "User not found."}), 404
-        try:
-            data = _json.loads(row[0])
-        except (ValueError, TypeError):
-            data = decrypt_data(row[0]) or {}
-        data.update(allowed)
-        c.execute("UPDATE users SET data=? WHERE id=?", (_json.dumps(data), uid))
+        # Provera da user postoji
+        r = c.execute("SELECT 1 FROM users WHERE id=?", (uid,)).fetchone()
+        if not r:
+            return jsonify({"error": "user_not_found"}), 404
+        sets = ", ".join([f"{k}=?" for k in updates])
+        params = list(updates.values()) + [uid]
+        c.execute(f"UPDATE users SET {sets} WHERE id=?", params)
         conn.commit()
     finally:
         conn.close()
-    log_audit('EDIT', 'users', f'User {session.get("username")} updated own profile: {list(allowed.keys())}',
+    log_audit('EDIT', 'users',
+              f'User {session.get("username")} updated own profile: {list(updates.keys())}',
               is_suspicious=False)
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "updated": list(updates.keys())})
 
 
 @supabase_admin_bp.route('/admin/health', methods=['GET'])
@@ -223,42 +276,56 @@ def public_health():
 @supabase_admin_bp.route('/api/users/change-password', methods=['POST'])
 @login_required
 def users_change_password():
-    """CRM user (ne portal) menja svoju CRM lozinku. Redirect na postojeci
-    auth_bp endpoint ako postoji, ili implementira ovde."""
+    """CRM user menja svoju lozinku. Prava implementacija je u
+    /api/auth/change_password (routes/auth.py) — ovaj endpoint je thin
+    adapter za preferences.js koji koristi { current, next } payload umesto
+    { new_password }."""
+    import sqlite3
+    from config import DB_FILE
+    from werkzeug.security import generate_password_hash, check_password_hash
     body = request.get_json(silent=True) or {}
     current = str(body.get('current') or '')
     nxt = str(body.get('next') or '')
+    if not current:
+        return jsonify({"error": "Current password required."}), 400
     if len(nxt) < 8:
-        return jsonify({"error": "New password too short."}), 400
-    # Delegate to existing auth_bp change_password
+        return jsonify({"error": "New password too short (min 8 chars)."}), 400
+    uid = session.get('user_id')
+    if not uid:
+        return jsonify({"error": "no_session"}), 401
     try:
-        from routes.auth import _do_change_password  # helper if exists
-        return _do_change_password(current, nxt)
-    except ImportError:
-        pass
-    # Inline fallback — koristi utils bcrypt
-    try:
-        import sqlite3
-        from config import DB_FILE
-        from utils import verify_password, hash_password
-        uid = session.get('user_id')
         conn = sqlite3.connect(DB_FILE, timeout=15.0)
+        conn.execute('PRAGMA busy_timeout=15000;')
         c = conn.cursor()
-        c.execute("SELECT password_hash FROM users WHERE id=?", (uid,))
+        c.execute("SELECT password, token_version FROM users WHERE id=?", (uid,))
         row = c.fetchone()
-        if not row or not verify_password(current, row[0]):
+        if not row:
             conn.close()
+            return jsonify({"error": "user_not_found"}), 404
+        if not check_password_hash(row[0], current):
+            conn.close()
+            log_audit('SECURITY', 'users',
+                      f'Failed password change (wrong current) by {session.get("username")}',
+                      is_suspicious=True)
             return jsonify({"error": "Current password is incorrect."}), 401
-        new_hash = hash_password(nxt)
-        c.execute("UPDATE users SET password_hash=? WHERE id=?", (new_hash, uid))
+        # Match sto auth.py radi: nova lozinka, bump token_version, timestamp
+        import time as _time
+        now_iso = _time.strftime('%Y-%m-%dT%H:%M:%SZ', _time.gmtime())
+        new_hash = generate_password_hash(nxt, method='scrypt:32768:8:1')
+        new_ver = int(row[1] or 1) + 1
+        c.execute("UPDATE users SET password=?, last_password_change_at=?, token_version=? WHERE id=?",
+                  (new_hash, now_iso, new_ver, uid))
         conn.commit()
         conn.close()
-        log_audit('SECURITY', 'users', f'User {session.get("username")} changed own password.',
+        # Osvezi trenutnu sesiju sa novim token_version da user ne bude odjavljen
+        session['token_version'] = new_ver
+        log_audit('SECURITY', 'users',
+                  f'User {session.get("username")} changed own password (token_version→{new_ver}).',
                   is_suspicious=False)
-        return jsonify({"status": "success"})
+        return jsonify({"status": "success", "message": "Password updated."})
     except Exception as e:
         record_error('/api/users/change-password', e)
-        return jsonify({"error": "Could not change password.", "detail": str(e)[:200]}), 500
+        return jsonify({"error": "server_error", "message": str(e)[:200]}), 500
 
 # In-memory migracija stanje — vidljivo kroz /status endpoint
 _migration_state = {
@@ -560,5 +627,157 @@ def supabase_storage_status():
                 info["error"] = str(e)[:120]
             buckets_info.append(info)
         return jsonify({"ok": True, "enabled": True, "buckets": buckets_info})
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}), 500
+
+
+# ==========================================================
+#  EMAIL QUEUE ADMIN UI
+# ==========================================================
+
+@supabase_admin_bp.route('/admin/mail-queue', methods=['GET'])
+@login_required
+def admin_mail_queue_page():
+    if session.get('role') != 'admin':
+        return "Admin only.", 403
+    return render_template('admin_mail_queue.html')
+
+
+@supabase_admin_bp.route('/api/admin/mail-queue', methods=['GET'])
+@login_required
+def admin_mail_queue_list():
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    import sqlite3
+    from config import DB_FILE
+    status_filter = (request.args.get('status') or '').strip().lower()
+    try:
+        limit = min(int(request.args.get('limit') or 200), 500)
+    except ValueError:
+        limit = 200
+    q = ("SELECT id, recipient, subject, status, attempts, last_error, "
+         "queued_at, next_retry_at, sent_at, sending_started_at "
+         "FROM email_queue")
+    params = []
+    if status_filter in ('pending', 'sending', 'sent', 'failed', 'dead'):
+        q += " WHERE status=?"
+        params.append(status_filter)
+    q += " ORDER BY queued_at DESC LIMIT ?"
+    params.append(limit)
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
+            conn.execute('PRAGMA busy_timeout=10000;')
+            rows = conn.execute(q, tuple(params)).fetchall()
+            # Ukupni brojevi po statusu (za summary)
+            summary = {}
+            for st in ('pending', 'sending', 'sent', 'failed', 'dead'):
+                cnt = conn.execute(
+                    "SELECT COUNT(*) FROM email_queue WHERE status=?",
+                    (st,)
+                ).fetchone()[0]
+                summary[st] = cnt
+    except sqlite3.OperationalError as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+    return jsonify({
+        "ok": True,
+        "summary": summary,
+        "total_shown": len(rows),
+        "emails": [{
+            "id": r[0], "recipient": r[1], "subject": r[2] or '',
+            "status": r[3], "attempts": r[4] or 0,
+            "last_error": (r[5] or '')[:400],
+            "queued_at": r[6], "next_retry_at": r[7],
+            "sent_at": r[8], "sending_started_at": r[9],
+        } for r in rows]
+    })
+
+
+@supabase_admin_bp.route('/api/admin/mail-queue/retry', methods=['POST'])
+@login_required
+def admin_mail_queue_retry():
+    """Resetuje status='pending' + next_retry_at=NULL za date ID-eve (ili
+    sve failed/dead ako je body prazan). Sledeci drain ce ih pokupiti."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    import sqlite3
+    from config import DB_FILE
+    body = request.get_json(silent=True) or {}
+    ids = body.get('ids') or []
+    retry_all_failed = bool(body.get('retry_all_failed'))
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
+            conn.execute('PRAGMA busy_timeout=10000;')
+            if ids:
+                placeholders = ','.join('?' * len(ids))
+                cnt = conn.execute(
+                    f"UPDATE email_queue SET status='pending', next_retry_at=NULL, "
+                    f"sending_started_at=NULL, worker_id=NULL WHERE id IN ({placeholders})",
+                    tuple(ids)
+                ).rowcount
+            elif retry_all_failed:
+                cnt = conn.execute(
+                    "UPDATE email_queue SET status='pending', next_retry_at=NULL, "
+                    "sending_started_at=NULL, worker_id=NULL "
+                    "WHERE status IN ('failed', 'dead')"
+                ).rowcount
+            else:
+                return jsonify({"error": "Nothing to retry — pass ids or retry_all_failed."}), 400
+            conn.commit()
+    except sqlite3.OperationalError as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+
+    log_audit('EDIT', 'system', f'Mail queue: retried {cnt} email(s) by {session.get("username")}',
+              is_suspicious=False)
+    return jsonify({"ok": True, "retried": cnt})
+
+
+@supabase_admin_bp.route('/api/admin/mail-queue/delete', methods=['POST'])
+@login_required
+def admin_mail_queue_delete():
+    """Brise ID-eve iz email_queue tabele. Pazi — nema vracanja."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    import sqlite3
+    from config import DB_FILE
+    body = request.get_json(silent=True) or {}
+    ids = body.get('ids') or []
+    purge_status = str(body.get('purge_status') or '').strip().lower()
+    try:
+        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
+            conn.execute('PRAGMA busy_timeout=10000;')
+            if ids:
+                placeholders = ','.join('?' * len(ids))
+                cnt = conn.execute(
+                    f"DELETE FROM email_queue WHERE id IN ({placeholders})",
+                    tuple(ids)
+                ).rowcount
+            elif purge_status in ('sent', 'failed', 'dead'):
+                cnt = conn.execute(
+                    "DELETE FROM email_queue WHERE status=?",
+                    (purge_status,)
+                ).rowcount
+            else:
+                return jsonify({"error": "Nothing to delete — pass ids or purge_status."}), 400
+            conn.commit()
+    except sqlite3.OperationalError as e:
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+
+    log_audit('DELETE', 'system',
+              f'Mail queue: deleted {cnt} email(s) by {session.get("username")} '
+              f'(ids={len(ids)}, purge_status={purge_status or "-"})',
+              is_suspicious=True)  # brisanje = suspicious
+    return jsonify({"ok": True, "deleted": cnt})
+
+
+@supabase_admin_bp.route('/api/admin/mail-queue/drain', methods=['POST'])
+@login_required
+def admin_mail_queue_drain():
+    """Rucno pokreni obradu queue-a odmah (max 50 email-a). Vraca stats."""
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    try:
+        from utils_email import process_email_queue
+        stats = process_email_queue(max_batch=50)
+        return jsonify({"ok": True, "stats": stats or {}})
     except Exception as e:
         return jsonify({"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}), 500

@@ -25,8 +25,9 @@ from utils_reliability import get_breaker, retry
 BUCKET_PARTNER_DOCS = "partner-docs"
 BUCKET_OFFER_PDFS = "offer-pdfs"
 BUCKET_PORTAL_UPLOADS = "portal-uploads"
+BUCKET_BACKUPS = "backups"
 
-_KNOWN_BUCKETS = (BUCKET_PARTNER_DOCS, BUCKET_OFFER_PDFS, BUCKET_PORTAL_UPLOADS)
+_KNOWN_BUCKETS = (BUCKET_PARTNER_DOCS, BUCKET_OFFER_PDFS, BUCKET_PORTAL_UPLOADS, BUCKET_BACKUPS)
 
 
 def use_supabase_storage() -> bool:

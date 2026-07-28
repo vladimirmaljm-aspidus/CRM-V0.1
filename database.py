@@ -77,6 +77,17 @@ def init_db():
                 c.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER DEFAULT 0")
             if 'totp_recovery' not in cols:
                 c.execute("ALTER TABLE users ADD COLUMN totp_recovery TEXT")
+            # MIGRACIJA v22: profile fields za CRM user-e (koristi ih Preferences panel).
+            # full_name / email / phone su prosti string-ovi; notif_prefs je JSON
+            # objekat koji koristi ui.js checkAllNotifications da odluci sta prikazati.
+            if 'full_name' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN full_name TEXT")
+            if 'email' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN email TEXT")
+            if 'phone' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN phone TEXT")
+            if 'notif_prefs' not in cols:
+                c.execute("ALTER TABLE users ADD COLUMN notif_prefs TEXT")
             
             # Kreiranje tabela za sve entitete
             tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']

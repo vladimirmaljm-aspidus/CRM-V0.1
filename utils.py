@@ -503,6 +503,20 @@ def _backup_loop():
                         os.chmod(out, 0o600)
                     except Exception:
                         pass
+
+                    # OFF-SITE MIRROR — ako je USE_SUPABASE_STORAGE=on i BACKUP_OFFSITE=on,
+                    # uploaduj isti Fernet fajl u Supabase Storage bucket 'backups'.
+                    # Best-effort — ne prekida backup ako Storage padne.
+                    if (os.environ.get('BACKUP_OFFSITE', '').strip().lower() in ('1','true','yes','on')):
+                        try:
+                            import utils_storage as _st
+                            if _st.use_supabase_storage():
+                                remote_path = f"daily/{os.path.basename(out)}"
+                                _st.upload_bytes('backups', remote_path, enc,
+                                                 content_type='application/octet-stream')
+                                _util_logger.info(f'BACKUP: mirrored {os.path.basename(out)} → supabase:backups/{remote_path}')
+                        except Exception as _e:
+                            _util_logger.warning(f'BACKUP: off-site mirror failed: {_e}')
                 except Exception:
                     _util_logger.warning(f'BACKUP: snapshot failed for {db_path}', exc_info=True)
                     try:

@@ -86,6 +86,33 @@
         // Reduce motion (accessibility) — kill animations/transitions
         if (p.reduceMotion) html.setAttribute('data-reduce-motion', 'on');
         else html.removeAttribute('data-reduce-motion');
+
+        // === LAYOUT CUSTOMIZATION (v22.3) ===
+
+        // Sidebar width — 'narrow' (5.5rem, icon-only), 'normal' (18rem), 'wide' (22rem)
+        const SB_WIDTH = { narrow: '5.5rem', normal: '18rem', wide: '22rem' };
+        html.style.setProperty('--user-sidebar-w', SB_WIDTH[p.sidebarWidth] || SB_WIDTH.normal);
+        html.setAttribute('data-sidebar-w', p.sidebarWidth || 'normal');
+
+        // Main content max width — 'compact' (900px), 'normal' (1400px, default), 'full' (100%)
+        const CONTENT_MAX = { compact: '900px', normal: '1400px', full: '100%' };
+        html.style.setProperty('--user-content-max', CONTENT_MAX[p.contentMax] || CONTENT_MAX.normal);
+
+        // Accent color — hex string, default indigo #4f46e5
+        const accent = (p.accentColor && /^#[0-9a-fA-F]{6}$/.test(p.accentColor)) ? p.accentColor : '#4f46e5';
+        html.style.setProperty('--user-accent', accent);
+        // Sekundarna nijansa (soft bg) — 15% alpha (rgba jer nema RGB variable)
+        // Konvertujemo hex -> rgba za soft accent
+        const rgb = accent.match(/^#(..)(..)(..)$/);
+        if (rgb) {
+            const r = parseInt(rgb[1], 16), g = parseInt(rgb[2], 16), b = parseInt(rgb[3], 16);
+            html.style.setProperty('--user-accent-rgb', `${r}, ${g}, ${b}`);
+            html.style.setProperty('--user-accent-soft', `rgba(${r}, ${g}, ${b}, 0.12)`);
+        }
+
+        // Border radius scale — 'sharp' (4px), 'normal' (10px), 'round' (16px)
+        const RADIUS = { sharp: '4px', normal: '10px', round: '16px' };
+        html.style.setProperty('--user-radius', RADIUS[p.borderRadius] || RADIUS.normal);
     }
     // Apply on load
     applyPrefs(getPrefs());
@@ -122,7 +149,7 @@
                 </div>
                 <div class="pref-field">
                   <label>Full name</label>
-                  <input type="text" id="pref-fullname" value="${escapeHtml(user.fullName || '')}" placeholder="Vladimir Maljković">
+                  <input type="text" id="pref-fullname" value="${escapeHtml(user.full_name || user.fullName || '')}" placeholder="Vladimir Maljković">
                 </div>
                 <div class="pref-field">
                   <label>Email</label>
@@ -248,6 +275,53 @@
                   </div>
                 </div>
 
+                <hr style="margin:20px 0 16px;border:none;border-top:1px solid #e5e7eb">
+                <div class="pref-field-title">🖼 Layout &amp; Colors</div>
+                <p class="pref-hint" style="margin-bottom:12px">Podesi širinu levog panela, širinu glavne oblasti i akcentnu boju cele aplikacije.</p>
+
+                <div class="pref-field">
+                  <label>Sidebar width</label>
+                  <div class="pref-radio-group pref-grid-3">
+                    <label class="pref-radio"><input type="radio" name="sidebarWidth" value="narrow" ${cur.sidebarWidth === 'narrow' ? 'checked' : ''}><span>Narrow · 5.5rem</span></label>
+                    <label class="pref-radio"><input type="radio" name="sidebarWidth" value="normal" ${!cur.sidebarWidth || cur.sidebarWidth === 'normal' ? 'checked' : ''}><span>Normal · 18rem</span></label>
+                    <label class="pref-radio"><input type="radio" name="sidebarWidth" value="wide"   ${cur.sidebarWidth === 'wide' ? 'checked' : ''}><span>Wide · 22rem</span></label>
+                  </div>
+                </div>
+
+                <div class="pref-field">
+                  <label>Main content width</label>
+                  <div class="pref-radio-group pref-grid-3">
+                    <label class="pref-radio"><input type="radio" name="contentMax" value="compact" ${cur.contentMax === 'compact' ? 'checked' : ''}><span>Compact · 900px</span></label>
+                    <label class="pref-radio"><input type="radio" name="contentMax" value="normal"  ${!cur.contentMax || cur.contentMax === 'normal' ? 'checked' : ''}><span>Normal · 1400px</span></label>
+                    <label class="pref-radio"><input type="radio" name="contentMax" value="full"    ${cur.contentMax === 'full' ? 'checked' : ''}><span>Full width</span></label>
+                  </div>
+                </div>
+
+                <div class="pref-field">
+                  <label>Border radius</label>
+                  <div class="pref-radio-group pref-grid-3">
+                    <label class="pref-radio"><input type="radio" name="borderRadius" value="sharp"  ${cur.borderRadius === 'sharp' ? 'checked' : ''}><span>Sharp · 4px</span></label>
+                    <label class="pref-radio"><input type="radio" name="borderRadius" value="normal" ${!cur.borderRadius || cur.borderRadius === 'normal' ? 'checked' : ''}><span>Normal · 10px</span></label>
+                    <label class="pref-radio"><input type="radio" name="borderRadius" value="round"  ${cur.borderRadius === 'round' ? 'checked' : ''}><span>Round · 16px</span></label>
+                  </div>
+                </div>
+
+                <div class="pref-field">
+                  <label>Accent color</label>
+                  <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <input type="color" id="pref-accent" value="${escapeHtml(cur.accentColor || '#4f46e5')}"
+                           style="width:64px; height:44px; padding:0; border:1px solid #e2e8f0; border-radius:10px; cursor:pointer;">
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                      ${['#4f46e5', '#7c3aed', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#0f172a'].map(c =>
+                        `<button type="button" data-preset-accent="${c}" class="tk-color-swatch"
+                                 style="width:32px;height:32px;border-radius:8px;background:${c};border:2px solid ${cur.accentColor === c ? '#0f172a' : 'transparent'};cursor:pointer;"
+                                 title="${c}"></button>`
+                      ).join('')}
+                    </div>
+                  </div>
+                  <p class="pref-hint">Boja se primenjuje na dugmiće, aktivne stavke u menu-ju i akcente kroz aplikaciju.</p>
+                </div>
+
                 <div class="pref-actions">
                   <button class="pref-btn pref-btn-secondary" onclick="resetDisplay()">Reset defaults</button>
                   <button class="pref-btn pref-btn-primary" onclick="saveAppearance()">Save Preferences</button>
@@ -329,19 +403,23 @@
         // reset-uje pri sledecem otvaranju iz stored prefs.
         const livePreview = () => {
             const p = Object.assign({}, getPrefs(), {
-                theme:       document.querySelector('input[name="theme"]:checked')?.value,
-                density:     document.querySelector('input[name="density"]:checked')?.value,
-                fontSize:    document.querySelector('input[name="fontSize"]:checked')?.value,
-                zoom:        parseInt(document.getElementById('pref-zoom')?.value || 100, 10),
-                modalSize:   document.querySelector('input[name="modalSize"]:checked')?.value,
-                fontFamily:  document.querySelector('input[name="fontFamily"]:checked')?.value,
-                lineHeight:  document.querySelector('input[name="lineHeight"]:checked')?.value,
+                theme:        document.querySelector('input[name="theme"]:checked')?.value,
+                density:      document.querySelector('input[name="density"]:checked')?.value,
+                fontSize:     document.querySelector('input[name="fontSize"]:checked')?.value,
+                zoom:         parseInt(document.getElementById('pref-zoom')?.value || 100, 10),
+                modalSize:    document.querySelector('input[name="modalSize"]:checked')?.value,
+                fontFamily:   document.querySelector('input[name="fontFamily"]:checked')?.value,
+                lineHeight:   document.querySelector('input[name="lineHeight"]:checked')?.value,
                 highContrast: !!document.getElementById('pref-high-contrast')?.checked,
                 reduceMotion: !!document.getElementById('pref-reduce-motion')?.checked,
+                sidebarWidth: document.querySelector('input[name="sidebarWidth"]:checked')?.value,
+                contentMax:   document.querySelector('input[name="contentMax"]:checked')?.value,
+                borderRadius: document.querySelector('input[name="borderRadius"]:checked')?.value,
+                accentColor:  document.getElementById('pref-accent')?.value || '#4f46e5',
             });
             applyPrefs(p);
         };
-        wrap.querySelectorAll('input[name="theme"], input[name="density"], input[name="fontSize"], input[name="modalSize"], input[name="fontFamily"], input[name="lineHeight"]').forEach(el => {
+        wrap.querySelectorAll('input[name="theme"], input[name="density"], input[name="fontSize"], input[name="modalSize"], input[name="fontFamily"], input[name="lineHeight"], input[name="sidebarWidth"], input[name="contentMax"], input[name="borderRadius"]').forEach(el => {
             el.addEventListener('change', livePreview);
         });
         const zoomEl = document.getElementById('pref-zoom');
@@ -354,6 +432,20 @@
             const el = document.getElementById(id);
             if (el) el.addEventListener('change', livePreview);
         });
+        // Accent color picker + preset swatches
+        const accentEl = document.getElementById('pref-accent');
+        if (accentEl) accentEl.addEventListener('input', livePreview);
+        wrap.querySelectorAll('[data-preset-accent]').forEach(sw => {
+            sw.addEventListener('click', () => {
+                const c = sw.dataset.presetAccent;
+                if (accentEl) accentEl.value = c;
+                // Ažuriraj outline na aktivnom preset-u
+                wrap.querySelectorAll('[data-preset-accent]').forEach(x => {
+                    x.style.border = '2px solid ' + (x.dataset.presetAccent === c ? '#0f172a' : 'transparent');
+                });
+                livePreview();
+            });
+        });
     }
 
     function closePreferences() {
@@ -362,26 +454,29 @@
     }
 
     async function saveProfile() {
-        const fullName = document.getElementById('pref-fullname').value;
-        const email = document.getElementById('pref-email').value;
-        const phone = document.getElementById('pref-phone').value;
+        const full_name = document.getElementById('pref-fullname').value.trim();
+        const email = document.getElementById('pref-email').value.trim();
+        const phone = document.getElementById('pref-phone').value.trim();
+        const csrf = (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '';
         try {
             const r = await fetch('/api/users/me', {
                 method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ fullName, email, phone })
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                body: JSON.stringify({ full_name, email, phone })
             });
-            if (r.ok) {
-                if (typeof showToast === 'function') showToast('Profile updated.', 'success');
+            let j = {};
+            try { j = await r.json(); } catch(_) {}
+            if (r.ok && j.status === 'ok') {
+                if (typeof showToast === 'function') showToast('✓ Profile updated.', 'success');
                 if (window.state && window.state.user) {
-                    Object.assign(window.state.user, { fullName, email, phone });
+                    Object.assign(window.state.user, { full_name, email, phone });
                 }
             } else {
-                const j = await r.json().catch(() => ({}));
-                if (typeof showToast === 'function') showToast('Error: ' + (j.error || r.status), 'error');
+                const msg = j.error || j.message || `HTTP ${r.status}`;
+                if (typeof showToast === 'function') showToast('Error: ' + msg, 'error', { requestId: j.request_id });
             }
         } catch (e) {
-            if (typeof showToast === 'function') showToast('Network error.', 'error');
+            if (typeof showToast === 'function') showToast('Network error: ' + e.message, 'error');
         }
     }
 
@@ -389,49 +484,58 @@
         const cur = document.getElementById('pref-cur-pwd').value;
         const nw = document.getElementById('pref-new-pwd').value;
         const cf = document.getElementById('pref-conf-pwd').value;
-        if (!cur || !nw) return showToast && showToast('Fields required.', 'error');
-        if (nw.length < 8) return showToast && showToast('Password too short (min 8).', 'error');
-        if (nw !== cf) return showToast && showToast('New passwords do not match.', 'error');
+        if (!cur || !nw) { showToast && showToast('Both current and new password required.', 'error'); return; }
+        if (nw.length < 8) { showToast && showToast('New password too short (min 8 chars).', 'error'); return; }
+        if (nw !== cf) { showToast && showToast('Confirmation does not match new password.', 'error'); return; }
+        const csrf = (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '';
         try {
             const r = await fetch('/api/users/change-password', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
                 body: JSON.stringify({ current: cur, next: nw })
             });
-            const j = await r.json().catch(() => ({}));
+            let j = {};
+            try { j = await r.json(); } catch(_) {}
             if (r.ok && j.status === 'success') {
-                showToast && showToast('Password changed.', 'success');
+                showToast && showToast('✓ Password changed.', 'success');
                 document.getElementById('pref-cur-pwd').value = '';
                 document.getElementById('pref-new-pwd').value = '';
                 document.getElementById('pref-conf-pwd').value = '';
             } else {
-                showToast && showToast('Error: ' + (j.error || 'Unknown'), 'error');
+                const msg = j.error || j.message || `HTTP ${r.status}`;
+                showToast && showToast(msg, 'error', { requestId: j.request_id });
             }
-        } catch (e) { showToast && showToast('Network error.', 'error'); }
+        } catch (e) { showToast && showToast('Network error: ' + e.message, 'error'); }
     }
 
     function saveAppearance() {
         setPrefs({
-            theme:       document.querySelector('input[name="theme"]:checked')?.value,
-            density:     document.querySelector('input[name="density"]:checked')?.value,
-            language:    document.getElementById('pref-language')?.value,
-            fontSize:    document.querySelector('input[name="fontSize"]:checked')?.value,
-            zoom:        parseInt(document.getElementById('pref-zoom')?.value || 100, 10),
-            modalSize:   document.querySelector('input[name="modalSize"]:checked')?.value,
-            fontFamily:  document.querySelector('input[name="fontFamily"]:checked')?.value,
-            lineHeight:  document.querySelector('input[name="lineHeight"]:checked')?.value,
+            theme:        document.querySelector('input[name="theme"]:checked')?.value,
+            density:      document.querySelector('input[name="density"]:checked')?.value,
+            language:     document.getElementById('pref-language')?.value,
+            fontSize:     document.querySelector('input[name="fontSize"]:checked')?.value,
+            zoom:         parseInt(document.getElementById('pref-zoom')?.value || 100, 10),
+            modalSize:    document.querySelector('input[name="modalSize"]:checked')?.value,
+            fontFamily:   document.querySelector('input[name="fontFamily"]:checked')?.value,
+            lineHeight:   document.querySelector('input[name="lineHeight"]:checked')?.value,
             highContrast: !!document.getElementById('pref-high-contrast')?.checked,
             reduceMotion: !!document.getElementById('pref-reduce-motion')?.checked,
+            sidebarWidth: document.querySelector('input[name="sidebarWidth"]:checked')?.value,
+            contentMax:   document.querySelector('input[name="contentMax"]:checked')?.value,
+            borderRadius: document.querySelector('input[name="borderRadius"]:checked')?.value,
+            accentColor:  document.getElementById('pref-accent')?.value || '#4f46e5',
         });
         showToast && showToast('✓ Preferences saved & applied.', 'success');
     }
 
     function resetDisplay() {
-        // Vrati sve display podesavanja na default, cuvajuci ostale prefs
+        // Vrati sve display + layout podesavanja na default, cuvajuci ostale prefs
         setPrefs({
             fontSize: 'md', zoom: 100, modalSize: 'normal',
             fontFamily: 'system', lineHeight: 'normal', density: 'comfortable',
             highContrast: false, reduceMotion: false,
+            sidebarWidth: 'normal', contentMax: 'normal', borderRadius: 'normal',
+            accentColor: '#4f46e5',
         });
         closePreferences();
         setTimeout(openPreferences, 100);
@@ -439,14 +543,42 @@
     }
     window.resetDisplay = resetDisplay;
 
-    function saveNotifications() {
+    async function saveNotifications() {
+        const notif_prefs = {
+            portal: document.getElementById('pref-notif-portal').checked,
+            deals:  document.getElementById('pref-notif-deals').checked,
+            email:  document.getElementById('pref-notif-email').checked,
+            sound:  document.getElementById('pref-notif-sound').checked,
+        };
+        // 1) Sacuvaj lokalno za instant efekat
         setPrefs({
-            notifPortal: document.getElementById('pref-notif-portal').checked,
-            notifDeals: document.getElementById('pref-notif-deals').checked,
-            notifEmail: document.getElementById('pref-notif-email').checked,
-            notifSound: document.getElementById('pref-notif-sound').checked,
+            notifPortal: notif_prefs.portal,
+            notifDeals:  notif_prefs.deals,
+            notifEmail:  notif_prefs.email,
+            notifSound:  notif_prefs.sound,
         });
-        showToast && showToast('Notification preferences saved.', 'success');
+        // 2) Sinhronizuj sa serverom (users.notif_prefs) tako da radi cross-device
+        const csrf = (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '';
+        try {
+            const r = await fetch('/api/users/me', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+                body: JSON.stringify({ notif_prefs })
+            });
+            let j = {};
+            try { j = await r.json(); } catch(_) {}
+            if (r.ok && j.status === 'ok') {
+                showToast && showToast('✓ Notification preferences saved.', 'success');
+                if (window.state && window.state.user) {
+                    window.state.user.notif_prefs = notif_prefs;
+                }
+            } else {
+                showToast && showToast('Saved locally but server sync failed: ' + (j.error || r.status),
+                                       'warn', { requestId: j.request_id });
+            }
+        } catch (e) {
+            showToast && showToast('Saved locally, network sync failed.', 'warn');
+        }
     }
 
     async function check2FAStatus() {

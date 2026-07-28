@@ -353,19 +353,35 @@ Kad presečemo na Supabase Storage kao primarno, dodaćemo:
 
 Sledece faze koje jos treba uraditi:
 
-- [ ] **Sync-back script** — kad je USE_SUPABASE_DB=true a neko nešto
-      napiše u SQLite direktno (npr. iz test-a), reconcile treba da moze
-      da push-uje nazad. Trenutno je jednosmerno SQLite→Supabase.
+- [x] **Sync-back script** — DONE. `reconcile_sqlite_supabase.py --sync-back --confirm`
+      povlaci Supabase-only redove nazad u SQLite. Bez `--confirm` je dry-run.
 - [ ] **Signed URL migration** — svi `/portal_uploads/<file>` linkovi
       da se zamene sa Supabase signed URL-om posle Faza D.
-- [ ] **Email queue admin UI** — dugme u `/admin/health` za "Retry failed
-      emails" i "Purge stale queue entries".
-- [ ] **Supabase Auth webhook** — kad Supabase pošalje "user.created" ili
-      "password.changed", da automatski osvezi `partners` u SQLite. Za sad
-      admin mora ručno da klikne Refresh.
-- [ ] **Encrypted backup slanje na off-site** — trenutno ide u
-      `data/backups/*.fernet`. Trebalo bi opcionalno slati u S3
-      kompatibilan storage (Supabase Storage može).
+- [x] **Email queue admin UI** — DONE. `/admin/mail-queue` (admin only).
+      Filter po statusu (pending/sending/sent/failed/dead), retry selected /
+      retry all failed, delete selected / purge sent / purge dead, drain now.
+- [x] **Supabase Auth webhook** — DONE. `POST /api/webhook/supabase-auth` sa
+      `X-Webhook-Secret: <WEBHOOK_SECRET env>` — na INSERT/UPDATE/DELETE
+      u `auth.users` sinhronizuje email + supabaseAuthId + isPortalActive u
+      SQLite partners. Plus admin `POST /api/admin/supabase-auth/sync` za
+      on-demand full sync (za slucaj propustenih webhook-ova).
+- [x] **Encrypted backup slanje na off-site** — DONE. Kad je
+      `BACKUP_OFFSITE=on` i `USE_SUPABASE_STORAGE=on`, dnevni Fernet
+      snapshot se posle lokalnog snimanja mirror-uje u Supabase Storage
+      bucket `backups/daily/<file>.fernet`. Best-effort — ne prekida
+      backup ako Storage padne.
+
+Setup Supabase Auth webhook:
+1. Supabase Dashboard → **Database → Webhooks → New webhook**
+2. Table: `auth.users`, Events: `INSERT, UPDATE, DELETE`
+3. URL: `https://aspidus.pythonanywhere.com/api/webhook/supabase-auth`
+4. HTTP Headers: `X-Webhook-Secret: <isti kao u .env WEBHOOK_SECRET>`
+5. U `.env`: `WEBHOOK_SECRET=<random string min 32 chars>`
+
+Setup off-site backup:
+1. Prvo pokreni bucket bootstrap: **`/admin/supabase` → Init Buckets** (kreira i `backups`)
+2. U `.env`: `BACKUP_OFFSITE=true`
+3. Reload web app. Sledeci dnevni backup ce ici i lokalno i u Storage.
 
 ---
 

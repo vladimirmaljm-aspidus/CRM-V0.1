@@ -571,3 +571,77 @@ input, select, textarea, button {
   transition-duration: 0.001ms !important;
   scroll-behavior: auto !important;
 }
+
+/* =========================================
+   LAYOUT CUSTOMIZATION (v22.3)
+   Sidebar width, content max, accent color, radius
+   ========================================= */
+
+:root {
+  --user-sidebar-w: 18rem;
+  --user-content-max: 1400px;
+  --user-accent: #4f46e5;
+  --user-accent-rgb: 79, 70, 229;
+  --user-accent-soft: rgba(79, 70, 229, 0.12);
+  --user-radius: 10px;
+}
+
+/* Sidebar postuje user-sidebar-w umesto tvrdog w-72 */
+#app-sidebar {
+  width: var(--user-sidebar-w) !important;
+}
+@media (min-width: 1024px) {
+  #main-content {
+    margin-left: var(--user-sidebar-w) !important;
+    max-width: min(var(--user-content-max, 1400px), calc(100vw - var(--user-sidebar-w)));
+  }
+}
+
+/* Narrow sidebar → sakri nav-text (kao collapsed) */
+[data-sidebar-w="narrow"] .nav-text,
+[data-sidebar-w="narrow"] .sidebar-header-text,
+[data-sidebar-w="narrow"] .nav-group-title,
+[data-sidebar-w="narrow"] .nav-quick { display: none !important; }
+[data-sidebar-w="narrow"] .nav-item { justify-content: center; }
+
+/* Accent color — override --accent i --accent-soft koje app već koristi */
+:root {
+  --accent: var(--user-accent) !important;
+  --accent-soft: var(--user-accent-soft) !important;
+}
+.text-\[var\(--accent\)\], .text-blue-600, .text-indigo-500, .text-indigo-600, .text-indigo-700 { color: var(--user-accent) !important; }
+.bg-\[var\(--accent-soft\)\] { background: var(--user-accent-soft) !important; }
+.bg-gradient-to-br.from-indigo-500.to-purple-600,
+.bg-gradient-to-br.from-blue-600.to-indigo-700 {
+  background: linear-gradient(135deg, var(--user-accent), color-mix(in srgb, var(--user-accent) 60%, black)) !important;
+}
+.btn-primary, button.btn-primary {
+  background: linear-gradient(135deg, var(--user-accent), color-mix(in srgb, var(--user-accent) 70%, black)) !important;
+}
+.pref-btn-primary {
+  background: linear-gradient(135deg, var(--user-accent), color-mix(in srgb, var(--user-accent) 70%, black)) !important;
+}
+.pref-tab.active {
+  color: var(--user-accent) !important;
+  border-bottom-color: var(--user-accent) !important;
+}
+.pref-radio:has(input:checked) {
+  border-color: var(--user-accent) !important;
+  background: var(--user-accent-soft) !important;
+  color: color-mix(in srgb, var(--user-accent) 80%, black) !important;
+}
+
+/* Border radius customization */
+.card, .rounded-xl, .btn, .form-input, input, select, textarea,
+#modal-content, .pref-modal, .pref-btn {
+  border-radius: var(--user-radius) !important;
+}
+.rounded-full { border-radius: 9999px !important; }  /* zadrzi za avatar */
+.rounded { border-radius: calc(var(--user-radius) * 0.4) !important; }
+
+/* Focus ring boja iz accenta */
+input:focus, select:focus, textarea:focus, .form-input:focus {
+  box-shadow: 0 0 0 3px var(--user-accent-soft) !important;
+  border-color: var(--user-accent) !important;
+  outline: none;
+}
