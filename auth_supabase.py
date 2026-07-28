@@ -29,8 +29,23 @@ import os
 import threading
 from typing import Optional
 
+from utils_reliability import retry
+
 _admin_client_lock = threading.Lock()
 _admin_client = None
+
+
+def _transient_exceptions():
+    """Klase izuzetaka za koje retry ima smisla — network glitch, timeout.
+    NIKAD ne retry-uj auth greske (pogresna sifra) ili 4xx (validacija)."""
+    excs = [ConnectionError, TimeoutError, OSError]
+    try:
+        import httpx
+        excs.extend([httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout,
+                     httpx.RemoteProtocolError, httpx.NetworkError])
+    except ImportError:
+        pass
+    return tuple(excs)
 
 
 def use_supabase_auth() -> bool:
@@ -260,12 +275,17 @@ def send_password_reset(email: str, redirect_to: Optional[str] = None) -> tuple[
     if not email or "@" not in email:
         return False, "invalid_email"
     client = admin_client()
-    try:
+
+    @retry(attempts=3, initial_delay=0.6, backoff=2.0, exceptions=_transient_exceptions())
+    def _do():
         opts = {}
         if redirect_to:
             opts["redirect_to"] = redirect_to
         # supabase-py: reset_password_email(email, options={"redirect_to": ...})
-        client.auth.reset_password_email(email.strip().lower(), opts or None)
+        return client.auth.reset_password_email(email.strip().lower(), opts or None)
+
+    try:
+        _do()
         return True, "sent"
     except Exception as e:
         return False, f"{e.__class__.__name__}:{e}"
@@ -289,13 +309,18 @@ def signin_with_password(email: str, password: str) -> tuple[Optional[dict], str
     if not anon:
         return None, "no_anon_key"
     url = f"{_supabase_url().rstrip('/')}/auth/v1/token?grant_type=password"
-    try:
-        r = httpx.post(
+
+    @retry(attempts=3, initial_delay=0.5, backoff=2.0, exceptions=_transient_exceptions())
+    def _post():
+        return httpx.post(
             url,
             headers={"apikey": anon, "Content-Type": "application/json"},
             json={"email": email.strip().lower(), "password": password},
             timeout=15.0,
         )
+
+    try:
+        r = _post()
     except Exception as e:
         return None, f"network:{e.__class__.__name__}"
     if r.status_code == 200:
@@ -321,8 +346,13 @@ def update_user_password(user_id: str, new_password: str) -> tuple[bool, str]:
     if len(new_password) < 8:
         return False, "password_too_short"
     client = admin_client()
+
+    @retry(attempts=3, initial_delay=0.6, backoff=2.0, exceptions=_transient_exceptions())
+    def _do():
+        return client.auth.admin.update_user_by_id(str(user_id), {"password": new_password})
+
     try:
-        client.auth.admin.update_user_by_id(str(user_id), {"password": new_password})
+        _do()
         return True, "updated"
     except Exception as e:
         return False, f"{e.__class__.__name__}:{e}"
@@ -334,11 +364,16 @@ def send_magic_link(email: str, redirect_to: Optional[str] = None) -> tuple[bool
     if not email or "@" not in email:
         return False, "invalid_email"
     client = admin_client()
-    try:
+
+    @retry(attempts=3, initial_delay=0.6, backoff=2.0, exceptions=_transient_exceptions())
+    def _do():
         opts = {"email": email.strip().lower()}
         if redirect_to:
             opts["options"] = {"email_redirect_to": redirect_to}
-        client.auth.sign_in_with_otp(opts)
+        return client.auth.sign_in_with_otp(opts)
+
+    try:
+        _do()
         return True, "sent"
     except Exception as e:
         return False, f"{e.__class__.__name__}:{e}"

@@ -532,14 +532,84 @@ function logoutPortal() {
     window.location.href = '/portal/login';
 }
 
-function showToast(message, type) {
+function showToast(message, type, opts) {
     type = type || 'info';
+    // Backwards-compat: 3. argument je ranije bio broj = durationMs.
+    let duration = 3800;
+    let requestId = null;
+    if (typeof opts === 'number') {
+        duration = opts;
+    } else if (opts && typeof opts === 'object') {
+        if (opts.duration) duration = opts.duration;
+        if (opts.requestId) requestId = String(opts.requestId);
+    }
+
     const div = document.createElement('div');
     div.className = `toast toast-${type} fade-in`;
-    div.textContent = message;
+    div.style.maxWidth = '360px';
+
+    const msgSpan = document.createElement('div');
+    msgSpan.textContent = message;
+    msgSpan.style.lineHeight = '1.4';
+    div.appendChild(msgSpan);
+
+    if (requestId) {
+        // Klijent vidi kratak "ticket" ID koji admin lako pronađe u /admin/errors.
+        const foot = document.createElement('div');
+        foot.style.cssText = 'margin-top:6px;display:flex;align-items:center;gap:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,.15);font-size:11px;opacity:.88;';
+        const label = document.createElement('span');
+        label.textContent = 'Ref:';
+        label.style.opacity = '.7';
+        const code = document.createElement('code');
+        code.textContent = requestId;
+        code.style.cssText = 'font-family:ui-monospace,monospace;font-size:11px;background:rgba(255,255,255,.12);padding:1px 6px;border-radius:4px;letter-spacing:.02em;';
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.textContent = 'Copy';
+        copyBtn.style.cssText = 'margin-left:auto;background:rgba(255,255,255,.18);border:none;color:inherit;padding:2px 8px;border-radius:4px;font-size:11px;cursor:pointer;';
+        copyBtn.onclick = (ev) => {
+            ev.stopPropagation();
+            try {
+                navigator.clipboard.writeText(requestId);
+                copyBtn.textContent = 'Copied';
+                setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+            } catch (_) {}
+        };
+        foot.appendChild(label);
+        foot.appendChild(code);
+        foot.appendChild(copyBtn);
+        div.appendChild(foot);
+        // Duže vreme jer korisnik mora da kopira ID
+        duration = Math.max(duration, 8000);
+    }
+
     document.getElementById('toast-container').appendChild(div);
-    setTimeout(() => { div.style.opacity = '0'; div.style.transition = 'opacity .3s'; }, 3800);
-    setTimeout(() => div.remove(), 4200);
+    setTimeout(() => { div.style.opacity = '0'; div.style.transition = 'opacity .3s'; }, duration);
+    setTimeout(() => div.remove(), duration + 400);
+}
+
+/**
+ * Prikazi grešku iz fetch response-a — ako je 5xx i backend vratio JSON
+ * sa `request_id`, pokaži i taj ID uz "Copy" dugme. Za 4xx pokušaj da
+ * izvučeš `error`/`message` polje.
+ *
+ * Usage:
+ *   const r = await fetch(url, ...);
+ *   if (!r.ok) return apiError(r, 'Operacija nije uspela');
+ */
+async function apiError(response, defaultMsg) {
+    let body = null;
+    try { body = await response.json(); } catch (_) {}
+    const msg = (body && (body.message || body.error || body.detail)) || defaultMsg || 'Došlo je do greške.';
+    const reqId = body && (body.request_id || body.requestId);
+    if (response.status >= 500 && reqId) {
+        showToast(msg, 'error', { requestId: reqId });
+    } else if (response.status >= 500) {
+        showToast(`${msg} (HTTP ${response.status})`, 'error');
+    } else {
+        showToast(msg, 'error');
+    }
+    return null;
 }
 
 function getPersonHtml() {
