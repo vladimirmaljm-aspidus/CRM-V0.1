@@ -232,6 +232,26 @@ def users_me_patch():
         conn.commit()
     finally:
         conn.close()
+    # V23.1 #1 — DUAL WRITE u Supabase: Render brise lokalne .db, korisnicke
+    # preference MORAJU biti u Supabase. Best-effort — ako Supabase pukne, i
+    # dalje smo sacuvali lokalno (WAL) pa nema gubitka. Kada je USE_SUPABASE_DB
+    # aktivan, ovo je jedini put pisanja.
+    try:
+        from data_layer import upsert as _db_upsert
+        supabase_row = {'id': uid}
+        supabase_row.update(updates)
+        if 'notif_prefs' in supabase_row:
+            # data_layer JSONB kolonu ocekuje kao dict, ne string
+            try:
+                supabase_row['notif_prefs'] = _json.loads(supabase_row['notif_prefs'])
+            except Exception:
+                pass
+        _db_upsert('users', supabase_row, on_conflict='id')
+    except Exception as _sync_err:
+        # Log-only — ne blokiramo user flow
+        import logging as _logging
+        _logging.getLogger(__name__).info(f'Supabase user prefs mirror skipped: {_sync_err}')
+
     log_audit('EDIT', 'users',
               f'User {session.get("username")} updated own profile: {list(updates.keys())}',
               is_suspicious=False)
