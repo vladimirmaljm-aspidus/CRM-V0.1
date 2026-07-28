@@ -138,6 +138,42 @@ def init_db():
             c.execute('CREATE INDEX IF NOT EXISTS idx_offerver_offer ON offer_versions(offerId)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_offerver_at ON offer_versions(changedAt)')
 
+            # ==========================================================
+            # FAZA 5: PER-PARTNER INVENTORY
+            # ==========================================================
+            # partner_inventory drzi TRENUTNO stanje po (partner_id, product_id).
+            # inventory_movements je append-only istorija svake IN/OUT/ADJUST/
+            # RESERVE/RELEASE operacije, sa opcionim dealId za traceability.
+            # UNIQUE (partner_id, product_id) obezbedjuje jednu row po parceli.
+            c.execute('''CREATE TABLE IF NOT EXISTS partner_inventory (
+                id TEXT PRIMARY KEY,
+                partner_id TEXT NOT NULL,
+                product_id TEXT NOT NULL,
+                qty_on_hand REAL NOT NULL DEFAULT 0,
+                qty_reserved REAL NOT NULL DEFAULT 0,
+                unit TEXT,
+                last_movement_at TEXT,
+                UNIQUE(partner_id, product_id)
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_partinv_partner ON partner_inventory(partner_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_partinv_product ON partner_inventory(product_id)')
+
+            c.execute('''CREATE TABLE IF NOT EXISTS inventory_movements (
+                id TEXT PRIMARY KEY,
+                partner_id TEXT NOT NULL,
+                product_id TEXT NOT NULL,
+                kind TEXT NOT NULL,        -- IN | OUT | ADJUST | RESERVE | RELEASE
+                qty REAL NOT NULL,
+                unit TEXT,
+                deal_id TEXT,
+                note TEXT,
+                created_at TEXT NOT NULL,
+                created_by TEXT
+            )''')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_invmov_partner ON inventory_movements(partner_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_invmov_deal ON inventory_movements(deal_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_invmov_at ON inventory_movements(created_at)')
+
 ########## --- NOVA LINIJA KODA ZA EMAIL RED ČEKANJA ---
             c.execute('''CREATE TABLE IF NOT EXISTS email_queue (
                 id TEXT PRIMARY KEY, recipient TEXT NOT NULL, subject TEXT,
