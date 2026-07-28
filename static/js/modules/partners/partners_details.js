@@ -227,6 +227,23 @@ function renderPartnerDetailView(partnerId) {
                        <span class="text-[10px] font-bold text-indigo-700 dark:text-indigo-400 uppercase tracking-widest">KYC Status</span>
                        ${kycBadge}
                    </div>
+                   <!-- Risk score placeholder — async fetch nakon rendera -->
+                   <div id="partner-risk-tile" class="rounded-lg border border-slate-200 bg-white p-2 text-xs" style="display:none">
+                       <div class="flex items-center justify-between">
+                           <span class="text-[10px] font-bold uppercase tracking-widest text-slate-500">Risk Score</span>
+                           <span id="risk-band" class="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 uppercase">—</span>
+                       </div>
+                       <div class="flex items-center gap-2 mt-1">
+                           <div class="flex-1 h-2 rounded-full bg-slate-200 overflow-hidden">
+                               <div id="risk-bar" class="h-full transition-all" style="width:0%"></div>
+                           </div>
+                           <span id="risk-score" class="text-lg font-bold text-slate-900">—</span>
+                       </div>
+                       <details class="mt-1">
+                           <summary class="text-[10px] text-slate-500 cursor-pointer hover:text-slate-700">Breakdown</summary>
+                           <ul id="risk-breakdown" class="text-[10px] text-slate-500 mt-1 space-y-0.5 pl-3 list-disc"></ul>
+                       </details>
+                   </div>
                    <button id="kyc-partner-btn" class="w-full btn bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2 shadow-sm border border-indigo-800">📄 ${Utils.t('kyc.reviewTitle')}</button>
                    <button id="b2b-portal-btn" class="w-full btn bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs py-2 shadow-sm border border-slate-900">🌐 ${Utils.t('misc.b2bLinkBtn')}</button>
                    <button id="portal-invite-btn" class="w-full btn bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs py-2 shadow-sm border border-blue-800">📧 Send Portal Invite / Reset</button>
@@ -410,6 +427,38 @@ function renderPartnerDetailView(partnerId) {
         if (typeof showPartnerInventoryModal === 'function') showPartnerInventoryModal(partnerId);
         else showToast('Inventory module not loaded.', 'error');
     });
+
+    // BATCH D — load risk score async
+    (async () => {
+        try {
+            const r = await fetch(`/api/partners/${encodeURIComponent(partnerId)}/risk-score`);
+            if (!r.ok) return;
+            const j = await r.json();
+            const tile = document.getElementById('partner-risk-tile');
+            const bar = document.getElementById('risk-bar');
+            const sc = document.getElementById('risk-score');
+            const band = document.getElementById('risk-band');
+            const bd = document.getElementById('risk-breakdown');
+            if (!tile) return;
+            tile.style.display = '';
+            sc.textContent = j.score;
+            band.textContent = j.band;
+            bar.style.width = j.score + '%';
+            if (j.band === 'LOW') {
+                band.className = 'text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 uppercase';
+                bar.style.background = '#10b981';
+            } else if (j.band === 'MEDIUM') {
+                band.className = 'text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 uppercase';
+                bar.style.background = '#f59e0b';
+            } else {
+                band.className = 'text-[9px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 uppercase';
+                bar.style.background = '#ef4444';
+            }
+            bd.innerHTML = (j.breakdown || []).map(b =>
+                `<li>${Utils.escapeHtml(b.factor)} <span class="${b.delta > 0 ? 'text-emerald-700' : (b.delta < 0 ? 'text-rose-700' : 'text-slate-400')}">${b.delta > 0 ? '+' : ''}${b.delta}</span></li>`
+            ).join('') || '<li class="italic">No factors</li>';
+        } catch(_) {}
+    })();
     
     document.getElementById('delete-partner-btn').addEventListener('click', async () => {
         const _ok = await window.askConfirm('Obrisati partnera?', Utils.t('misc.confirmDelete'), { danger: true });
