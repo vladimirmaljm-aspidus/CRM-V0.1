@@ -185,6 +185,41 @@ def users_me_patch():
     return jsonify({"status": "ok"})
 
 
+@supabase_admin_bp.route('/admin/health', methods=['GET'])
+@login_required
+def admin_health_page():
+    if session.get('role') != 'admin':
+        return "Admin only.", 403
+    return render_template('admin_health.html')
+
+
+@supabase_admin_bp.route('/api/admin/health', methods=['GET'])
+@login_required
+def admin_health_api():
+    if session.get('role') != 'admin':
+        return jsonify({"error": "Admin only."}), 403
+    try:
+        from utils_reliability import full_health
+        return jsonify(full_health())
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+
+
+@supabase_admin_bp.route('/api/health', methods=['GET'])
+def public_health():
+    """Public heartbeat — bez auth, minimalan info (za uptime monitor)."""
+    try:
+        import os
+        from config import DB_FILE
+        return jsonify({
+            "ok": os.path.exists(DB_FILE),
+            "service": "aspidus-crm",
+            "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        })
+    except Exception:
+        return jsonify({"ok": False}), 503
+
+
 @supabase_admin_bp.route('/api/users/change-password', methods=['POST'])
 @login_required
 def users_change_password():
