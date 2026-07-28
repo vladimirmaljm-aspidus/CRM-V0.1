@@ -352,14 +352,13 @@ def doc_register_list():
                 partner_names[eid] = '?'
 
     def _link(doc_type, doc_number, entity_id, revision):
-        """Vraca client-side hash za brz jump."""
-        if doc_type == 'OFFER':
-            return f'#offers/{doc_number}'
-        if doc_type == 'INVOICE':
-            return f'#invoices/{doc_number}'
-        if doc_type == 'PROFORMA':
-            return f'#proformas/{doc_number}'
-        return f'#partners/{entity_id or ""}'
+        """V23.1: link ide u glavni CRM sa ?goto= query param-om koji ui.js hvata
+        i otvara POSTOJECI modul (customer_offers/invoice/proforma), umesto novog
+        prozora. Podržavamo lookup po docNumber → id preko byNumber query hint-a."""
+        t = doc_type.lower()
+        if t in ('offer', 'invoice', 'proforma'):
+            return f'/?goto={t}:number={doc_number}'
+        return f'/?goto=partner:{entity_id or ""}'
 
     out = []
     for r in rows:
@@ -410,6 +409,148 @@ def doc_register_page():
 # =========================================================================
 #  V23.1 #7 — CONVERSION Offer→Invoice/Proforma (1/1 transfer)
 # =========================================================================
+
+@v23_admin_bp.route('/api/documents/register-existing/<doc_type>/<doc_id>', methods=['POST'])
+@login_required
+def register_existing_document(doc_type, doc_id):
+    """V23.1 #6 — hook koji EXISTING offer/invoice/proforma modul poziva posle save-a.
+    Namena: upisati taj dokument u Knjigu izdatih dokumenata (document_register)
+    sa V-suffix logikom, bez pravljenja novog UI-a.
+
+    Pravila:
+      1) Ako dokument već ima docNumber → provera hash-a payload-a; ako je promenjen,
+         inkrementiraj revision (V2, V3, ...) i upiši snapshot u document_revisions.
+      2) Ako nema docNumber → generisi novi (OFF-YYYY-NNNNN / INV / PRO), upiši V1.
+
+    Vraca: docNumber, versionLabel, revision.
+    """
+    if doc_type not in ('offer', 'invoice', 'proforma'):
+        return jsonify({'error': 'invalid_type'}), 400
+    table = {'offer': 'offers', 'invoice': 'invoices', 'proforma': 'proformas'}[doc_type]
+    doc_type_upper = {'offer': 'OFFER', 'invoice': 'INVOICE', 'proforma': 'PROFORMA'}[doc_type]
+
+    body = request.get_json(silent=True) or {}
+    reason = str(body.get('change_reason') or '').strip()[:500]
+
+    import hashlib
+
+    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
+        conn.execute('PRAGMA busy_timeout=15000')
+        conn.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT)')
+        r = conn.execute(f"SELECT data FROM {table} WHERE id=?", (doc_id,)).fetchone()
+        if not r:
+            return jsonify({'error': 'not_found'}), 404
+        try:
+            data = json.loads(r[0]) if r[0] else {}
+        except Exception:
+            data = {}
+
+        current_doc_number = data.get('docNumber')
+        entity_id = (data.get('customerId') or data.get('partnerId') or
+                     data.get('buyerId') or None)
+        # Stable content hash — items + terms — ignorise timestamp-ove
+        _content_for_hash = {
+            'items': data.get('items') or [],
+            'services': data.get('services') or [],
+            'sellingPrice': data.get('sellingPrice'),
+            'quantity': data.get('quantity'),
+            'currency': data.get('currency'),
+            'incoterm': data.get('incoterm'),
+            'paymentTerms': data.get('paymentTerms'),
+            'validUntil': data.get('validUntil'),
+        }
+        content_hash = hashlib.sha256(json.dumps(_content_for_hash, sort_keys=True,
+                                                 default=str).encode('utf-8')).hexdigest()[:32]
+
+        year = datetime.now(timezone.utc).year
+
+        if current_doc_number:
+            # Vec je registrovan — proveri da li se sadrzaj promenio
+            prev_hash = conn.execute(
+                "SELECT contentHash FROM document_revisions WHERE docNumber=? "
+                "ORDER BY revision DESC LIMIT 1",
+                (current_doc_number,)
+            ).fetchone()
+
+            if prev_hash and prev_hash[0] == content_hash:
+                # Nista se ne menja — vrati current bez bump-a
+                return jsonify({
+                    'docNumber': current_doc_number,
+                    'versionLabel': data.get('versionLabel') or 'V1',
+                    'revision': data.get('revision', 0),
+                    'changed': False,
+                })
+
+            # Bump revision
+            last = conn.execute(
+                "SELECT MAX(revision) FROM document_register WHERE docNumber=?",
+                (current_doc_number,)
+            ).fetchone()
+            new_rev = (last[0] or 0) + 1
+            try:
+                _seq = int(current_doc_number.split('-')[-1])
+            except Exception:
+                _seq = 0
+            conn.execute(
+                "INSERT INTO document_register (docType, year, seq, docNumber, entityId, "
+                "revision, status, issuedAt, issuedBy) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+                (doc_type_upper, year, _seq, current_doc_number, entity_id,
+                 new_rev, _now(), session.get('username'))
+            )
+            conn.execute(
+                "INSERT INTO document_revisions (id, docNumber, revision, entityId, "
+                "snapshot, contentHash, changeReason, changedBy, changedAt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), current_doc_number, new_rev, entity_id,
+                 json.dumps(data), content_hash,
+                 reason or 'Edit via existing form',
+                 session.get('username'), _now())
+            )
+            data['revision'] = new_rev
+            data['versionLabel'] = f'V{new_rev + 1}'
+            conn.execute(f"UPDATE {table} SET data=? WHERE id=?", (json.dumps(data), doc_id))
+            log_audit('EDIT', table, f'Revision {data["versionLabel"]} of {current_doc_number}')
+            return jsonify({
+                'docNumber': current_doc_number,
+                'versionLabel': data['versionLabel'],
+                'revision': new_rev,
+                'changed': True,
+            })
+        else:
+            # Prva registracija — dodeli broj
+            seq_row = conn.execute(
+                "SELECT COALESCE(MAX(seq),0)+1 FROM document_register WHERE docType=? AND year=?",
+                (doc_type_upper, year)
+            ).fetchone()
+            seq = seq_row[0]
+            doc_number = f"{doc_type_upper[:3]}-{year}-{seq:05d}"
+            data['docNumber'] = doc_number
+            data['issueDate'] = data.get('issueDate') or _now()[:10]
+            data['revision'] = 0
+            data['versionLabel'] = 'V1'
+            conn.execute(
+                "INSERT INTO document_register (docType, year, seq, docNumber, entityId, "
+                "revision, status, issuedAt, issuedBy) VALUES (?, ?, ?, ?, ?, 0, 'active', ?, ?)",
+                (doc_type_upper, year, seq, doc_number, entity_id,
+                 _now(), session.get('username'))
+            )
+            conn.execute(
+                "INSERT INTO document_revisions (id, docNumber, revision, entityId, "
+                "snapshot, contentHash, changeReason, changedBy, changedAt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), doc_number, 0, entity_id,
+                 json.dumps(data), content_hash,
+                 reason or 'Initial issue', session.get('username'), _now())
+            )
+            conn.execute(f"UPDATE {table} SET data=? WHERE id=?", (json.dumps(data), doc_id))
+            log_audit('CREATE', table, f'Registered {doc_number} (V1)')
+            return jsonify({
+                'docNumber': doc_number,
+                'versionLabel': 'V1',
+                'revision': 0,
+                'changed': True,
+            })
+
 
 @v23_admin_bp.route('/api/documents/convert', methods=['POST'])
 @login_required
@@ -507,20 +648,26 @@ def convert_document():
 @v23_admin_bp.route('/documents/edit/<doc_type>/<doc_id>', methods=['GET'])
 @login_required
 def doc_editor_page(doc_type, doc_id):
-    """Puna stranica za uredjivanje ponude/fakture/proforme.
-    doc_type u {offer, invoice, proforma}."""
+    """V23.1 revision — redirect u POSTOJECI editor modal umesto duplog UI.
+    Existing offer/invoice/proforma moduli imaju sve funkcionalnosti (partner
+    dropdown, product autocomplete, bank auto-fill…). Ova ruta samo instruira
+    frontend da otvori odgovarajuci modul preko ?goto= query param-a.
+    """
     if doc_type not in ('offer', 'invoice', 'proforma'):
         return "Invalid document type.", 400
-    return render_template('document_editor.html', doc_type=doc_type, doc_id=doc_id)
+    from flask import redirect
+    return redirect(f'/?goto={doc_type}:{doc_id}')
 
 
 @v23_admin_bp.route('/documents/new/<doc_type>', methods=['GET'])
 @login_required
 def doc_editor_new_page(doc_type):
-    """Prazan editor za nov dokument."""
+    """Redirect na postojeci flow za kreiranje. Za offer, otvara customer_offers.js
+    modal; za invoice, deal invoice flow."""
     if doc_type not in ('offer', 'invoice', 'proforma'):
         return "Invalid document type.", 400
-    return render_template('document_editor.html', doc_type=doc_type, doc_id='')
+    from flask import redirect
+    return redirect(f'/?new={doc_type}')
 
 
 @v23_admin_bp.route('/api/documents/<doc_type>/<doc_id>', methods=['GET'])

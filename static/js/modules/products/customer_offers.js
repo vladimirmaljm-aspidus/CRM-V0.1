@@ -611,6 +611,33 @@ function showCustomerOfferModal({productId = null, offerIndex = null, isInventor
         }
         await saveSingleItem('offers', offerObj);
 
+        // V23.1 #6 — Register offer in Book of Documents (Knjiga izdatih dokumenata).
+        // Postojeci offerNo ostaje "1/2026" format za backward-compat, ali sada
+        // paralelno registrujemo i formal docNumber (OFF-2026-00001) sa V-suffixom.
+        // Ako se ponuda edituje ponovo, backend bumpuje reviziju (V2, V3...).
+        try {
+            const csrfTok = (document.cookie.match(/csrf_token=([^;]+)/) || [])[1] || '';
+            const r = await fetch('/api/documents/register-existing/offer/' + encodeURIComponent(offerObj.id), {
+                method: 'POST',
+                headers: {'Content-Type':'application/json', 'X-CSRF-Token': csrfTok},
+                body: JSON.stringify({ change_reason: savedOfferId ? 'Edit via existing offer form' : 'New offer' })
+            });
+            if (r.ok) {
+                const j = await r.json();
+                if (j.docNumber) {
+                    offerObj.docNumber = j.docNumber;
+                    offerObj.versionLabel = j.versionLabel;
+                    offerObj.revision = j.revision;
+                    // Update state u memoriji
+                    const idx = state.data.offers.findIndex(o => o.id === offerObj.id);
+                    if (idx >= 0) state.data.offers[idx] = offerObj;
+                }
+            }
+        } catch (_regErr) {
+            // Best-effort — offer je vec sačuvan, registracija se moze naknadno pokrenuti
+            console.warn('Doc register hook failed:', _regErr);
+        }
+
         // NAPOMENA: Auto-slanje PDF-a klijentu je NAMERNO uklonjeno.
         // Save samo čuva ponudu u bazi. Da bi klijent dobio dokument, admin mora
         // EKSPLICITNO da klikne '📤 Pošalji klijentu' u tabeli ponuda. Time se
