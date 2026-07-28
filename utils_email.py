@@ -659,6 +659,30 @@ def send_branded_admin_message(recipient, subject, message_text, attachments=Non
 
 
 # ==========================================================
+#  Round F helper — direktan send (koristi ga security_center za magic-link,
+#  new-IP alerts, break-glass recovery). Prihvata vec-formatiran HTML fragment
+#  koji se ubacuje u standardni brand-wrapper.
+# ==========================================================
+def send_email_now(recipient, subject, body_html, body_type='html', attachments=None):
+    """Public wrapper — salje mejl odmah (bez queue), sa brand headerom/footerom.
+    body_type: 'html' (podrazumevano) ili 'text'. Vraca (ok, error).
+    Ako send padne, parkira u queue automatski (kao svaki drugi mejl kroz _send).
+    """
+    _smtp, company = _get_smtp_settings()
+    if body_type == 'text':
+        # Konvertuj plain lines u <p>-ove
+        def _esc(s):
+            return (str(s or "").replace("&", "&amp;").replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+        paragraphs = [f'<p style="margin:0 0 12px 0;">{_esc(l)}</p>'
+                      for l in (body_html or "").split("\n") if l.strip()]
+        body_html = "".join(paragraphs) or f'<p>{_esc(subject)}</p>'
+    html = _html_wrap(subject, body_html, company)
+    plain = subject  # minimal plaintext fallback
+    return _send(recipient, subject, html, plain, attachments=attachments)
+
+
+# ==========================================================
 #  Konkretni šabloni
 # ==========================================================
 

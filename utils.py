@@ -274,6 +274,41 @@ def login_required(f):
                 return jsonify({"error": "SESSION_INVALIDATED"}), 401
             return redirect(url_for('auth.login'))
 
+        # ROUND F: per-session revoke — user je ubio TU sesiju iz Security Center-a.
+        # Ovo je nezavisno od token_version (koji ubija SVE sesije). Individualni
+        # revoke se koristi kad user vidi sumnjivi Chrome/Windows u listi i ubije
+        # samo njega, a nastavlja da radi na svom laptopu.
+        sid = session.get('session_id')
+        if sid:
+            try:
+                from routes.security_center import is_session_revoked, touch_session
+                if is_session_revoked(sid):
+                    session.clear()
+                    if is_api:
+                        return jsonify({"error": "SESSION_REVOKED"}), 401
+                    return redirect(url_for('auth.login'))
+                touch_session(sid)  # best-effort update last_seen_at
+            except Exception:
+                pass  # ne blokiramo ako security_center nije registrovan
+
+        # ROUND F: must_change_password gate — dozvoli samo pristup Security Center-u
+        # i change-password endpoint-u dok user ne postavi novu lozinku.
+        try:
+            allowed_paths = ('/profile/security', '/api/security/', '/api/auth/change_password',
+                             '/api/users/change-password', '/api/auth/me', '/api/auth/logout',
+                             '/api/csrf/token', '/static/')
+            if not any(request.path.startswith(p) for p in allowed_paths):
+                with sqlite3.connect(DB_FILE, timeout=5.0) as _c:
+                    _r = _c.execute("SELECT must_change_password FROM users WHERE id=?",
+                                    (session['user_id'],)).fetchone()
+                if _r and _r[0]:
+                    if is_api:
+                        return jsonify({"error": "MUST_CHANGE_PASSWORD",
+                                        "redirect": "/profile/security#password"}), 403
+                    return redirect('/profile/security#password')
+        except Exception:
+            pass  # DB hiccup ne sme da blokira svaki request
+
         return f(*args, **kwargs)
     return decorated_function
 
