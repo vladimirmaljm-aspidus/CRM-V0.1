@@ -37,36 +37,99 @@ from utils import login_required, log_audit
 supabase_merge_bp = Blueprint('supabase_merge_bp', __name__)
 
 
-# Tabele koje uvek postoje u Supabase (osnovni skup iz schemas/supabase_schema.sql).
-# Value je lista "known bool columns" za koje moramo INTEGER→bool coerce.
+# Tabele koje uvek postoje u Supabase (posle supabase_v23_1.sql migracije).
+# `bools`: kolone koje su BOOLEAN u Postgresu — moramo INTEGER 0/1 → bool coerce.
+# `cols`:  bela lista kolona koje smemo poslati; sve ostalo NE ide u Supabase
+#          nego se pakuje u `data` JSONB (koji je uvek prisutan). Ovim resavamo
+#          PGRST204 "Could not find column" bez potrebe da menjamo transform.
+# `id_key`: kljuc iz SQLite reda koji se mapira na Supabase PK (default 'id';
+#           za audit_logs mapiramo na 'sync_id' jer im je PK BIGSERIAL).
 SUPPORTED_TABLES = {
-    'partners':           {'bools': ['is_portal_active', 'is_premium', 'kyc_approved', 'can_login']},
-    'products':           {'bools': []},
-    'deals':              {'bools': []},
-    'demands':            {'bools': []},
-    'offers':             {'bools': []},
-    'invoices':           {'bools': []},
-    'proformas':          {'bools': []},
-    'shared_documents':   {'bools': []},
-    'document_register':  {'bools': []},
-    'document_revisions': {'bools': []},
-    'offer_versions':     {'bools': []},
-    'entity_notes':       {'bools': ['pinned']},
-    'deal_documents':     {'bools': []},
-    'custom_reports':     {'bools': ['is_shared']},
-    'user_tasks':         {'bools': []},
-    'saved_filters':      {'bools': ['is_shared']},
-    'kyc_submissions':    {'bools': []},
-    'portal_products':    {'bools': []},
-    'audit_logs':         {'bools': ['is_suspicious']},
-    'known_ips':          {'bools': []},
-    'user_sessions':      {'bools': ['revoked']},
-    'settings':           {'bools': []},
-    'partner_inventory':  {'bools': []},
-    'inventory_movements':{'bools': []},
-    'custom_field_defs':  {'bools': ['required', 'is_active']},
-    'api_keys':           {'bools': ['revoked']},
-    'outbound_webhooks':  {'bools': ['is_active']},
+    'partners':           {'bools': ['is_portal_active', 'is_premium', 'kyc_approved', 'can_login'],
+                           'cols':  ['id', 'auth_user_id', 'email', 'company_name', 'phone',
+                                     'contact_person', 'country', 'city', 'street', 'tax_id',
+                                     'portal_token', 'is_portal_active', 'portal_level',
+                                     'is_premium', 'kyc_approved', 'can_login', 'data']},
+    'products':           {'bools': [],
+                           'cols': ['id', 'name', 'sku', 'hs_code', 'unit', 'supplier_id', 'data']},
+    'deals':              {'bools': [],
+                           'cols': ['id', 'buyer_id', 'source_offer_id', 'supplier_id',
+                                    'product_id', 'status', 'total_amount', 'currency', 'data']},
+    'demands':            {'bools': [], 'cols': ['id', 'buyer_id', 'data']},
+    'offers':             {'bools': [], 'cols': ['id', 'offer_no', 'customer_id', 'data']},
+    'invoices':           {'bools': [], 'cols': ['id', 'data']},
+    'proformas':          {'bools': [], 'cols': ['id', 'data']},
+    'shared_documents':   {'bools': [],
+                           'cols': ['id', 'partner_id', 'title', 'category',
+                                    'storage_bucket', 'storage_path', 'data']},
+    'document_register':  {'bools': [],
+                           'cols': ['id', 'doc_number', 'doc_type', 'year', 'seq',
+                                    'entity_id', 'revision', 'issued_at', 'issued_by']},
+    'document_revisions': {'bools': [],
+                           'cols': ['id', 'doc_number', 'revision', 'entity_id',
+                                    'snapshot', 'content_hash', 'binding_hash',
+                                    'change_reason', 'changed_by', 'changed_at']},
+    'offer_versions':     {'bools': [],
+                           'cols': ['id', 'offer_id', 'version', 'snapshot',
+                                    'changed_fields', 'change_reason',
+                                    'changed_by', 'changed_by_role', 'changed_at', 'origin']},
+    'entity_notes':       {'bools': ['pinned'],
+                           'cols': ['id', 'entity_type', 'entity_id', 'body',
+                                    'created_by', 'created_at', 'pinned', 'data']},
+    'deal_documents':     {'bools': [],
+                           'cols': ['id', 'deal_id', 'file_url', 'filename', 'doc_kind',
+                                    'size_bytes', 'uploaded_by', 'uploaded_at', 'note', 'data']},
+    'custom_reports':     {'bools': ['is_shared'],
+                           'cols': ['id', 'owner_user_id', 'title', 'description',
+                                    'sql_query', 'chart_type', 'is_shared',
+                                    'created_at', 'updated_at']},
+    'user_tasks':         {'bools': [],
+                           'cols': ['id', 'owner_user_id', 'title', 'description',
+                                    'due_at', 'priority', 'status', 'linked_entity_type',
+                                    'linked_entity_id', 'created_at', 'completed_at']},
+    'saved_filters':      {'bools': ['is_shared'],
+                           'cols': ['id', 'owner_user_id', 'name', 'entity_type',
+                                    'filter_json', 'is_shared', 'created_at', 'updated_at']},
+    'kyc_submissions':    {'bools': [], 'cols': ['id', 'partner_id', 'status', 'data']},
+    'portal_products':    {'bools': [], 'cols': ['id', 'partner_id', 'status', 'data']},
+    'audit_logs':         {'bools': ['is_suspicious'],
+                           'cols': ['sync_id', 'user_id', 'username', 'action', 'module',
+                                    'details', 'timestamp', 'is_suspicious', 'ip_address',
+                                    'user_agent', 'location', 'data'],
+                           'id_key': 'sync_id',   # nase 'id' iz SQLite → sync_id kolone
+                           'from_id': 'id'},
+    'known_ips':          {'bools': [],
+                           'cols': ['id', 'user_id', 'ip', 'country', 'city',
+                                    'first_seen', 'last_seen', 'login_count']},
+    'user_sessions':      {'bools': ['revoked'],
+                           'cols': ['id', 'user_id', 'created_at', 'last_seen_at',
+                                    'ip', 'country', 'user_agent', 'ua_family',
+                                    'device_label', 'revoked', 'revoked_at', 'revoked_reason']},
+    'settings':           {'bools': [], 'cols': ['key', 'value'], 'id_key': 'key'},
+    'partner_inventory':  {'bools': [],
+                           'cols': ['id', 'partner_id', 'product_id', 'qty_on_hand',
+                                    'qty_reserved', 'unit', 'last_movement_at']},
+    'inventory_movements':{'bools': [],
+                           'cols': ['id', 'partner_id', 'product_id', 'kind', 'qty',
+                                    'unit', 'deal_id', 'note', 'created_at', 'created_by']},
+    'custom_field_defs':  {'bools': ['required', 'is_active'],
+                           'cols': ['id', 'entity_type', 'field_key', 'field_label',
+                                    'field_type', 'options_json', 'required',
+                                    'display_order', 'is_active', 'created_at']},
+    'api_keys':           {'bools': ['revoked'],
+                           'cols': ['id', 'name', 'key_hash', 'key_prefix', 'owner_user_id',
+                                    'scope', 'rate_limit_per_min', 'created_at',
+                                    'last_used_at', 'revoked', 'revoked_at']},
+    'outbound_webhooks':  {'bools': ['is_active'],
+                           'cols': ['id', 'name', 'target_url', 'events', 'secret',
+                                    'is_active', 'created_at', 'created_by',
+                                    'last_fired_at', 'last_status', 'fail_count']},
+    'users':              {'bools': ['must_change_password', 'totp_enabled'],
+                           'cols': ['id', 'username', 'role', 'full_name', 'email',
+                                    'phone', 'notif_prefs', 'permissions',
+                                    'must_change_password', 'locked_until',
+                                    'password_expires_at', 'signature', 'totp_enabled',
+                                    'last_login_country', 'data']},
 }
 
 
@@ -97,23 +160,66 @@ def _iso_normalize(v):
 
 
 def _coerce_row(row, table_info):
-    """Prilagodi jedan row: JSON string → dict, 0/1 → bool na bool kolonama."""
+    """Prilagodi jedan row za Supabase upsert:
+
+    1. Salje SAMO whitelisted kolone (`table_info['cols']`) — sve ostalo se
+       pakuje u `data` JSONB da PGRST204 "Could not find column" nestane.
+    2. JSON string → dict za JSONB kolone.
+    3. INTEGER 0/1 → bool za kolone iz `bools`.
+    4. Prazan string → None za NOT NULL koje bi pukle na 23502.
+    5. Poseban id-mapping ako je `id_key`/`from_id` definisan (npr. audit_logs).
+    """
     bools = set(table_info.get('bools') or [])
+    allowed_cols = set(table_info.get('cols') or [])
+    id_key = table_info.get('id_key', 'id')
+    from_id = table_info.get('from_id', 'id')
+
+    # Kolone koje su JSONB u Supabase (znamo iz supabase_v23_1.sql)
+    jsonb_cols = {'data', 'permissions', 'notif_prefs', 'snapshot',
+                  'filter_json', 'options_json'}
+
     out = {}
+    extra_data = {}  # nepoznate kolone koje pakujemo u 'data'
+
     for k, v in row.items():
-        if k in bools:
-            out[k] = bool(v) if v is not None else False
-        elif isinstance(v, str) and k in ('data', 'permissions', 'notif_prefs',
-                                          'snapshot', 'changedFields', 'filter_json',
-                                          'options_json'):
-            try:
-                out[k] = json.loads(v)
-            except Exception:
-                out[k] = v
+        # Mapiraj id ako je remapiran (npr. audit_logs.id → sync_id)
+        target_key = k
+        if from_id != id_key and k == from_id:
+            target_key = id_key
+
+        # Coerce bool
+        if target_key in bools:
+            v = bool(v) if v is not None else False
+        # Coerce JSONB stringify
+        elif target_key in jsonb_cols and isinstance(v, str):
+            try: v = json.loads(v)
+            except Exception: pass
+        # Prazan string → None (helps NOT NULL sa DEFAULT)
+        elif isinstance(v, str) and v == '':
+            v = None
         elif isinstance(v, str) and re.match(r'^\d{4}-\d{2}-\d{2}T\d{2}', v):
-            out[k] = _iso_normalize(v)
+            v = _iso_normalize(v)
+
+        if target_key in allowed_cols:
+            out[target_key] = v
+        elif allowed_cols:
+            # Nije u whitelist-u — sacuvaj u 'data' JSONB ako ta kolona postoji
+            if 'data' in allowed_cols and v is not None:
+                extra_data[k] = v
         else:
-            out[k] = v
+            # Bez whitelist-a: propusti sve (backward-compat)
+            out[target_key] = v
+
+    if extra_data and 'data' in allowed_cols:
+        existing = out.get('data')
+        if isinstance(existing, dict):
+            # Merge — direktne kolone imaju prioritet nad 'data' JSONB
+            merged = dict(extra_data)
+            merged.update(existing)
+            out['data'] = merged
+        else:
+            out['data'] = extra_data
+
     return out
 
 
