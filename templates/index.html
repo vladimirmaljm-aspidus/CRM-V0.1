@@ -147,7 +147,7 @@
             <h1 class="v23-fade v23-fade-1 text-5xl xl:text-6xl font-black tracking-tight leading-[1.05] mb-6">
               Welcome to your <span class="v23-logo-shine">command center</span>.
             </h1>
-            <p class="v23-fade v23-fade-2 text-slate-300 text-base font-medium leading-relaxed max-w-sm mb-10">
+            <p id="login-desc" class="v23-fade v23-fade-2 text-slate-300 text-base font-medium leading-relaxed max-w-sm mb-10">
               Enterprise-grade platform for global trading, logistics, KYC, offers and the entire client lifecycle — one workspace, zero context switches.
             </p>
             <div class="v23-fade v23-fade-3 space-y-2.5">
@@ -226,7 +226,7 @@
 
               <button type="submit" id="login-submit-btn"
                 class="v23-btn v23-fade v23-fade-4 w-full text-white text-sm py-3.5 rounded-xl font-bold tracking-wide mt-2 flex items-center justify-center gap-2">
-                <span>Sign in securely</span>
+                <span id="login-submit-btn-txt">Sign in securely</span>
                 <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
               </button>
 
@@ -452,14 +452,21 @@
             if(langSwitch) langSwitch.value = currentLoginLang;
 
             function updateLoginTexts() {
+                // V23.1 FIX: defanzivno — ako je login redizajn izbacio neki id,
+                // NE bacamo TypeError koji bi ubio ceo init scriptu i onemogucio
+                // submit handler (zbog cega su credentials završavali u URL-u kao GET).
                 const d = loginDict[currentLoginLang];
-                document.getElementById('login-title').innerText = d.title;
-                document.getElementById('login-subtitle').innerText = d.subtitle;
-                document.getElementById('lbl-user').innerText = d.user;
-                document.getElementById('lbl-pass').innerText = d.pass;
-                document.getElementById('login-submit-btn').innerText = d.btn;
-                document.getElementById('login-desc').innerText = d.desc;
-                document.getElementById('lbl-warn').innerText = d.warn;
+                const setText = (id, txt) => {
+                    const el = document.getElementById(id);
+                    if (el && txt != null) el.innerText = txt;
+                };
+                setText('login-title',      d.title);
+                setText('login-subtitle',   d.subtitle);
+                setText('lbl-user',         d.user);
+                setText('lbl-pass',         d.pass);
+                setText('login-submit-btn-txt', d.btn);   // koristimo poseban span radi ikone u dugmetu
+                setText('login-desc',       d.desc);
+                setText('lbl-warn',         d.warn);
             }
 
             updateLoginTexts();
