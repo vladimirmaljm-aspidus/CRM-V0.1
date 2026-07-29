@@ -389,7 +389,10 @@ def build_offer_pdf(offer, company=None, settings=None):
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
         leftMargin=15*mm, rightMargin=15*mm,
-        topMargin=15*mm, bottomMargin=18*mm,
+        # V23.1: uvecani margini da footer/header ne udara u sadrzaj:
+        #  top    28mm — daje 12mm za logo+firma header + 5mm gap
+        #  bottom 28mm — daje 20mm za QR + address + page num + confidentiality
+        topMargin=28*mm, bottomMargin=28*mm,
         title=_meta['title'],
         author=_meta['author'],
         subject=_meta['subject'],
@@ -403,21 +406,15 @@ def build_offer_pdf(offer, company=None, settings=None):
 
     story = []
 
-    # HEADER (naziv firme + tip dokumenta)
-    header_row = [
-        [_para(f"<b>{_esc(company.get('name', 'Aspidus'))}</b>", styles['h1']),
-         _para("FIRM CORPORATE OFFER", styles['right'])],
-        [_para(f"{_esc((company.get('address') or '').replace(chr(10), ', '))}<br/>Tax ID: {_esc(company.get('taxId', ''))}", styles['small']),
-         _para(f"Offer No.: <b>{_esc(offer.get('offerNo', ''))}</b><br/>Date: {_esc((offer.get('date') or '')[:10])}<br/>Valid until: <b>{_esc(offer.get('validUntil') or 'N/A')}</b>", styles['right'])]
-    ]
-    header_tbl = Table(header_row, colWidths=[100*mm, 80*mm])
-    header_tbl.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('LINEBELOW', (0,1), (-1,1), 0.6, primary),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-    ]))
-    story.append(header_tbl)
-    story.append(Spacer(1, 8*mm))
+    # V23.1 — HEADER JE VEC NA CANVASU (svaka stranica). Ovde samo naslov
+    # dokumenta i osnovni info (Valid until, Currency) da se ne duplira firm ime.
+    story.append(_para(f"<b>{kind_label.upper()}</b> · No. <b>{_esc(offer.get('offerNo', ''))}</b>", styles['h1']))
+    story.append(_para(
+        f"<font color='#475569'>Date: {_esc((offer.get('date') or '')[:10])} "
+        f"&nbsp;·&nbsp; Valid until: <b>{_esc(offer.get('validUntil') or 'N/A')}</b> "
+        f"&nbsp;·&nbsp; Currency: <b>{_esc(offer.get('currency') or 'EUR')}</b></font>",
+        styles['small']))
+    story.append(Spacer(1, 5*mm))
 
     # PARTIES: FROM / TO — koristi normalizatore da su string i dict oblici
     # partner.address / partner.contact bezbedno pokriveni.
@@ -753,30 +750,106 @@ def build_offer_pdf(offer, company=None, settings=None):
         except Exception:
             logger.debug('PDF metadata: setter failed', exc_info=True)
 
+    # V23.1 — UNIFIKOVAN header + footer na SVAKOJ stranici. Verifikacioni hash
+    # ide u PDF metadata (setSubject/setKeywords), ne kao veliki tekst.
+    # Logo (iz company.logoDataUrl / logoUrl) + naziv firme na vrhu.
+    # QR na dnu LEVO da ne udara u broj strane koji je DESNO.
+    company_website = str(company.get('website') or '')
+    company_tax_id  = str(company.get('taxId') or '')
+    company_logo    = company.get('logoDataUrl') or company.get('logoUrl') or ''
+
+    # Pripremi keywords sa VER hash-om (metadata only — searchable ali ne velik na stranici)
+    _meta['keywords'] = (_meta.get('keywords') or '') + f' verification:{ver_hash}'
+    _meta['subject']  = f"{_meta.get('subject','')} · {ver_hash}"
+
+    def _decode_logo(canvas, x, y, max_h=12*mm):
+        """Pokusa da nacrta logo. Vraca stvarnu sirinu koju je logo zauzeo, u mm.
+        Prihvata data:image/png;base64,… ili public URL."""
+        try:
+            from reportlab.lib.utils import ImageReader
+            import base64, io
+            src = company_logo.strip()
+            if not src:
+                return 0
+            img_data = None
+            if src.startswith('data:'):
+                # data:image/png;base64,....
+                comma = src.find(',')
+                if comma > 0:
+                    img_data = base64.b64decode(src[comma+1:])
+            elif src.startswith(('http://', 'https://')):
+                import urllib.request
+                with urllib.request.urlopen(src, timeout=3) as resp:
+                    img_data = resp.read()
+            if not img_data:
+                return 0
+            img = ImageReader(io.BytesIO(img_data))
+            iw, ih = img.getSize()
+            if ih == 0:
+                return 0
+            ratio = iw / ih
+            draw_h = max_h
+            draw_w = draw_h * ratio
+            # Ograniceno na max 40mm sirine
+            if draw_w > 40*mm:
+                draw_w = 40*mm
+                draw_h = draw_w / ratio
+            canvas.drawImage(img, x, y, width=draw_w, height=draw_h,
+                             mask='auto', preserveAspectRatio=True)
+            return draw_w
+        except Exception:
+            logger.debug('logo render failed', exc_info=True)
+            return 0
+
+    def _page_header(canvas):
+        """Header na SVAKOJ stranici: logo (levo) + naziv firme + Doc # (desno)."""
+        canvas.saveState()
+        # Blago obojena traka header-a
+        # canvas.setFillColor(colors.HexColor('#f8fafc'))
+        # canvas.rect(0, A4[1] - 26*mm, A4[0], 26*mm, fill=1, stroke=0)
+
+        # Logo (top-left)
+        logo_w = _decode_logo(canvas, 15*mm, A4[1] - 20*mm, max_h=12*mm)
+
+        # Company name (levo, posle logoa) + slogan
+        text_x = 15*mm + logo_w + (3*mm if logo_w else 0)
+        canvas.setFont('Helvetica-Bold', 11)
+        canvas.setFillColor(colors.HexColor('#101828'))
+        canvas.drawString(text_x, A4[1] - 12*mm, str(company.get('name', 'Aspidus')))
+        if company_website:
+            canvas.setFont('Helvetica', 7)
+            canvas.setFillColor(colors.HexColor('#667085'))
+            canvas.drawString(text_x, A4[1] - 17*mm, company_website)
+
+        # Doc info (desno)
+        canvas.setFont('Helvetica-Bold', 9)
+        canvas.setFillColor(colors.HexColor('#4f46e5'))
+        canvas.drawRightString(A4[0] - 15*mm, A4[1] - 12*mm,
+                               f"{kind_label} · {offer.get('offerNo', '')}")
+        canvas.setFont('Helvetica', 7)
+        canvas.setFillColor(colors.HexColor('#667085'))
+        canvas.drawRightString(A4[0] - 15*mm, A4[1] - 17*mm,
+                               f"Date: {(offer.get('date') or '')[:10]}")
+
+        # Hairline ispod header-a
+        canvas.setStrokeColor(colors.HexColor('#e5e7eb'))
+        canvas.setLineWidth(0.5)
+        canvas.line(15*mm, A4[1] - 22*mm, A4[0] - 15*mm, A4[1] - 22*mm)
+        canvas.restoreState()
+
     def _footer(canvas, docObj):
         _apply_native_metadata(canvas)
+        _page_header(canvas)  # header ide na svakoj stranici
         canvas.saveState()
 
-        # Top hairline iznad footer-a
-        canvas.setStrokeColor(primary)
+        # Hairline iznad footer-a
+        canvas.setStrokeColor(colors.HexColor('#e5e7eb'))
         canvas.setLineWidth(0.5)
-        canvas.line(15*mm, 20*mm, A4[0] - 15*mm, 20*mm)
+        canvas.line(15*mm, 24*mm, A4[0] - 15*mm, 24*mm)
 
-        # Verification hash — tehnički identifikator, sitno gore levo
-        canvas.setFont('Helvetica-Bold', 6)
-        canvas.setFillColor(primary)
-        canvas.drawString(15*mm, 16.5*mm, f"VERIFICATION HASH: {ver_hash}")
-
-        # QR koji vodi na public verify stranicu — klijent skenira, dobije stranicu
-        # sa svim ključnim podacima dokumenta i statusom "authentic" ili "modified".
-        # Public host je izvučen iz company config (fallback default).
+        # QR — bottom LEFT (nekad je bio desno, sudarao se sa page N). Sada
+        # ide u donji-levi ugao, page number ostaje donji-desni.
         try:
-            # v22 P0 FIX: dinamički host detection
-            # Prioritet:
-            #   1. company.publicHost (admin ručno postavi)
-            #   2. Flask request.host_url ako postoji request context
-            #   3. company.portalHost (legacy)
-            #   4. 'https://aspidus.io' fallback (samo ako ništa drugo)
             verify_host = str(company.get('publicHost') or '').rstrip('/')
             if not verify_host:
                 try:
@@ -791,44 +864,53 @@ def build_offer_pdf(offer, company=None, settings=None):
             qr = QrCodeWidget(verify_url, barLevel='L')
             b = qr.getBounds()
             w, h = b[2] - b[0], b[3] - b[1]
-            size = 16 * mm
+            size = 14 * mm
             d = Drawing(size, size, transform=[size / w, 0, 0, size / h, 0, 0])
             d.add(qr)
             from reportlab.graphics import renderPDF
-            renderPDF.draw(d, canvas, A4[0] - 15*mm - size, 15*mm - 4*mm)
-            canvas.setFont('Helvetica', 5)
+            renderPDF.draw(d, canvas, 15*mm, 6*mm)
+            canvas.setFont('Helvetica', 5.5)
             canvas.setFillColor(colors.HexColor('#98a2b3'))
-            canvas.drawRightString(A4[0] - 15*mm, 15*mm - 6.5*mm, "Scan to verify")
+            canvas.drawString(15*mm + size + 2*mm, 9*mm, "Verify authenticity")
+            canvas.drawString(15*mm + size + 2*mm, 6.5*mm, "Scan the QR →")
         except Exception:
             logger.debug('verify QR failed', exc_info=True)
 
-        # Confidentiality line
-        canvas.setFont('Helvetica-Oblique', 6)
-        canvas.setFillColor(colors.HexColor('#667085'))
-        canvas.drawString(15*mm, 12.5*mm,
-                          "This document is electronically generated. Verify authenticity by scanning the QR or the hash above.")
-
-        # Company address (bold, centrirano dole)
-        canvas.setFont('Helvetica-Bold', 7)
+        # Company memorandum blok — centrirano
+        canvas.setFont('Helvetica-Bold', 7.5)
         canvas.setFillColor(colors.HexColor('#101828'))
-        canvas.drawCentredString(A4[0]/2, 8*mm,
-                                 f"{company.get('name', 'Aspidus')}  ·  {company_addr_str}")
+        canvas.drawCentredString(A4[0]/2, 20*mm, str(company.get('name', 'Aspidus')))
+        canvas.setFont('Helvetica', 6.5)
+        canvas.setFillColor(colors.HexColor('#475569'))
+        _addr_line = company_addr_str
+        if _addr_line:
+            canvas.drawCentredString(A4[0]/2, 16.5*mm, _addr_line)
+        _meta_line_bits = []
+        if company_website: _meta_line_bits.append(company_website)
+        if company_tax_id:  _meta_line_bits.append(f"Tax ID: {company_tax_id}")
+        email_l = str(company.get('email') or '')
+        phone_l = str(company.get('phone') or '')
+        if email_l: _meta_line_bits.append(email_l)
+        if phone_l: _meta_line_bits.append(phone_l)
+        if _meta_line_bits:
+            canvas.drawCentredString(A4[0]/2, 13*mm, '  ·  '.join(_meta_line_bits))
 
-        # Page N — desno dole
-        canvas.setFont('Helvetica', 7)
+        # Confidentiality (sitno na dnu)
+        canvas.setFont('Helvetica-Oblique', 5.5)
         canvas.setFillColor(colors.HexColor('#98a2b3'))
-        canvas.drawRightString(A4[0] - 15*mm, 8*mm,
+        canvas.drawCentredString(A4[0]/2, 4*mm,
+            "Confidential — electronically generated document. Verification hash embedded in PDF metadata.")
+
+        # Page N — desno dole (jasno odvojen od QR koji je levo)
+        canvas.setFont('Helvetica-Bold', 8)
+        canvas.setFillColor(colors.HexColor('#475569'))
+        canvas.drawRightString(A4[0] - 15*mm, 9*mm,
                                f"Page {canvas.getPageNumber()}")
-
-        # Document date — levo dole (za štampu bez ekrana).
-        # KRITIČNO: NIKAD ne koristi datetime.now() ovde. Ako se PDF svaki put
-        # generiše sa trenutnim vremenom, SHA-256 se menja svaki generisanjem
-        # → hash-based integrity check je slomljen. Umesto toga vezujemo za
-        # offer.date koji je deterministicno vreme kreiranja ponude.
+        # Issue timestamp — deterministic (odgovara offer.date, ne datetime.now())
         stamp = (offer.get('date') or offer.get('createdAt') or '')[:16]
-        canvas.setFont('Helvetica', 7)
+        canvas.setFont('Helvetica', 6)
         canvas.setFillColor(colors.HexColor('#98a2b3'))
-        canvas.drawString(15*mm, 8*mm, f"Issued: {stamp}" if stamp else "")
+        canvas.drawRightString(A4[0] - 15*mm, 6.5*mm, f"Issued: {stamp}" if stamp else "")
 
         canvas.restoreState()
 
