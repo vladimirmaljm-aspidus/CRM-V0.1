@@ -223,6 +223,61 @@ def _coerce_row(row, table_info):
     return out
 
 
+# =========================================================================
+#  V23.1C — LIVE MIRROR helper (za sve save endpoint-e u aplikaciji)
+# =========================================================================
+# Zove ga se BEST-EFFORT posle svakog SQLite upisa da isti red završi i u
+# Supabase (Render brise SQLite pri deploy-u — bez mirror-a se novi klijenti,
+# ponude i deals GUBE). Ne baca izuzetak nikad — samo loguje warning.
+
+def mirror_to_supabase(table: str, row: dict) -> bool:
+    """Upsert jednog reda u Supabase koristeci vec-postojeci `_coerce_row`
+    whitelist. Vraca True ako je uspesno, False u suprotnom (pa i tada
+    aplikacija nastavlja normalno — SQLite je već zapisao).
+
+    Poziva se iz routes/data.py `save_single_item` posle conn.commit()."""
+    if not row or not isinstance(row, dict):
+        return False
+    info = SUPPORTED_TABLES.get(table)
+    if not info:
+        # Nema mapiranja — ne mirror-uj (npr. auth tabele ne idu u Supabase kroz ovo)
+        return False
+    try:
+        coerced = _coerce_row(row, info)
+        # ID mora postojati
+        id_key = info.get('id_key', 'id')
+        if coerced.get(id_key) is None:
+            return False
+        from data_layer import upsert as _db_upsert
+        _db_upsert(table, coerced, on_conflict=id_key)
+        return True
+    except Exception as e:
+        # Log-only. Ne rusimo save.
+        import logging
+        logging.getLogger(__name__).info(
+            f'Supabase mirror skipped for {table}/{row.get("id","?")}: {type(e).__name__}: {str(e)[:200]}')
+        return False
+
+
+def mirror_delete_to_supabase(table: str, row_id: str) -> bool:
+    """Isto ali za delete."""
+    if not row_id:
+        return False
+    info = SUPPORTED_TABLES.get(table)
+    if not info:
+        return False
+    try:
+        from data_layer import delete as _db_delete
+        id_key = info.get('id_key', 'id')
+        _db_delete(table, {id_key: row_id})
+        return True
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).info(
+            f'Supabase delete-mirror skipped for {table}/{row_id}: {type(e).__name__}: {str(e)[:200]}')
+        return False
+
+
 @supabase_merge_bp.route('/admin/supabase/merge', methods=['GET'])
 @login_required
 def merge_page():
@@ -422,6 +477,54 @@ def merge_push_table(table):
         'errors': errors[:30],
         'error_count': len(errors),
     })
+
+
+@supabase_merge_bp.route('/api/admin/supabase/mirror-health', methods=['GET'])
+@login_required
+def mirror_health():
+    """V23.1C: brzo dijagnostikuje da li LIVE MIRROR uopste radi.
+    Vraca:
+      - supabase_reachable: da li backend odgovara
+      - mirror_test: probni upsert test row-a → čita ga nazad → briše
+      - error_details: puna poruka ako nešto padne
+    Admin otvori /admin/supabase/merge (nova sekcija) i vidi da li novi
+    partneri ID mogu da završe u Supabase-u odmah pri save-u."""
+    err = _admin_only()
+    if err: return err
+
+    import uuid as _uuid
+    test_id = 'mirror-test-' + _uuid.uuid4().hex[:12]
+    result = {
+        'supabase_reachable': False,
+        'mirror_test_ok': False,
+        'reachability_error': None,
+        'mirror_error': None,
+        'read_back_ok': False,
+    }
+
+    # 1. Reachability
+    try:
+        from data_layer import get_backend, select as _db_select
+        _ = get_backend()
+        _db_select('partners', limit=1)
+        result['supabase_reachable'] = True
+    except Exception as e:
+        result['reachability_error'] = f'{type(e).__name__}: {str(e)[:250]}'
+        return jsonify(result)
+
+    # 2. Test upsert into a low-risk table (settings) with test key
+    try:
+        from data_layer import upsert as _db_upsert, select as _db_select, delete as _db_delete
+        _db_upsert('settings', {'key': test_id, 'value': 'mirror-health-check'}, on_conflict='key')
+        rows = _db_select('settings', filters={'key': test_id})
+        if rows:
+            result['read_back_ok'] = True
+        _db_delete('settings', {'key': test_id})
+        result['mirror_test_ok'] = True
+    except Exception as e:
+        result['mirror_error'] = f'{type(e).__name__}: {str(e)[:250]}'
+
+    return jsonify(result)
 
 
 @supabase_merge_bp.route('/api/admin/supabase/merge/push-all', methods=['POST'])
