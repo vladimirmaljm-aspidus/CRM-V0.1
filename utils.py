@@ -394,6 +394,12 @@ def verify_csrf_token():
     # Login endpoint mora da radi bez CSRF (token dobija tek nakon login-a).
     if request.endpoint in ('auth.login',):
         return True
+    # V23.1: javni Round F endpointi bez sesije (magic-link request, lockout
+    # provera, webhook signup) — sesije još nema, CSRF nije primenljiv.
+    if request.path in ('/api/security/magic-link',
+                        '/api/security/lockout/status',
+                        '/api/webhook/supabase-auth'):
+        return True
     header_tok = request.headers.get('X-CSRF-Token', '')
     session_tok = session.get('_csrf_token', '')
     if not header_tok or not session_tok:

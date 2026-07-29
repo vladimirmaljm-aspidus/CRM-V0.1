@@ -481,22 +481,14 @@ def register_existing_document(doc_type, doc_id):
                     'changed': False,
                 })
 
-            # Bump revision
+            # V23.1C bugfix: document_register ima UNIQUE (docNumber). Znaci
+            # register drži JEDAN red po broju dokumenta. Revizije žive u
+            # document_revisions (append-only). Ne insertujemo dupli register red.
             last = conn.execute(
-                "SELECT MAX(revision) FROM document_register WHERE docNumber=?",
+                "SELECT MAX(revision) FROM document_revisions WHERE docNumber=?",
                 (current_doc_number,)
             ).fetchone()
-            new_rev = (last[0] or 0) + 1
-            try:
-                _seq = int(current_doc_number.split('-')[-1])
-            except Exception:
-                _seq = 0
-            conn.execute(
-                "INSERT INTO document_register (docType, year, seq, docNumber, entityId, "
-                "revision, status, issuedAt, issuedBy) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-                (doc_type_upper, year, _seq, current_doc_number, entity_id,
-                 new_rev, _now(), session.get('username'))
-            )
+            new_rev = (last[0] if last and last[0] is not None else 0) + 1
             conn.execute(
                 "INSERT INTO document_revisions (id, docNumber, revision, entityId, "
                 "snapshot, contentHash, changeReason, changedBy, changedAt) "
@@ -505,6 +497,12 @@ def register_existing_document(doc_type, doc_id):
                  json.dumps(data), content_hash,
                  reason or 'Edit via existing form',
                  session.get('username'), _now())
+            )
+            # Update register row-a sa najnovijom revizijom (za lookup u Registeru)
+            conn.execute(
+                "UPDATE document_register SET revision=?, issuedAt=?, issuedBy=? "
+                "WHERE docNumber=?",
+                (new_rev, _now(), session.get('username'), current_doc_number)
             )
             data['revision'] = new_rev
             data['versionLabel'] = f'V{new_rev + 1}'
@@ -588,7 +586,11 @@ def convert_document():
         new_id = str(uuid.uuid4())
         target_data = dict(offer)  # shallow copy
         target_data['sourceOfferId'] = src_id
-        target_data['sourceOfferNumber'] = offer.get('offerNumber')
+        # V23.1C: offer schema uses either 'offerNo' (legacy 1/2026 format)
+        # or 'docNumber' (new OFF-YYYY-NNNNN format) or 'offerNumber'; support all.
+        target_data['sourceOfferNumber'] = (offer.get('offerNumber')
+                                            or offer.get('offerNo')
+                                            or offer.get('docNumber'))
         target_data['createdAt'] = _now()
         target_data['createdBy'] = session.get('username')
         target_data['convertedFrom'] = 'offer'

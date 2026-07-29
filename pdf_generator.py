@@ -386,6 +386,8 @@ def build_offer_pdf(offer, company=None, settings=None):
     # kroz canvas metadata callback ako je potrebno.
     _meta = _pdf_metadata('offer', offer.get('offerNo', ''), company,
                           party_name=(buyer.get('companyName') or buyer.get('name') or ''))
+    # V23.1 — human-readable label used by header + footer callback
+    kind_label = 'Commercial Offer'
     doc = SimpleDocTemplate(
         buf, pagesize=A4,
         leftMargin=15*mm, rightMargin=15*mm,

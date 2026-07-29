@@ -293,12 +293,26 @@ def save_single_item(key):
                     pass
         
         conn.commit()
-        
+
         if action_log_msg:
             log_audit(action_log_msg[0], action_log_msg[1], action_log_msg[2], is_suspicious=action_log_msg[3])
-            
+
+        # V23.1C — LIVE MIRROR u Supabase (best-effort). Bez ovoga se novi
+        # partneri/proizvodi/deals/ponude gube pri svakom Render deploy-u.
+        # Nikad ne baca izuzetak — SQLite je vec zapisao, klijent dobija success.
+        try:
+            from routes.supabase_merge import mirror_to_supabase
+            if key in ('partners', 'products', 'deals', 'offers', 'demands',
+                       'shared_documents'):
+                # Sanitizovan payload sa id-om koji smo upravo zapisali
+                _mirror_payload = dict(item)
+                _mirror_payload['id'] = item_id
+                mirror_to_supabase(key, _mirror_payload)
+        except Exception as _mirror_err:
+            logger.info(f'supabase mirror failed for {key}/{item_id}: {_mirror_err}')
+
         return jsonify({"status": "success", "id": item_id})
-        
+
     except Exception as e:
         if conn: conn.rollback()
         logger.error(f"save_single_item({key}) failed", exc_info=True)
@@ -353,9 +367,18 @@ def delete_single_item(key, item_id):
             
         if action_log_msg:
             log_audit(action_log_msg[0], action_log_msg[1], action_log_msg[2], is_suspicious=action_log_msg[3])
-            
+
+        # V23.1C — mirror delete u Supabase (best-effort)
+        try:
+            from routes.supabase_merge import mirror_delete_to_supabase
+            if key in ('partners', 'products', 'deals', 'offers', 'demands',
+                       'shared_documents'):
+                mirror_delete_to_supabase(key, item_id)
+        except Exception as _mirror_err:
+            logger.info(f'supabase delete-mirror failed for {key}/{item_id}: {_mirror_err}')
+
         return jsonify({"status": "success"})
-        
+
     except Exception as e:
         if conn: conn.rollback()
         logger.error(f"delete_single_item({key}, {item_id}) failed", exc_info=True)
