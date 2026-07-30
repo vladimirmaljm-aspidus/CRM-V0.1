@@ -147,20 +147,21 @@ def revoke_session(sid):
 @security_bp.route('/api/security/login-history', methods=['GET'])
 @login_required
 def login_history():
-    from config import AUDIT_DB_FILE
+    """V24.1 SUPABASE-ONLY: cita audit_logs iz Supabase."""
     uid = session.get('user_id')
-    with sqlite3.connect(AUDIT_DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT timestamp, action, ip_address, user_agent, details, location "
-            "FROM audit_logs "
-            "WHERE user_id=? AND action IN ('LOGIN','SECURITY','LOGOUT') "
-            "ORDER BY timestamp DESC LIMIT 100",
-            (uid,)
-        ).fetchall()
+    from data_layer import select as _dl_select
+    rows = _dl_select('audit_logs',
+                      filters={'user_id': uid,
+                               'action': ('in', ['LOGIN', 'SECURITY', 'LOGOUT'])},
+                      order='-timestamp', limit=100) or []
     return jsonify({
         'events': [{
-            'timestamp': r[0], 'action': r[1], 'ip': r[2],
-            'user_agent': r[3], 'details': r[4], 'location': r[5],
+            'timestamp': r.get('timestamp'),
+            'action': r.get('action'),
+            'ip': r.get('ip_address'),
+            'user_agent': r.get('user_agent'),
+            'details': r.get('details'),
+            'location': r.get('location'),
         } for r in rows]
     })
 

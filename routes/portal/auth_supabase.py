@@ -369,22 +369,11 @@ def admin_send_portal_invite(partner_id):
     if not use_supabase_auth():
         return jsonify({"error": "Supabase Auth is not enabled."}), 503
 
-    import sqlite3, json as _json
-    from config import DB_FILE
-    conn = sqlite3.connect(DB_FILE, timeout=30.0)
-    try:
-        c = conn.cursor()
-        c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
-        row = c.fetchone()
-    finally:
-        conn.close()
-    if not row:
+    # V24.1 SUPABASE-ONLY: partner direktno iz Supabase
+    import supabase_store as _store
+    partner = _store.get_entity('partners', partner_id)
+    if not partner:
         return jsonify({"error": "Partner not found."}), 404
-    try:
-        partner = _json.loads(row[0]) if row[0] else {}
-    except (ValueError, TypeError):
-        from utils import decrypt_data
-        partner = decrypt_data(row[0]) or {}
 
     email = (partner.get('contact', {}) or {}).get('email') or partner.get('email') or ''
     email = str(email).strip().lower()
@@ -441,23 +430,11 @@ def admin_set_partner_password(partner_id):
     if len(new_password) < 8:
         return jsonify({"error": "Password must be at least 8 characters."}), 400
 
-    import sqlite3
-    import json as _json
-    from config import DB_FILE
-    conn = sqlite3.connect(DB_FILE, timeout=30.0)
-    try:
-        c = conn.cursor()
-        c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
-        row = c.fetchone()
-    finally:
-        conn.close()
-    if not row:
+    # V24.1 SUPABASE-ONLY: partner direktno iz Supabase
+    import supabase_store as _store
+    partner = _store.get_entity('partners', partner_id)
+    if not partner:
         return jsonify({"error": "Partner not found."}), 404
-    try:
-        partner = _json.loads(row[0]) if row[0] else {}
-    except (ValueError, TypeError):
-        from utils import decrypt_data
-        partner = decrypt_data(row[0]) or {}
 
     email = (partner.get('contact', {}) or {}).get('email') or partner.get('email') or ''
     email = str(email).strip().lower()

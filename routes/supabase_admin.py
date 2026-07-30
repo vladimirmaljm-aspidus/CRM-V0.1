@@ -155,33 +155,25 @@ def two_fa_status_api():
 @supabase_admin_bp.route('/api/users/me', methods=['GET'])
 @login_required
 def users_me_get():
-    """Vrati profil trenutnog user-a — full_name, email, phone, notif_prefs.
-    Koristi ga preferences.js pri otvaranju modala da popuni fields."""
-    import sqlite3, json as _json
-    from config import DB_FILE
+    """V24.1 SUPABASE-ONLY: profil trenutnog user-a direktno iz Supabase."""
+    import json as _json
     uid = session.get('user_id')
     if not uid:
         return jsonify({"error": "no_session"}), 401
-    conn = sqlite3.connect(DB_FILE, timeout=15.0)
-    try:
-        c = conn.cursor()
-        c.execute("SELECT username, role, full_name, email, phone, notif_prefs "
-                  "FROM users WHERE id=?", (uid,))
-        row = c.fetchone()
-    finally:
-        conn.close()
-    if not row:
+    import supabase_store as store
+    u = store.get_user_by_id(uid)
+    if not u:
         return jsonify({"error": "user_not_found"}), 404
-    try:
-        prefs = _json.loads(row[5]) if row[5] else {}
-    except (ValueError, TypeError):
-        prefs = {}
+    prefs = u.get('notif_prefs') or {}
+    if isinstance(prefs, str):
+        try: prefs = _json.loads(prefs)
+        except Exception: prefs = {}
     return jsonify({
-        "username":  row[0],
-        "role":      row[1],
-        "full_name": row[2] or '',
-        "email":     row[3] or '',
-        "phone":     row[4] or '',
+        "username":  u.get('username'),
+        "role":      u.get('role'),
+        "full_name": u.get('full_name') or '',
+        "email":     u.get('email') or '',
+        "phone":     u.get('phone') or '',
         "notif_prefs": prefs,
     })
 
@@ -189,18 +181,12 @@ def users_me_get():
 @supabase_admin_bp.route('/api/users/me', methods=['PATCH'])
 @login_required
 def users_me_patch():
-    """Update trenutnog user-a profil. Prihvata:
-      - full_name (ili fullName — kompatibilno sa starim frontend-om)
-      - email
-      - phone
-      - notif_prefs (dict)
-    Sve piše u prave kolone dodate v22 migracijom.
-    """
-    import sqlite3, json as _json
-    from config import DB_FILE
+    """V24.1 SUPABASE-ONLY: update trenutnog user-a. Radi UPDATE (a ne upsert)
+    da bi izbegao NOT NULL constraint na username kada frontend salje samo
+    subset polja (npr. samo notif_prefs)."""
+    import json as _json
     body = request.get_json(silent=True) or {}
     updates = {}
-    # Prihvata i camelCase i snake_case (frontend-agnostic)
     if 'full_name' in body or 'fullName' in body:
         updates['full_name'] = str(body.get('full_name') or body.get('fullName') or '')[:200]
     if 'email' in body:
@@ -213,44 +199,23 @@ def users_me_patch():
     if 'notif_prefs' in body:
         if not isinstance(body['notif_prefs'], dict):
             return jsonify({"error": "notif_prefs_must_be_object"}), 400
-        updates['notif_prefs'] = _json.dumps(body['notif_prefs'])[:4000]
+        updates['notif_prefs'] = body['notif_prefs']  # JSONB kolona ocekuje dict
 
     if not updates:
         return jsonify({"error": "No fields to update."}), 400
 
     uid = session.get('user_id')
-    conn = sqlite3.connect(DB_FILE, timeout=15.0)
     try:
-        c = conn.cursor()
+        from data_layer import update as _dl_update, select_one as _dl_select_one
         # Provera da user postoji
-        r = c.execute("SELECT 1 FROM users WHERE id=?", (uid,)).fetchone()
-        if not r:
+        exists = _dl_select_one('users', {'id': uid})
+        if not exists:
             return jsonify({"error": "user_not_found"}), 404
-        sets = ", ".join([f"{k}=?" for k in updates])
-        params = list(updates.values()) + [uid]
-        c.execute(f"UPDATE users SET {sets} WHERE id=?", params)
-        conn.commit()
-    finally:
-        conn.close()
-    # V23.1 #1 — DUAL WRITE u Supabase: Render brise lokalne .db, korisnicke
-    # preference MORAJU biti u Supabase. Best-effort — ako Supabase pukne, i
-    # dalje smo sacuvali lokalno (WAL) pa nema gubitka. Kada je USE_SUPABASE_DB
-    # aktivan, ovo je jedini put pisanja.
-    try:
-        from data_layer import upsert as _db_upsert
-        supabase_row = {'id': uid}
-        supabase_row.update(updates)
-        if 'notif_prefs' in supabase_row:
-            # data_layer JSONB kolonu ocekuje kao dict, ne string
-            try:
-                supabase_row['notif_prefs'] = _json.loads(supabase_row['notif_prefs'])
-            except Exception:
-                pass
-        _db_upsert('users', supabase_row, on_conflict='id')
-    except Exception as _sync_err:
-        # Log-only — ne blokiramo user flow
+        _dl_update('users', {'id': uid}, updates)
+    except Exception as e:
         import logging as _logging
-        _logging.getLogger(__name__).info(f'Supabase user prefs mirror skipped: {_sync_err}')
+        _logging.getLogger(__name__).error(f'users_me_patch failed: {e}', exc_info=True)
+        return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
 
     log_audit('EDIT', 'users',
               f'User {session.get("username")} updated own profile: {list(updates.keys())}',

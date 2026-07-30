@@ -205,6 +205,16 @@ _ENTITY_COLS = {
     'connections':       {'id'},
 }
 
+# V24.1: camelCase → snake_case Supabase table name mapping (Postgres
+# konvencija je snake_case, frontend/kod salju camelCase).
+_TABLE_ALIAS = {
+    'recurringExpenses': 'recurring_expenses',
+}
+
+
+def _real_table(name: str) -> str:
+    return _TABLE_ALIAS.get(name, name)
+
 
 def _entity_split(table: str, item: dict) -> dict:
     """Isto kao za user: whitelist top-level, sve ostalo → data JSONB."""
@@ -239,8 +249,9 @@ def _entity_join(row: dict) -> dict:
 
 def list_entities(table: str, limit: int = 5000) -> list[dict]:
     from data_layer import select
+    real = _real_table(table)
     try:
-        rows = select(table, limit=limit) or []
+        rows = select(real, limit=limit) or []
         return [_entity_join(r) for r in rows if isinstance(r, dict)]
     except Exception as e:
         logger.info(f'list_entities({table}) failed: {e}')
@@ -251,8 +262,9 @@ def get_entity(table: str, entity_id: str) -> dict | None:
     if not entity_id:
         return None
     from data_layer import select_one
+    real = _real_table(table)
     try:
-        row = select_one(table, {'id': entity_id})
+        row = select_one(real, {'id': entity_id})
         return _entity_join(row) if row else None
     except Exception as e:
         logger.info(f'get_entity({table}/{entity_id}) failed: {e}')
@@ -263,8 +275,10 @@ def upsert_entity(table: str, item: dict) -> dict:
     if not item or not item.get('id'):
         raise ValueError('upsert_entity requires id')
     from data_layer import upsert
+    real = _real_table(table)
+    # Kolone su definisane pod originalnim (frontend) imenom
     row = _entity_split(table, item)
-    result = upsert(table, row, on_conflict='id')
+    result = upsert(real, row, on_conflict='id')
     return _entity_join(result if isinstance(result, dict) else row)
 
 
@@ -272,8 +286,9 @@ def delete_entity(table: str, entity_id: str) -> bool:
     if not entity_id:
         return False
     from data_layer import delete
+    real = _real_table(table)
     try:
-        n = delete(table, {'id': entity_id})
+        n = delete(real, {'id': entity_id})
         return int(n or 0) > 0
     except Exception as e:
         logger.info(f'delete_entity({table}/{entity_id}) failed: {e}')
