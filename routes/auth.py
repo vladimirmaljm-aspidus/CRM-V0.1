@@ -62,6 +62,47 @@ def login():
             c = conn.cursor()
             c.execute('SELECT id, username, password, role, permissions, signature, totp_secret, totp_enabled, totp_recovery, locked_until FROM users WHERE LOWER(username)=LOWER(?)', (username,))
             user = c.fetchone()
+
+            # V23.4 SUPABASE FALLBACK: kada SQLite ne poznaje user-a (npr. posle
+            # Render deploy-a koji je obrisao efemerni disk), potrazi ga u
+            # Supabase i upisi ga nazad u SQLite pre login provere. Bez ovoga
+            # svaki redeploy izbacuje sve postojece korisnike.
+            if user is None:
+                try:
+                    from routes.supabase_merge import fetch_from_supabase
+                    all_sb = fetch_from_supabase('users')
+                    match = next((u for u in all_sb
+                                  if str(u.get('username','')).lower() == username.lower()), None)
+                    if match and match.get('password'):
+                        _pw = match['password']
+                        _perms = match.get('permissions') or {}
+                        if not isinstance(_perms, str):
+                            import json as _j
+                            _perms = _j.dumps(_perms, default=str)
+                        c.execute(
+                            'INSERT OR REPLACE INTO users (id, username, password, role, permissions, '
+                            'signature, totp_secret, totp_enabled, totp_recovery, locked_until, '
+                            'token_version, last_password_change_at, last_login_country, '
+                            'must_change_password, password_expires_at) '
+                            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                            (match['id'], match['username'], _pw,
+                             match.get('role') or 'employee', _perms,
+                             match.get('signature'), match.get('totp_secret'),
+                             int(bool(match.get('totp_enabled', False))),
+                             match.get('totp_recovery'), match.get('locked_until'),
+                             int(match.get('token_version', 1) or 1),
+                             match.get('last_password_change_at'),
+                             match.get('last_login_country'),
+                             int(bool(match.get('must_change_password', False))),
+                             match.get('password_expires_at'))
+                        )
+                        conn.commit()
+                        c.execute('SELECT id, username, password, role, permissions, signature, totp_secret, totp_enabled, totp_recovery, locked_until FROM users WHERE LOWER(username)=LOWER(?)', (username,))
+                        user = c.fetchone()
+                        if user:
+                            logger.info(f'LOGIN: user {username} restored from Supabase after SQLite miss')
+                except Exception as _sb_err:
+                    logger.info(f'LOGIN: Supabase fallback skipped for {username}: {_sb_err}')
     except Exception as e:
         # Detaljno logovanje u server log (Render) radi dijagnostike; klijent dobija generičku poruku.
         logger.error(f"LOGIN DB ERROR for user '{username}': {e}", exc_info=True)
@@ -384,6 +425,17 @@ def change_password():
             c = conn.cursor()
             c.execute('UPDATE users SET password=?, last_password_change_at=? WHERE id=?', (pw_hash, now_iso, session['user_id']))
             conn.commit()
+        # V23.4: mirror novog password hash-a u Supabase da preziveli redeploy
+        try:
+            from routes.supabase_merge import mirror_to_supabase
+            mirror_to_supabase('users', {
+                'id': session['user_id'],
+                'username': session.get('username'),
+                'password': pw_hash,
+                'last_password_change_at': now_iso,
+            })
+        except Exception as _mirr_err:
+            logger.info(f'password mirror to Supabase skipped: {_mirr_err}')
         try:
             add_password_history(session['user_id'], pw_hash)
         except Exception:

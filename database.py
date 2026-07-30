@@ -14,18 +14,35 @@ def seed_admin_if_empty(cursor):
 
     Kredencijali se uzimaju iz env-a ADMIN_USERNAME / ADMIN_PASSWORD; ako nisu
     postavljeni, koristi se podrazumevani nalog uz glasno upozorenje da se odmah
-    promeni lozinka. NE dira postojeće korisnike."""
+    promeni lozinka. NE dira postojeće korisnike.
+
+    V23.4: Ako je SQLite prazan ALI Supabase users tabela vec ima admin-a
+    (zato sto je Render obrisao efemerni disk), NE seed-uje se novi random
+    admin nego se povlace SVI Supabase korisnici u SQLite tako da postojece
+    kredencijale i dalje rade.
+    """
     try:
         from werkzeug.security import generate_password_hash
         count = cursor.execute('SELECT COUNT(*) FROM users').fetchone()[0]
         if count and count > 0:
             return
+
+        # V23.4: Pre nego sto seed-ujemo novog admin-a, pokusaj recovery iz Supabase.
+        # Ako tamo vec postoje useri, restore-uj ih (sa password hash-om) da
+        # postojeci login-i i dalje rade. Bez ovoga, novi Render deploy generise
+        # random admin i stari user vise ne moze da se prijavi.
+        recovered = _recover_users_from_supabase(cursor)
+        if recovered > 0:
+            logger.warning(f"SEED: Supabase je imao {recovered} korisnika — restore-ovani u SQLite umesto seed-a.")
+            return
+
         username = (os.getenv('ADMIN_USERNAME') or 'admin').strip()
         password = os.getenv('ADMIN_PASSWORD') or 'Admin12345'
         pw_hash = generate_password_hash(password, method='scrypt:32768:8:1')
+        admin_id = str(uuid.uuid4())
         cursor.execute(
             'INSERT INTO users (id, username, password, role, permissions) VALUES (?, ?, ?, ?, ?)',
-            (str(uuid.uuid4()), username, pw_hash, 'admin', '{}')
+            (admin_id, username, pw_hash, 'admin', '{}')
         )
         if os.getenv('ADMIN_PASSWORD'):
             logger.warning(f"SEED: kreiran početni administrator '{username}' (lozinka iz ADMIN_PASSWORD env-a).")
@@ -34,8 +51,79 @@ def seed_admin_if_empty(cursor):
             logger.warning(f"SEED: baza je bila prazna — kreiran administrator '{username}' / 'Admin12345'.")
             logger.warning("ODMAH se prijavite i promenite lozinku (Moj Profil), ili postavite env ADMIN_PASSWORD.")
             logger.warning("=" * 70)
+
+        # V23.4: Odmah mirror-uj novog admin-a u Supabase da preziveli redeploy-e.
+        _mirror_admin_to_supabase(admin_id, username, pw_hash)
     except Exception as e:
         logger.error(f"CRITICAL: seed_admin_if_empty nije uspeo - {e}")
+
+
+def _recover_users_from_supabase(cursor):
+    """V23.4: Povuci sve user-e iz Supabase i upisi ih u SQLite users tabelu.
+    Vraca broj upisanih redova. Best-effort — vraca 0 ako Supabase nije dostupan.
+    Bez ovoga, prazan SQLite (Render redeploy) tera na re-seed novog admin-a
+    sa novim ID-om, sto polomi postojece sesije + password-e."""
+    try:
+        from routes.supabase_merge import fetch_from_supabase
+        rows = fetch_from_supabase('users')
+        if not rows:
+            return 0
+        written = 0
+        for u in rows:
+            try:
+                uid = u.get('id')
+                uname = u.get('username')
+                pwd = u.get('password')
+                if not uid or not uname or not pwd:
+                    continue  # bez ova tri polja login ne moze da radi
+                cursor.execute(
+                    'INSERT OR REPLACE INTO users (id, username, password, role, permissions, '
+                    'signature, totp_secret, totp_enabled, totp_recovery, token_version, '
+                    'last_password_change_at, last_login_country, must_change_password, '
+                    'locked_until, password_expires_at) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (uid, uname, pwd, u.get('role') or 'employee',
+                     _json_dump(u.get('permissions') or {}),
+                     u.get('signature'), u.get('totp_secret'),
+                     int(bool(u.get('totp_enabled', False))), u.get('totp_recovery'),
+                     int(u.get('token_version', 1) or 1),
+                     u.get('last_password_change_at'), u.get('last_login_country'),
+                     int(bool(u.get('must_change_password', False))),
+                     u.get('locked_until'), u.get('password_expires_at'))
+                )
+                written += 1
+            except Exception as row_err:
+                logger.warning(f'recover_users: failed to restore {u.get("username")}: {row_err}')
+                continue
+        return written
+    except Exception as e:
+        logger.info(f'recover_users_from_supabase skipped: {type(e).__name__}: {str(e)[:200]}')
+        return 0
+
+
+def _mirror_admin_to_supabase(user_id, username, pw_hash):
+    """V23.4: Best-effort upsert admin user-a u Supabase da preziveli redeploy."""
+    try:
+        from routes.supabase_merge import mirror_to_supabase
+        mirror_to_supabase('users', {
+            'id': user_id,
+            'username': username,
+            'password': pw_hash,
+            'role': 'admin',
+            'permissions': {},
+            'token_version': 1,
+        })
+    except Exception as e:
+        logger.info(f'admin mirror to Supabase skipped: {type(e).__name__}: {str(e)[:200]}')
+
+
+def _json_dump(obj):
+    """Isti kao json.dumps ali sa default=str za datetime."""
+    import json as _j
+    try:
+        return _j.dumps(obj, default=str)
+    except Exception:
+        return '{}'
 
 def init_db():
     # 1. GLAVNA CRM BAZA

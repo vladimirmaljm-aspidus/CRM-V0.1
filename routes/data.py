@@ -169,6 +169,27 @@ def get_data(key):
 
             c.execute('SELECT value FROM settings WHERE key=?', (key,))
             row = c.fetchone()
+
+            # V23.4 settings READ-FALLBACK: kada SQLite nema key (npr. Render
+            # deploy je izbrisao lokalnu bazu), povuci iz Supabase i backfill-uj.
+            if row is None:
+                try:
+                    from routes.supabase_merge import fetch_one_from_supabase
+                    sb_row = fetch_one_from_supabase('settings', key)
+                    if sb_row and sb_row.get('value') is not None:
+                        _val = sb_row['value']
+                        # Vec je obicno vec-encrypted string; ako je dict, encrypt-uj ga.
+                        _payload = _val if isinstance(_val, str) else encrypt_data(_val)
+                        try:
+                            c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
+                                      (key, _payload))
+                            conn.commit()
+                        except Exception:
+                            pass
+                        return jsonify({"value": decrypt_data(_payload)})
+                except Exception as _fb_err:
+                    logger.info(f'Settings read-fallback failed for {key}: {_fb_err}')
+
             # Settings je OBAVEZNO kriptovan jer čuva SMTP lozinke
             return jsonify({"value": decrypt_data(row[0]) if row else None})
             
@@ -341,6 +362,12 @@ def save_single_item(key):
                 _mirror_payload = dict(item)
                 _mirror_payload['id'] = item_id
                 mirror_to_supabase(key, _mirror_payload)
+            elif key == 'settings' or key == 'company' or key == 'firewall' or key in SENSITIVE_SETTINGS_KEYS:
+                # V23.4: settings mirror — value je vec-encrypted string; posalji ga kao value.
+                mirror_to_supabase('settings', {
+                    'key': key,
+                    'value': encrypt_data(item),
+                })
         except Exception as _mirror_err:
             logger.info(f'supabase mirror failed for {key}/{item_id}: {_mirror_err}')
 

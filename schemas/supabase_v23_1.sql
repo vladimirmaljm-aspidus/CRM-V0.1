@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS proformas (
 CREATE TABLE IF NOT EXISTS users (
   id                        TEXT PRIMARY KEY,
   username                  TEXT UNIQUE,
+  password                  TEXT,   -- V23.4: scrypt hash — bez ovoga login ne moze da radi kroz Supabase fallback posle Render redeploy-a
   role                      TEXT,
   full_name                 TEXT,
   email                     TEXT,
@@ -35,11 +36,22 @@ CREATE TABLE IF NOT EXISTS users (
   locked_until              TIMESTAMPTZ,
   password_expires_at       TIMESTAMPTZ,
   signature                 TEXT,
+  totp_secret               TEXT,   -- V23.4: potrebno za 2FA verifikaciju iz Supabase-a
   totp_enabled              BOOLEAN DEFAULT FALSE,
+  totp_recovery             TEXT,   -- V23.4: hasovani recovery kodovi
+  token_version             INTEGER DEFAULT 1,
+  last_password_change_at   TIMESTAMPTZ,
   last_login_country        TEXT,
   data                      JSONB DEFAULT '{}'::jsonb,
   created_at                TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- V23.4 idempotentne migracije (za baze koje su vec kreirane bez ovih kolona)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_recovery TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_password_change_at TIMESTAMPTZ;
 
 -- --------- SETTINGS (comms_settings, company, security_policy…) ---------
 CREATE TABLE IF NOT EXISTS settings (
