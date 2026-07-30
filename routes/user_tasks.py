@@ -1,28 +1,11 @@
-"""
-Round G — USER TASKS / TODOS
-============================
-Personal task list per user. Moze se linkovati na entity (partner/deal/offer)
-tako da je vidljivo iz detail view-a. Podseca preko email digest-a (koristi
-postojeci _notification_digest_loop).
-
-Endpointi:
-  GET  /api/tasks                        — moja lista (filter po status, due)
-  POST /api/tasks                        — kreiraj
-  PATCH /api/tasks/<id>                  — update (title, priority, status, due)
-  DELETE /api/tasks/<id>                 — obrisi
-  POST /api/tasks/<id>/complete          — mark as done
-  GET  /api/tasks/entity/<type>/<id>     — svi taskovi za entity (svi useri)
-"""
+"""V24.2 SUPABASE-ONLY: user tasks / TODOs."""
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, session
-
-from config import DB_FILE
-from utils import login_required, log_audit
+from utils import login_required
 
 user_tasks_bp = Blueprint('user_tasks_bp', __name__)
 
@@ -34,24 +17,30 @@ def _now() -> str:
 @user_tasks_bp.route('/api/tasks', methods=['GET'])
 @login_required
 def list_tasks():
+    """V24.2 SUPABASE-ONLY."""
     uid = session.get('user_id')
-    status = request.args.get('status')  # open | done | canceled | all
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        q = ("SELECT id, title, description, due_at, priority, status, "
-             "linked_entity_type, linked_entity_id, created_at, completed_at "
-             "FROM user_tasks WHERE owner_user_id=?")
-        params = [uid]
-        if status and status != 'all':
-            q += " AND status=?"
-            params.append(status)
-        q += " ORDER BY CASE WHEN status='open' THEN 0 ELSE 1 END, priority ASC, due_at ASC NULLS LAST, created_at DESC"
-        rows = conn.execute(q, params).fetchall()
+    status = request.args.get('status')
+    from data_layer import select as _dl_select
+    filters = {'owner_user_id': uid}
+    if status and status != 'all':
+        filters['status'] = status
+    rows = _dl_select('user_tasks', filters=filters, limit=1000) or []
+    # Custom sort — open pre done, po priority asc pa due_at asc
+    def sort_key(r):
+        status_order = 0 if r.get('status') == 'open' else 1
+        return (status_order,
+                int(r.get('priority') or 999),
+                r.get('due_at') or 'zzzz',
+                r.get('created_at') or '')
+    rows.sort(key=sort_key)
     return jsonify({
         'tasks': [{
-            'id': r[0], 'title': r[1], 'description': r[2], 'due_at': r[3],
-            'priority': r[4], 'status': r[5],
-            'linked_entity_type': r[6], 'linked_entity_id': r[7],
-            'created_at': r[8], 'completed_at': r[9],
+            'id': r.get('id'), 'title': r.get('title'),
+            'description': r.get('description'), 'due_at': r.get('due_at'),
+            'priority': r.get('priority'), 'status': r.get('status'),
+            'linked_entity_type': r.get('linked_entity_type'),
+            'linked_entity_id': r.get('linked_entity_id'),
+            'created_at': r.get('created_at'), 'completed_at': r.get('completed_at'),
         } for r in rows]
     })
 
@@ -64,20 +53,18 @@ def create_task():
     if not title:
         return jsonify({'error': 'title_required'}), 400
     tid = str(uuid.uuid4())
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute(
-            "INSERT INTO user_tasks (id, owner_user_id, title, description, due_at, "
-            "priority, linked_entity_type, linked_entity_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (tid, session.get('user_id'), title,
-             str(body.get('description') or '')[:1000],
-             str(body.get('due_at') or '') or None,
-             int(body.get('priority') or 2),
-             str(body.get('linked_entity_type') or '') or None,
-             str(body.get('linked_entity_id') or '') or None,
-             _now())
-        )
+    from data_layer import insert as _dl_insert
+    _dl_insert('user_tasks', {
+        'id': tid, 'owner_user_id': session.get('user_id'),
+        'title': title,
+        'description': str(body.get('description') or '')[:1000],
+        'due_at': str(body.get('due_at') or '') or None,
+        'priority': int(body.get('priority') or 2),
+        'status': 'open',
+        'linked_entity_type': str(body.get('linked_entity_type') or '') or None,
+        'linked_entity_id': str(body.get('linked_entity_id') or '') or None,
+        'created_at': _now(),
+    })
     return jsonify({'id': tid, 'title': title})
 
 
@@ -86,21 +73,17 @@ def create_task():
 def update_task(tid):
     body = request.get_json(silent=True) or {}
     allowed = {'title': 200, 'description': 1000, 'due_at': 40, 'priority': None, 'status': 20}
-    sets, params = [], []
+    updates = {}
     for k, maxlen in allowed.items():
         if k in body:
             v = body[k]
             if maxlen and isinstance(v, str):
                 v = v[:maxlen]
-            sets.append(f'{k}=?')
-            params.append(v)
-    if not sets:
+            updates[k] = v
+    if not updates:
         return jsonify({'error': 'no_changes'}), 400
-    params.extend([tid, session.get('user_id')])
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        n = conn.execute(f"UPDATE user_tasks SET {', '.join(sets)} "
-                         f"WHERE id=? AND owner_user_id=?", params).rowcount
+    from data_layer import update as _dl_update
+    n = _dl_update('user_tasks', {'id': tid, 'owner_user_id': session.get('user_id')}, updates)
     if not n:
         return jsonify({'error': 'not_found'}), 404
     return jsonify({'updated': True})
@@ -109,23 +92,17 @@ def update_task(tid):
 @user_tasks_bp.route('/api/tasks/<tid>', methods=['DELETE'])
 @login_required
 def delete_task(tid):
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        n = conn.execute("DELETE FROM user_tasks WHERE id=? AND owner_user_id=?",
-                         (tid, session.get('user_id'))).rowcount
-    return jsonify({'deleted': n})
+    from data_layer import delete as _dl_delete
+    n = _dl_delete('user_tasks', {'id': tid, 'owner_user_id': session.get('user_id')})
+    return jsonify({'deleted': int(n or 0)})
 
 
 @user_tasks_bp.route('/api/tasks/<tid>/complete', methods=['POST'])
 @login_required
 def complete_task(tid):
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        n = conn.execute(
-            "UPDATE user_tasks SET status='done', completed_at=? "
-            "WHERE id=? AND owner_user_id=?",
-            (_now(), tid, session.get('user_id'))
-        ).rowcount
+    from data_layer import update as _dl_update
+    n = _dl_update('user_tasks', {'id': tid, 'owner_user_id': session.get('user_id')},
+                   {'status': 'done', 'completed_at': _now()})
     if not n:
         return jsonify({'error': 'not_found'}), 404
     return jsonify({'completed': True})
@@ -134,19 +111,22 @@ def complete_task(tid):
 @user_tasks_bp.route('/api/tasks/entity/<etype>/<eid>', methods=['GET'])
 @login_required
 def entity_tasks(etype, eid):
-    """Svi taskovi (svih usera) vezani za dati entity — koristi se u detail view-u."""
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT ut.id, ut.title, ut.status, ut.due_at, ut.priority, ut.owner_user_id, "
-            "COALESCE(u.username,'?') AS username "
-            "FROM user_tasks ut LEFT JOIN users u ON u.id=ut.owner_user_id "
-            "WHERE ut.linked_entity_type=? AND ut.linked_entity_id=? "
-            "ORDER BY ut.status ASC, ut.due_at ASC NULLS LAST",
-            (etype, eid)
-        ).fetchall()
+    """V24.2 SUPABASE-ONLY: svi taskovi (svih usera) vezani za dati entity."""
+    from data_layer import select as _dl_select
+    rows = _dl_select('user_tasks',
+                      filters={'linked_entity_type': etype, 'linked_entity_id': eid},
+                      limit=500) or []
+    # Ime user-a — resolvuj preko in-memory cache-a
+    from data_layer import select as _s
+    users = _s('users', limit=5000) or []
+    user_map = {u.get('id'): u.get('username') for u in users}
+    rows.sort(key=lambda r: (r.get('status') != 'open', r.get('due_at') or 'zzzz'))
     return jsonify({
         'tasks': [{
-            'id': r[0], 'title': r[1], 'status': r[2], 'due_at': r[3],
-            'priority': r[4], 'owner_user_id': r[5], 'username': r[6],
+            'id': r.get('id'), 'title': r.get('title'),
+            'status': r.get('status'), 'due_at': r.get('due_at'),
+            'priority': r.get('priority'),
+            'owner_user_id': r.get('owner_user_id'),
+            'username': user_map.get(r.get('owner_user_id'), '?'),
         } for r in rows]
     })
