@@ -73,76 +73,36 @@ def filter_by_ownership(key, item, module_name, permissions, user_id, role):
 @data_bp.route('/api/data/<key>', methods=['GET'])
 @login_required
 def get_data(key):
-    conn = None
+    """V24.0 SUPABASE-ONLY: sve citanje ide direktno iz Supabase, bez SQLite."""
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute('SELECT role, permissions FROM users WHERE id=?', (session['user_id'],))
-        user_data = c.fetchone()
-        
-        if not user_data: 
+        import supabase_store as store
+        user_row = store.get_user_by_id(session['user_id'])
+        if not user_row:
             return jsonify({"error": "User not found"}), 401
-        
-        role = user_data[0]
-        # Permisije su kriptovane, ovde ih čitamo
-        permissions = decrypt_data(user_data[1]) if user_data[1] else {}
+        role = user_row.get('role') or 'employee'
+        permissions = user_row.get('permissions') or {}
+        if isinstance(permissions, str):
+            try: permissions = json.loads(permissions)
+            except Exception: permissions = {}
         user_id = session['user_id']
-        
+
         def can_view(module):
             return role == 'admin' or permissions.get(f'{module}_view_all', False) or permissions.get(f'{module}_view_own', False) or permissions.get(f'{module}_view', False)
 
         perm_map = { 'partners':'partners', 'products':'products', 'deals':'deals', 'demands':'products', 'accounts':'finances', 'transactions':'finances', 'recurringExpenses':'finances', 'connections':'partners', 'offers':'offers', 'shared_documents':'shared_documents' }
-        
+
         if key in perm_map and not can_view(perm_map[key]):
-            return jsonify({"value": [], "error": "Unauthorized"}), 403 
-        
+            return jsonify({"value": [], "error": "Unauthorized"}), 403
+
         tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
         if key in tables:
-            c.execute(f'SELECT data FROM {key}')
-            rows = c.fetchall()
-
-            # V23.3 READ-FALLBACK: Render brise SQLite pri svakom deploy-u pa
-            # nam podaci "nestaju" iako smo ih ranije mirror-ovali u Supabase.
-            # Ako je lokalna tabela prazna, povuci iz Supabase (i backfill-uj
-            # SQLite u istom potezu da sledeci reload bude brz).
-            if not rows:
-                try:
-                    from routes.supabase_merge import (
-                        fetch_from_supabase, SUPPORTED_TABLES)
-                    if key in SUPPORTED_TABLES:
-                        supabase_rows = fetch_from_supabase(key)
-                        if supabase_rows:
-                            logger.info(f'Read-fallback: rehydrating {len(supabase_rows)} rows for {key} from Supabase')
-                            for _item in supabase_rows:
-                                _iid = _item.get('id')
-                                if not _iid:
-                                    continue
-                                try:
-                                    _payload = encrypt_data(_item) if callable(encrypt_data) else json.dumps(_item)
-                                except Exception:
-                                    _payload = json.dumps(_item, default=str)
-                                try:
-                                    c.execute(f'INSERT OR REPLACE INTO {key} (id, data) VALUES (?, ?)',
-                                              (_iid, _payload))
-                                except Exception:
-                                    continue
-                            try: conn.commit()
-                            except Exception: pass
-                            c.execute(f'SELECT data FROM {key}')
-                            rows = c.fetchall()
-                except Exception as _fb_err:
-                    logger.info(f'Supabase read-fallback failed for {key}: {_fb_err}')
-
+            rows = store.list_entities(key)
             data = []
-            for row in rows:
-                # Decrypt_data je pametan: pročitaće i ako je staro/kriptovano, i ako je novo/čisto
-                item = decrypt_data(row[0])
-
+            for item in rows:
                 if role != 'admin':
                     module_name = perm_map.get(key, key)
                     if not filter_by_ownership(key, item, module_name, permissions, user_id, role):
                         continue
-
                     if key == 'deals' and not permissions.get('deals_view_costs', False):
                         item['purchasePrice'] = 0
                         item['bankCosts'] = 0
@@ -151,54 +111,23 @@ def get_data(key):
                         item['supplierId'] = None
                         item['supplierBankDetails'] = ''
                     if key == 'products' and not permissions.get('products_view_prices', False):
-                        for offer in item.get('supplyOffers', []):
+                        for offer in item.get('supplyOffers', []) or []:
                             offer['price'] = 0
                             offer['supplierId'] = None
-                
                 data.append(item)
-                
             return jsonify({"value": data})
         else:
-            # ISPRAVKA: comms_settings (SMTP host/user/LOZINKA) je ranije mogao da
-            # procita BILO KOJI ulogovan korisnik. 'settings'/'company' ostaju javni
-            # jer ih frontend koristi za osnovni prikaz aplikacije, ali osetljivi
-            # kljucevi zahtevaju admin rolu.
+            # SETTINGS grana — comms_settings/firewall samo admin
             if key in SENSITIVE_SETTINGS_KEYS and role != 'admin':
                 log_audit('SECURITY', 'database', f'Prevented read access to sensitive settings key: {key}', is_suspicious=True)
                 return jsonify({"error": "Unauthorized"}), 403
+            enc_val = store.get_setting(key)
+            return jsonify({"value": decrypt_data(enc_val) if enc_val else None})
 
-            c.execute('SELECT value FROM settings WHERE key=?', (key,))
-            row = c.fetchone()
-
-            # V23.4 settings READ-FALLBACK: kada SQLite nema key (npr. Render
-            # deploy je izbrisao lokalnu bazu), povuci iz Supabase i backfill-uj.
-            if row is None:
-                try:
-                    from routes.supabase_merge import fetch_one_from_supabase
-                    sb_row = fetch_one_from_supabase('settings', key)
-                    if sb_row and sb_row.get('value') is not None:
-                        _val = sb_row['value']
-                        # Vec je obicno vec-encrypted string; ako je dict, encrypt-uj ga.
-                        _payload = _val if isinstance(_val, str) else encrypt_data(_val)
-                        try:
-                            c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
-                                      (key, _payload))
-                            conn.commit()
-                        except Exception:
-                            pass
-                        return jsonify({"value": decrypt_data(_payload)})
-                except Exception as _fb_err:
-                    logger.info(f'Settings read-fallback failed for {key}: {_fb_err}')
-
-            # Settings je OBAVEZNO kriptovan jer čuva SMTP lozinke
-            return jsonify({"value": decrypt_data(row[0]) if row else None})
-            
-    except Exception as e:
+    except Exception:
         logger.error(f"get_data({key}) failed", exc_info=True)
         log_audit('ERROR', 'database', f'Read failed for module {key}', is_suspicious=True)
         return jsonify({"error": "DATABASE_ERROR"}), 503
-    finally:
-        if conn: conn.close()
 
 @data_bp.route('/api/item/<key>', methods=['POST'])
 @login_required
@@ -214,58 +143,35 @@ def save_single_item(key):
 
     item_id = item.get('id')
     if not item_id: return jsonify({"error": "ID is required"}), 400
-    
-    conn = None
-    action_log_msg = None
+
+    import supabase_store as store
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        
-        c.execute('BEGIN TRANSACTION;')
-        
-        c.execute('SELECT role, permissions FROM users WHERE id=?', (session['user_id'],))
-        user_row = c.fetchone()
+        user_row = store.get_user_by_id(session['user_id'])
         if not user_row:
-            conn.rollback()
             return jsonify({"error": "User not found"}), 401
-            
-        role = user_row[0]
-        perms = decrypt_data(user_row[1]) if user_row[1] else {}
-        
+        role = user_row.get('role') or 'employee'
+        perms = user_row.get('permissions') or {}
+        if isinstance(perms, str):
+            try: perms = json.loads(perms)
+            except Exception: perms = {}
+
         perm_map = { 'partners':'partners_edit', 'products':'products_edit', 'deals':'deals_edit', 'demands':'products_edit', 'accounts':'finances_edit', 'transactions':'finances_edit', 'recurringExpenses':'finances_edit', 'connections':'partners_edit', 'offers':'offers_edit', 'shared_documents':'shared_documents_edit' }
         if role != 'admin' and key in perm_map and not perms.get(perm_map[key], False):
-            conn.rollback()
             log_audit('SECURITY', 'database', f'Prevented write access to module: {key}', is_suspicious=True)
             return jsonify({"error": "Unauthorized"}), 403
 
         tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
         action = 'EDIT'
-        
+
         if key in tables:
-            c.execute(f'SELECT data FROM {key} WHERE id=?', (item_id,))
-            existing_row = c.fetchone()
+            # V24.0: read-modify-write direktno na Supabase
+            existing = store.get_entity(key, item_id)
+            _old_offer_for_ver = existing if (key == 'offers' and existing) else None
 
-            # OFFER VERSIONING: snapshot stare verzije PRE nego što je prepišemo.
-            # Radi se tek u fazi save-a jer ovde imamo i old i new state.
-            _old_offer_for_ver = None
-            if key == 'offers' and existing_row:
-                try:
-                    _old_offer_for_ver = decrypt_data(existing_row[0])
-                    if not isinstance(_old_offer_for_ver, dict):
-                        _old_offer_for_ver = json.loads(existing_row[0]) if isinstance(existing_row[0], str) else None
-                except Exception:
-                    _old_offer_for_ver = None
-
-            if not existing_row:
+            if not existing:
                 action = 'CREATE'
                 item['ownerId'] = session['user_id']
                 item['sharedWith'] = []
-
-                # ISPRAVKA (eskalacija privilegija): sanitizacija cena/troskova se
-                # ranije radila SAMO pri izmeni postojeceg zapisa. Korisnik bez
-                # 'deals_view_costs'/'products_view_prices' je pri KREIRANJU novog
-                # deal-a/proizvoda i dalje mogao da upise nabavnu cenu, bankovne
-                # podatke dobavljaca ili cene ponuda.
                 if role != 'admin':
                     if key == 'deals' and not perms.get('deals_view_costs', False):
                         item['purchasePrice'] = 0
@@ -279,10 +185,8 @@ def save_single_item(key):
                             offer['price'] = 0
                             offer['supplierId'] = None
             else:
-                existing = decrypt_data(existing_row[0])
                 item['ownerId'] = existing.get('ownerId')
                 item['sharedWith'] = existing.get('sharedWith', [])
-                
                 if role != 'admin':
                     if key == 'deals' and not perms.get('deals_view_costs', False):
                         item['purchasePrice'] = existing.get('purchasePrice', 0)
@@ -294,210 +198,134 @@ def save_single_item(key):
                     if key == 'products' and not perms.get('products_view_prices', False):
                         item['supplyOffers'] = existing.get('supplyOffers', [])
 
-            # OFFER VERSIONING: snimi stari snapshot pre upisa novog stanja.
-            # Ovo se poziva između SELECT-a i INSERT OR REPLACE-a tako da imamo
-            # obe verzije istovremeno. `snapshot_if_changed` će sam odlučiti
-            # da li ima šta da se snimi (poredi TRACKED_FIELDS).
+            # OFFER VERSIONING best-effort — snapshot_if_changed jos uvek koristi SQLite conn;
+            # zovi ga samo ako je conn dostupan (legacy) — nikad ne rusi save.
             if key == 'offers' and _old_offer_for_ver:
                 try:
                     from offer_versions import snapshot_if_changed as _snap
-                    _reason = ''
-                    try:
-                        _reason = (request.headers.get('X-Change-Reason') or item.get('_changeReason') or '').strip()
-                    except Exception:
-                        _reason = ''
-                    _snap(
-                        conn, item_id, _old_offer_for_ver, item,
-                        changed_by=session.get('user_id', 'SYSTEM'),
-                        changed_by_role=role or 'employee',
-                        origin='crm',
-                        change_reason=_reason,
-                    )
-                    # Ne persistuj _changeReason u samu ponudu — služi samo za log verzije
+                    import sqlite3 as _sq3
+                    from config import DB_FILE as _DBF
+                    _reason = (request.headers.get('X-Change-Reason') or item.get('_changeReason') or '').strip()
+                    with _sq3.connect(_DBF, timeout=5.0) as _c:
+                        _snap(_c, item_id, _old_offer_for_ver, item,
+                              changed_by=session.get('user_id', 'SYSTEM'),
+                              changed_by_role=role or 'employee',
+                              origin='crm', change_reason=_reason)
                     if '_changeReason' in item:
                         item.pop('_changeReason', None)
                 except Exception:
-                    logger.exception('offer version snapshot failed')
+                    logger.info('offer version snapshot skipped (Supabase-only mode)')
 
-            # OPTIMIZACIJA: Čist JSON upis za maksimalnu brzinu baze.
-            # v22 FIX: wrap u retry helper — pod PythonAnywhere SQLite lock je čest,
-            # bez retry-ja svaki lock = izgubljen zapis + 500 error klijentu.
-            _retry_on_lock(c.execute,
-                           f'INSERT OR REPLACE INTO {key} (id, data) VALUES (?, ?)',
-                           (item_id, json.dumps(item)))
-            action_log_msg = (action, key, f'Updated item ID: {item_id}', False)
-        
+            item['id'] = item_id
+            store.upsert_entity(key, item)
+            log_audit(action, key, f'Updated item ID: {item_id}', is_suspicious=False)
+
         elif key == 'settings' or key == 'company' or key == 'firewall' or key in SENSITIVE_SETTINGS_KEYS:
-            # KRITICNA ISPRAVKA: ova grana ranije uopste nije proveravala rolu, pa je
-            # SVAKI ulogovani korisnik mogao da prepise SMTP lozinku, podatke firme i
-            # druge sistemske postavke preko ovog endpointa.
             if role != 'admin':
-                conn.rollback()
                 log_audit('SECURITY', 'database', f'Prevented write access to settings key: {key}', is_suspicious=True)
                 return jsonify({"error": "Unauthorized"}), 403
-            # ENKRIPCIJA: Podešavanja ostaju bezbedna u trezoru
-            c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, encrypt_data(item)))
-            action_log_msg = ('EDIT', 'settings', f'Updated settings for {key}', False)
-            # Ako je admin promenio firewall postavke, odmah ih primeni bez rekstart-a.
+            store.set_setting(key, encrypt_data(item))
+            log_audit('EDIT', 'settings', f'Updated settings for {key}', is_suspicious=False)
             if key == 'firewall':
                 try:
                     from utils import load_firewall_settings as _reload_fw
                     _reload_fw()
                 except Exception:
                     pass
-        
-        conn.commit()
-
-        if action_log_msg:
-            log_audit(action_log_msg[0], action_log_msg[1], action_log_msg[2], is_suspicious=action_log_msg[3])
-
-        # V23.1C — LIVE MIRROR u Supabase (best-effort). Bez ovoga se novi
-        # partneri/proizvodi/deals/ponude gube pri svakom Render deploy-u.
-        # Nikad ne baca izuzetak — SQLite je vec zapisao, klijent dobija success.
-        try:
-            from routes.supabase_merge import mirror_to_supabase
-            if key in ('partners', 'products', 'deals', 'offers', 'demands',
-                       'shared_documents'):
-                # Sanitizovan payload sa id-om koji smo upravo zapisali
-                _mirror_payload = dict(item)
-                _mirror_payload['id'] = item_id
-                mirror_to_supabase(key, _mirror_payload)
-            elif key == 'settings' or key == 'company' or key == 'firewall' or key in SENSITIVE_SETTINGS_KEYS:
-                # V23.4: settings mirror — value je vec-encrypted string; posalji ga kao value.
-                mirror_to_supabase('settings', {
-                    'key': key,
-                    'value': encrypt_data(item),
-                })
-        except Exception as _mirror_err:
-            logger.info(f'supabase mirror failed for {key}/{item_id}: {_mirror_err}')
 
         return jsonify({"status": "success", "id": item_id})
 
-    except Exception as e:
-        if conn: conn.rollback()
+    except Exception:
         logger.error(f"save_single_item({key}) failed", exc_info=True)
         log_audit('ERROR', 'database', f'Save failed for module {key}', is_suspicious=True)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
-    finally:
-        if conn: conn.close()
 
 @data_bp.route('/api/item/<key>/<item_id>', methods=['DELETE'])
 @login_required
 def delete_single_item(key, item_id):
-    conn = None
-    action_log_msg = None
+    """V24.0 SUPABASE-ONLY: bez SQLite."""
+    import supabase_store as store
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute('BEGIN TRANSACTION;')
-        
-        c.execute('SELECT role, permissions FROM users WHERE id=?', (session['user_id'],))
-        user_row = c.fetchone()
+        user_row = store.get_user_by_id(session['user_id'])
         if not user_row:
-            conn.rollback()
             return jsonify({"error": "User not found"}), 401
-            
-        role = user_row[0]
-        perms = decrypt_data(user_row[1]) if user_row[1] else {}
-        
+        role = user_row.get('role') or 'employee'
+        perms = user_row.get('permissions') or {}
+        if isinstance(perms, str):
+            try: perms = json.loads(perms)
+            except Exception: perms = {}
+
         perm_map = { 'partners':'partners_delete', 'products':'products_delete', 'deals':'deals_delete', 'demands':'products_delete', 'accounts':'finances_delete', 'transactions':'finances_delete', 'recurringExpenses':'finances_delete', 'connections':'partners_delete', 'offers':'offers_delete', 'shared_documents':'shared_documents_delete' }
         if role != 'admin' and key in perm_map and not perms.get(perm_map[key], False):
-            conn.rollback()
             log_audit('SECURITY', 'database', f'Prevented delete from module {key} (ID: {item_id})', is_suspicious=True)
             return jsonify({"error": "Unauthorized"}), 403
 
         tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
-        if key in tables:
-            
-            # Cascade Delete
-            if key == 'deals':
-                c.execute("SELECT id, data FROM transactions")
-                for t_row in c.fetchall():
-                    tx = decrypt_data(t_row[1])
-                    if tx.get('dealId') == item_id:
-                        c.execute("DELETE FROM transactions WHERE id=?", (t_row[0],))
-                        log_audit('DELETE', 'finances', f'Auto-deleted orphaned transaction ID: {t_row[0]} linked to Deal: {item_id}', is_suspicious=False)
-
-            c.execute(f'DELETE FROM {key} WHERE id = ?', (item_id,))
-            conn.commit()
-            action_log_msg = ('DELETE', key, f'Deleted item ID: {item_id}', False)
-        else:
-            conn.rollback()
+        if key not in tables:
             return jsonify({"error": "Invalid table"}), 400
-            
-        if action_log_msg:
-            log_audit(action_log_msg[0], action_log_msg[1], action_log_msg[2], is_suspicious=action_log_msg[3])
 
-        # V23.1C — mirror delete u Supabase (best-effort)
-        try:
-            from routes.supabase_merge import mirror_delete_to_supabase
-            if key in ('partners', 'products', 'deals', 'offers', 'demands',
-                       'shared_documents'):
-                mirror_delete_to_supabase(key, item_id)
-        except Exception as _mirror_err:
-            logger.info(f'supabase delete-mirror failed for {key}/{item_id}: {_mirror_err}')
+        # Cascade: obrisi orphan transakcije za deal
+        if key == 'deals':
+            try:
+                from data_layer import delete as _dl_delete, select as _dl_select
+                for tx in (_dl_select('transactions') or []):
+                    _data = tx.get('data') or {}
+                    if isinstance(_data, str):
+                        try: _data = json.loads(_data)
+                        except Exception: _data = {}
+                    if _data.get('dealId') == item_id:
+                        _dl_delete('transactions', {'id': tx.get('id')})
+                        log_audit('DELETE', 'finances', f'Auto-deleted orphaned transaction ID: {tx.get("id")} linked to Deal: {item_id}', is_suspicious=False)
+            except Exception:
+                logger.info('cascade delete of transactions skipped', exc_info=True)
 
+        ok = store.delete_entity(key, item_id)
+        if ok:
+            log_audit('DELETE', key, f'Deleted item ID: {item_id}', is_suspicious=False)
         return jsonify({"status": "success"})
 
-    except Exception as e:
-        if conn: conn.rollback()
+    except Exception:
         logger.error(f"delete_single_item({key}, {item_id}) failed", exc_info=True)
         log_audit('ERROR', 'database', f'Delete failed for module {key}', is_suspicious=True)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
-    finally:
-        if conn: conn.close()
 
 @data_bp.route('/api/data/<key>', methods=['POST'])
 @login_required
 def save_data(key):
-    conn = None
-    action_log_msg = None
+    """V24.0 SUPABASE-ONLY: bulk save (entities) ili settings write."""
+    import supabase_store as store
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        
-        c.execute('BEGIN TRANSACTION;')
-        
         tables = ['partners', 'products', 'deals', 'demands', 'accounts', 'transactions', 'recurringExpenses', 'connections', 'offers', 'shared_documents']
-        
         if key in tables:
             if session.get('role') != 'admin':
-                conn.rollback()
                 log_audit('SECURITY', 'database', f'Prevented Bulk Save for module: {key}', is_suspicious=True)
                 return jsonify({"error": "Unauthorized"}), 403
-                
-            data = request.json.get('value', [])
-            c.execute(f'DELETE FROM {key}') 
+            data = (request.get_json(silent=True) or {}).get('value', [])
+            # obrisi sve postojece pa upsert-uj nove
+            try:
+                from data_layer import select as _dl_select, delete as _dl_delete
+                for existing in (_dl_select(key) or []):
+                    _iid = existing.get('id')
+                    if _iid:
+                        _dl_delete(key, {'id': _iid})
+            except Exception:
+                logger.info(f'bulk-delete of {key} pre-write skipped', exc_info=True)
             for item in data:
-                c.execute(f'INSERT INTO {key} (id, data) VALUES (?, ?)', (item.get('id', str(uuid.uuid4())), json.dumps(item)))
-            action_log_msg = ('CREATE', key, 'Admin performed bulk save on table.', False)
+                item.setdefault('id', str(uuid.uuid4()))
+                store.upsert_entity(key, item)
+            log_audit('CREATE', key, 'Admin performed bulk save on table.', is_suspicious=False)
         else:
-            # KRITICNA ISPRAVKA: identicna rupa kao gore - ova grana nije proveravala
-            # rolu, pa je bilo koji ulogovan korisnik mogao da prepise proizvoljan
-            # settings kljuc (ukljucujuci SMTP kredencijale) preko bulk-save rute.
             if session.get('role') != 'admin':
-                conn.rollback()
                 log_audit('SECURITY', 'database', f'Prevented settings write for key: {key}', is_suspicious=True)
                 return jsonify({"error": "Unauthorized"}), 403
-
-            data = request.json.get('value')
-            c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, encrypt_data(data)))
-            action_log_msg = ('EDIT', 'settings', f'Updated settings for {key}', False)
-            
-        conn.commit()
-        
-        if action_log_msg:
-            log_audit(action_log_msg[0], action_log_msg[1], action_log_msg[2], is_suspicious=action_log_msg[3])
-            
+            data = (request.get_json(silent=True) or {}).get('value')
+            store.set_setting(key, encrypt_data(data))
+            log_audit('EDIT', 'settings', f'Updated settings for {key}', is_suspicious=False)
         return jsonify({"status": "success"})
-        
-    except Exception as e:
-        if conn: conn.rollback()
+    except Exception:
         logger.error(f"save_data({key}) failed", exc_info=True)
         log_audit('ERROR', 'database', f'Bulk save failed for module {key}', is_suspicious=True)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
-    finally:
-        if conn: conn.close()
 
 # ==========================================================
 #  OFFERS: konverzija ponude u dil / fakturu

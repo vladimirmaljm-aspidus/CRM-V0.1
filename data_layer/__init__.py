@@ -55,10 +55,10 @@ _DEFAULT_BACKEND = "rest"
 
 def _pick_backend() -> str:
     b = (os.environ.get("DB_BACKEND") or _DEFAULT_BACKEND).strip().lower()
-    if b in ("rest", "postgres", "pg"):
+    if b in ("rest", "postgres", "pg", "mock"):
         return "postgres" if b == "pg" else b
     raise RuntimeError(
-        f"Nepoznat DB_BACKEND='{b}'. Dozvoljeno: 'rest' ili 'postgres'."
+        f"Nepoznat DB_BACKEND='{b}'. Dozvoljeno: 'rest', 'postgres' ili 'mock'."
     )
 
 
@@ -78,6 +78,9 @@ def get_backend():
         if name == "rest":
             from ._rest import RestBackend
             _backend_instance = RestBackend()
+        elif name == "mock":
+            from ._mock import MockBackend
+            _backend_instance = MockBackend()
         else:
             from ._pg import PgBackend
             _backend_instance = PgBackend()

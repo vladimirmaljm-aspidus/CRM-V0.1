@@ -134,24 +134,16 @@ def verify(ml_param, expected_portal_token, client_ip=None):
     if datetime.now(timezone.utc) > exp:
         return (False, 'expired')
 
-    # Single-use (jti register)
+    # Single-use (jti register) — V24.0 direktno u Supabase
     jti = payload.get('jti', '')
     if not jti:
         return (False, 'invalid_format')
-    _ensure_jti_table()
     try:
-        with db.connect_raw(DB_FILE) as conn:
-            # Atomično: pokušaj INSERT — ako već postoji, PK conflict → already_used
-            try:
-                conn.execute(
-                    "INSERT INTO magic_link_used_jti (jti, token, used_at, client_ip) VALUES (?, ?, ?, ?)",
-                    (jti, expected_portal_token,
-                     datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-                     (client_ip or '')[:64])
-                )
-                conn.commit()
-            except sqlite3.IntegrityError:
-                return (False, 'already_used')
+        import supabase_store as store
+        if store.is_jti_used(jti):
+            return (False, 'already_used')
+        if not store.mark_jti_used(jti, expected_portal_token, client_ip):
+            return (False, 'already_used')
     except Exception:
         return (False, 'invalid_format')
 

@@ -53,6 +53,25 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_recovery TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_password_change_at TIMESTAMPTZ;
 
+-- V24.0: magic-link single-use JTI registry (portal single-click sign-in)
+CREATE TABLE IF NOT EXISTS magic_link_used_jti (
+  jti         TEXT PRIMARY KEY,
+  token       TEXT,
+  used_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  client_ip   TEXT
+);
+
+-- V24.0: magic-login tokens (unlock, password reset)
+CREATE TABLE IF NOT EXISTS magic_login_tokens (
+  token       TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  purpose     TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ NOT NULL,
+  request_ip  TEXT,
+  used_at     TIMESTAMPTZ
+);
+
 -- --------- SETTINGS (comms_settings, company, security_policy…) ---------
 CREATE TABLE IF NOT EXISTS settings (
   key       TEXT PRIMARY KEY,
