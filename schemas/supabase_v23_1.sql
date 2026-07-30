@@ -53,6 +53,31 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_recovery TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 1;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_password_change_at TIMESTAMPTZ;
 
+-- V24.1: recurring_expenses (frontend salje camelCase 'recurringExpenses',
+-- supabase_store ga preslikava u snake_case)
+CREATE TABLE IF NOT EXISTS recurring_expenses (
+  id          TEXT PRIMARY KEY,
+  data        JSONB DEFAULT '{}'::jsonb,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- V24.1: dodaj i ostale legacy CRUD tabele bez dodatnih atributa
+CREATE TABLE IF NOT EXISTS accounts (
+  id          TEXT PRIMARY KEY,
+  data        JSONB DEFAULT '{}'::jsonb,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS transactions (
+  id          TEXT PRIMARY KEY,
+  data        JSONB DEFAULT '{}'::jsonb,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS connections (
+  id          TEXT PRIMARY KEY,
+  data        JSONB DEFAULT '{}'::jsonb,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- V24.0: magic-link single-use JTI registry (portal single-click sign-in)
 CREATE TABLE IF NOT EXISTS magic_link_used_jti (
   jti         TEXT PRIMARY KEY,

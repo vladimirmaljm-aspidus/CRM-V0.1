@@ -230,20 +230,27 @@ def log_audit(action, module, details, is_suspicious=False, location="N/A"):
 
     extended_details = f"[{http_method} {requested_url}] | {details} | NET: {network_info} | TZ: {tz_info}"
 
+    # V24.1 SUPABASE-ONLY: audit ide direktno u Supabase. Nikada ne baca —
+    # log_audit se poziva na SVAKOM requestu i ne sme da srusi request.
     try:
-        with sqlite3.connect(AUDIT_DB_FILE, timeout=30.0) as conn:
-            conn.execute('PRAGMA busy_timeout=30000;')
-            c = conn.cursor()
-            c.execute('''INSERT INTO audit_logs
-                           (id, user_id, username, action, module, details, ip_address, user_agent, timestamp, is_suspicious, location)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                        (str(uuid.uuid4()), user_id, username, action, module, extended_details, ip_addr, formatted_user_agent, timestamp, is_suspicious, location))
-            conn.commit()
+        from data_layer import insert as _dl_insert
+        _dl_insert('audit_logs', {
+            'sync_id': str(uuid.uuid4()),
+            'user_id': user_id,
+            'username': username,
+            'action': action,
+            'module': module,
+            'details': extended_details[:2000],
+            'ip_address': ip_addr,
+            'user_agent': (formatted_user_agent or '')[:200],
+            'timestamp': timestamp,
+            'is_suspicious': bool(is_suspicious),
+            'location': location,
+        })
     except Exception:
-        # KRITIČNO: log_audit se zove na SVAKOM requestu (login, akcije...).
-        # Ako audit baza padne (locked ILI "database disk image is malformed" =
-        # sqlite3.DatabaseError, koji NIJE OperationalError!), NIKAD ne smemo
-        # da obučemo request koji je pozvao log_audit. Zato hvatamo sve.
+        # Log-only fallback ako Supabase nije dostupan — nastavi request.
+        # (Ne pise nista drugde — to je ranije bio SQLite audit fajl koji
+        # je Render brisao pri deploy-u, pa je audit ionako bio prolazan.)
         pass
 
 def login_required(f):
@@ -718,29 +725,26 @@ def rate_limit(max_per_minute=30, key='endpoint'):
 # ==========================================================
 
 def bump_user_token_version(user_id):
-    """Povećava token_version korisnika za 1. Svaka sesija koja u sebi drži
-    stariji broj biće odbijena pri sledećem zahtevu (login_required)."""
+    """V24.1 SUPABASE-ONLY: povecava token_version korisnika za 1.
+    Svaka sesija koja u sebi drzi stariji broj bice odbijena pri sledecem
+    zahtevu (login_required)."""
     if not user_id:
         return
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            conn.execute('PRAGMA busy_timeout=15000;')
-            conn.execute("UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = ?", (user_id,))
-            conn.commit()
+        import supabase_store as _store
+        _store.bump_token_version(user_id)
     except Exception:
         _util_logger.warning(f'bump_user_token_version({user_id}) failed', exc_info=True)
 
 
 def get_user_token_version(user_id):
-    """Vraća aktuelnu token_version iz baze (1 ako nije postavljena)."""
+    """V24.1 SUPABASE-ONLY."""
     if not user_id:
         return 1
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            c = conn.cursor()
-            c.execute("SELECT token_version FROM users WHERE id = ?", (user_id,))
-            row = c.fetchone()
-        return int(row[0]) if row and row[0] is not None else 1
+        import supabase_store as _store
+        u = _store.get_user_by_id(user_id) or {}
+        return int(u.get('token_version', 1) or 1)
     except Exception:
         return 1
 

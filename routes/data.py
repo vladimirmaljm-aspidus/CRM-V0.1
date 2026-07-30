@@ -1158,110 +1158,86 @@ def deal_timeline(deal_id):
 @data_bp.route('/api/partners/<partner_id>/risk-score', methods=['GET'])
 @login_required
 def partner_risk_score(partner_id):
-    from datetime import datetime, timezone, timedelta
+    """V24.1 SUPABASE-ONLY."""
+    from datetime import datetime, timezone
     if not partner_id:
         return jsonify({'error': 'partner_id_required'}), 400
+    import supabase_store as store
+    p = store.get_entity('partners', partner_id)
+    if not p:
+        return jsonify({'error': 'partner_not_found'}), 404
 
-    conn = None
-    try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        r = c.execute("SELECT data FROM partners WHERE id=?", (partner_id,)).fetchone()
-        if not r:
-            return jsonify({'error': 'partner_not_found'}), 404
-        p = decrypt_data(r[0]) if r[0] else {}
-
-        score = 50   # baseline neutral
-        breakdown = []
-
-        # 1) KYC status
-        kyc = (p.get('kyc') or {}).get('status', 'pending')
-        if kyc == 'approved':
-            score += 20; breakdown.append({'factor': 'KYC approved', 'delta': +20})
-        elif kyc == 'rejected':
-            score -= 30; breakdown.append({'factor': 'KYC rejected', 'delta': -30})
-        else:
-            breakdown.append({'factor': f'KYC {kyc}', 'delta': 0})
-
-        # 2) Sanctions match
-        sanctions = (p.get('kyc') or {}).get('sanctionsResults') or {}
-        has_match = any((s or {}).get('hits') for s in sanctions.get('results', []))
-        if has_match:
-            score -= 40; breakdown.append({'factor': 'Sanctions match', 'delta': -40})
-        else:
-            score += 5; breakdown.append({'factor': 'No sanctions', 'delta': +5})
-
-        # 3) Relationship age
-        created = p.get('createdAt') or p.get('created_at')
-        if created:
+    score = 50
+    breakdown = []
+    # 1) KYC
+    kyc = (p.get('kyc') or {}).get('status', 'pending')
+    if kyc == 'approved':
+        score += 20; breakdown.append({'factor': 'KYC approved', 'delta': +20})
+    elif kyc == 'rejected':
+        score -= 30; breakdown.append({'factor': 'KYC rejected', 'delta': -30})
+    else:
+        breakdown.append({'factor': f'KYC {kyc}', 'delta': 0})
+    # 2) Sanctions
+    sanctions = (p.get('kyc') or {}).get('sanctionsResults') or {}
+    has_match = any((s or {}).get('hits') for s in sanctions.get('results', []))
+    if has_match:
+        score -= 40; breakdown.append({'factor': 'Sanctions match', 'delta': -40})
+    else:
+        score += 5; breakdown.append({'factor': 'No sanctions', 'delta': +5})
+    # 3) Relationship age
+    created = p.get('createdAt') or p.get('created_at')
+    if created:
+        try:
+            dt = datetime.fromisoformat(str(created).replace('Z', '+00:00'))
+            years = (datetime.now(timezone.utc) - dt).days / 365.25
+            if years > 5:
+                score += 15; breakdown.append({'factor': f'{years:.1f}y relationship', 'delta': +15})
+            elif years > 2:
+                score += 10; breakdown.append({'factor': f'{years:.1f}y relationship', 'delta': +10})
+            elif years > 0.5:
+                score += 3;  breakdown.append({'factor': f'{years:.1f}y relationship', 'delta': +3})
+        except Exception:
+            pass
+    # 4) Payment history from Supabase deals
+    total = 0; paid_on_time = 0; late = 0
+    for d in store.list_entities('deals'):
+        if d.get('buyerId') != partner_id and d.get('supplierId') != partner_id:
+            continue
+        total += 1
+        paid_on = d.get('buyerPaidOn')
+        due = (d.get('paymentDates') or {}).get('buyer')
+        if paid_on and due:
             try:
-                dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
-                years = (datetime.now(timezone.utc) - dt).days / 365.25
-                if years > 5:
-                    score += 15; breakdown.append({'factor': f'{years:.1f}y relationship', 'delta': +15})
-                elif years > 2:
-                    score += 10; breakdown.append({'factor': f'{years:.1f}y relationship', 'delta': +10})
-                elif years > 0.5:
-                    score += 3;  breakdown.append({'factor': f'{years:.1f}y relationship', 'delta': +3})
+                p_dt = datetime.fromisoformat(str(paid_on).replace('Z', '+00:00'))
+                d_dt = datetime.fromisoformat(str(due).replace('Z', '+00:00'))
+                if p_dt <= d_dt: paid_on_time += 1
+                else: late += 1
             except Exception:
                 pass
-
-        # 4) Payment history — deals ratio
-        deals = c.execute("SELECT data FROM deals").fetchall()
-        total = 0; paid_on_time = 0; late = 0
-        for d_row in deals:
-            try:
-                d = decrypt_data(d_row[0]) if d_row[0] else {}
-            except Exception:
-                continue
-            if d.get('buyerId') != partner_id and d.get('supplierId') != partner_id:
-                continue
-            total += 1
-            paid_on = d.get('buyerPaidOn')
-            due = (d.get('paymentDates') or {}).get('buyer')
-            if paid_on and due:
-                try:
-                    p_dt = datetime.fromisoformat(paid_on.replace('Z', '+00:00'))
-                    d_dt = datetime.fromisoformat(due.replace('Z', '+00:00'))
-                    if p_dt <= d_dt: paid_on_time += 1
-                    else: late += 1
-                except Exception:
-                    pass
-        if total >= 3:
-            ratio = paid_on_time / total
-            delta = int(round(ratio * 20 - 10))  # -10 do +10
-            score += delta
-            breakdown.append({'factor': f'{paid_on_time}/{total} deals paid on time',
-                              'delta': delta})
-
-        # 5) Recent activity
-        lm = p.get('lastModified')
-        if lm:
-            try:
-                dt = datetime.fromisoformat(lm.replace('Z', '+00:00'))
-                days = (datetime.now(timezone.utc) - dt).days
-                if days < 90:
-                    score += 5; breakdown.append({'factor': f'Active ({days}d ago)', 'delta': +5})
-                elif days > 365:
-                    score -= 5; breakdown.append({'factor': f'Stale ({days}d)', 'delta': -5})
-            except Exception:
-                pass
-
-        # Clamp
-        score = max(0, min(100, score))
-        band = 'LOW' if score >= 70 else ('MEDIUM' if score >= 40 else 'HIGH')
-
-        return jsonify({
-            'partnerId': partner_id,
-            'score': score,
-            'band': band,
-            'breakdown': breakdown,
-            'deals_total': total,
-            'deals_paid_on_time': paid_on_time,
-            'deals_late': late,
-        })
-    finally:
-        if conn: conn.close()
+    if total >= 3:
+        ratio = paid_on_time / total
+        delta = int(round(ratio * 20 - 10))
+        score += delta
+        breakdown.append({'factor': f'{paid_on_time}/{total} deals paid on time', 'delta': delta})
+    # 5) Recent activity
+    lm = p.get('lastModified')
+    if lm:
+        try:
+            dt = datetime.fromisoformat(str(lm).replace('Z', '+00:00'))
+            days = (datetime.now(timezone.utc) - dt).days
+            if days < 90:
+                score += 5; breakdown.append({'factor': f'Active ({days}d ago)', 'delta': +5})
+            elif days > 365:
+                score -= 5; breakdown.append({'factor': f'Stale ({days}d)', 'delta': -5})
+        except Exception:
+            pass
+    score = max(0, min(100, score))
+    band = 'LOW' if score >= 70 else ('MEDIUM' if score >= 40 else 'HIGH')
+    return jsonify({
+        'partnerId': partner_id, 'score': score, 'band': band,
+        'breakdown': breakdown, 'deals_total': total,
+        'deals_paid_on_time': paid_on_time, 'deals_late': late,
+    })
 
 
 # ==========================================================
@@ -1271,69 +1247,52 @@ def partner_risk_score(partner_id):
 @data_bp.route('/api/dashboard/insights', methods=['GET'])
 @login_required
 def dashboard_insights():
-    """Kratke insights za dashboard hero — bez tezih computacija.
-    Cache-uje se agresivno (1 min) da ne opterecuje bazu na svakom refresh-u."""
+    """V24.1 SUPABASE-ONLY."""
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
+    thirty_ago = now - timedelta(days=30)
+    year_ago = now - timedelta(days=365)
 
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        # Overdue deals — buyerPaymentDate < now i nije placeno
-        overdue = 0
-        due_this_week = 0
-        deals = c.execute("SELECT data FROM deals").fetchall()
-        for r in deals:
-            try: d = decrypt_data(r[0]) if r[0] else {}
-            except Exception: continue
-            due = (d.get('paymentDates') or {}).get('buyer')
-            paid = d.get('buyerPaidOn')
-            if not due or paid: continue
+    import supabase_store as store
+    deals = store.list_entities('deals')
+    partners = store.list_entities('partners')
+
+    overdue = 0; due_this_week = 0; new_this_week = 0
+    for d in deals:
+        due = (d.get('paymentDates') or {}).get('buyer')
+        paid = d.get('buyerPaidOn')
+        if due and not paid:
             try:
-                dt = datetime.fromisoformat(due.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(str(due).replace('Z', '+00:00'))
                 if dt < now: overdue += 1
                 elif dt < now + timedelta(days=7): due_this_week += 1
             except Exception: pass
+        ca = d.get('createdAt')
+        if ca:
+            try:
+                dt = datetime.fromisoformat(str(ca).replace('Z', '+00:00'))
+                if dt > week_ago: new_this_week += 1
+            except Exception: pass
 
-        # Aktivni partneri (izmenjen u poslednjih 30d)
-        active_30d = 0
-        thirty_ago = now - timedelta(days=30)
-        partners = c.execute("SELECT data FROM partners").fetchall()
-        stale_partners = 0
-        for r in partners:
-            try: p = decrypt_data(r[0]) if r[0] else {}
-            except Exception: continue
-            lm = p.get('lastModified')
-            if lm:
-                try:
-                    dt = datetime.fromisoformat(lm.replace('Z', '+00:00'))
-                    if dt > thirty_ago: active_30d += 1
-                    elif dt < now - timedelta(days=365): stale_partners += 1
-                except Exception: pass
+    active_30d = 0; stale_partners = 0
+    for p in partners:
+        lm = p.get('lastModified')
+        if lm:
+            try:
+                dt = datetime.fromisoformat(str(lm).replace('Z', '+00:00'))
+                if dt > thirty_ago: active_30d += 1
+                elif dt < year_ago: stale_partners += 1
+            except Exception: pass
 
-        # New deals in last 7 days
-        new_this_week = 0
-        for r in deals:
-            try: d = decrypt_data(r[0]) if r[0] else {}
-            except Exception: continue
-            ca = d.get('createdAt')
-            if ca:
-                try:
-                    dt = datetime.fromisoformat(ca.replace('Z', '+00:00'))
-                    if dt > week_ago: new_this_week += 1
-                except Exception: pass
-
-        return jsonify({
-            'overdue_deals': overdue,
-            'due_this_week': due_this_week,
-            'new_deals_this_week': new_this_week,
-            'active_partners_30d': active_30d,
-            'stale_partners_1y': stale_partners,
-            'timestamp': now.isoformat(),
-        })
-    finally:
-        conn.close()
+    return jsonify({
+        'overdue_deals': overdue,
+        'due_this_week': due_this_week,
+        'new_deals_this_week': new_this_week,
+        'active_partners_30d': active_30d,
+        'stale_partners_1y': stale_partners,
+        'timestamp': now.isoformat(),
+    })
 
 
 # ==========================================================
