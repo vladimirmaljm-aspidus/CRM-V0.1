@@ -100,11 +100,44 @@ def get_data(key):
         if key in tables:
             c.execute(f'SELECT data FROM {key}')
             rows = c.fetchall()
+
+            # V23.3 READ-FALLBACK: Render brise SQLite pri svakom deploy-u pa
+            # nam podaci "nestaju" iako smo ih ranije mirror-ovali u Supabase.
+            # Ako je lokalna tabela prazna, povuci iz Supabase (i backfill-uj
+            # SQLite u istom potezu da sledeci reload bude brz).
+            if not rows:
+                try:
+                    from routes.supabase_merge import (
+                        fetch_from_supabase, SUPPORTED_TABLES)
+                    if key in SUPPORTED_TABLES:
+                        supabase_rows = fetch_from_supabase(key)
+                        if supabase_rows:
+                            logger.info(f'Read-fallback: rehydrating {len(supabase_rows)} rows for {key} from Supabase')
+                            for _item in supabase_rows:
+                                _iid = _item.get('id')
+                                if not _iid:
+                                    continue
+                                try:
+                                    _payload = encrypt_data(_item) if callable(encrypt_data) else json.dumps(_item)
+                                except Exception:
+                                    _payload = json.dumps(_item, default=str)
+                                try:
+                                    c.execute(f'INSERT OR REPLACE INTO {key} (id, data) VALUES (?, ?)',
+                                              (_iid, _payload))
+                                except Exception:
+                                    continue
+                            try: conn.commit()
+                            except Exception: pass
+                            c.execute(f'SELECT data FROM {key}')
+                            rows = c.fetchall()
+                except Exception as _fb_err:
+                    logger.info(f'Supabase read-fallback failed for {key}: {_fb_err}')
+
             data = []
             for row in rows:
                 # Decrypt_data je pametan: pročitaće i ako je staro/kriptovano, i ako je novo/čisto
-                item = decrypt_data(row[0]) 
-                
+                item = decrypt_data(row[0])
+
                 if role != 'admin':
                     module_name = perm_map.get(key, key)
                     if not filter_by_ownership(key, item, module_name, permissions, user_id, role):

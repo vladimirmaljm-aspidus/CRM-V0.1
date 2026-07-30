@@ -259,6 +259,107 @@ def mirror_to_supabase(table: str, row: dict) -> bool:
         return False
 
 
+def _rehydrate_row(row: dict, table_info: dict) -> dict:
+    """Rekonstruise SQLite-shape dict iz Supabase reda.
+
+    Reverse od `_coerce_row`: uzima top-level whitelisted kolone i sve iz
+    JSONB `data` polja, spaja ih u jedan dict koji izgleda kao da je nikad
+    ni napustio SQLite. Direktne kolone imaju prioritet nad `data` (isto
+    kao pri upisu). Ovo je kljucno za `fetch_from_supabase` read-fallback.
+    """
+    if not isinstance(row, dict):
+        return {}
+    base = {}
+    data_blob = row.get('data')
+    if isinstance(data_blob, dict):
+        base.update(data_blob)
+    elif isinstance(data_blob, str):
+        try:
+            parsed = json.loads(data_blob)
+            if isinstance(parsed, dict):
+                base.update(parsed)
+        except Exception:
+            pass
+    for k, v in row.items():
+        if k == 'data':
+            continue
+        if v is None:
+            continue
+        base[k] = v
+    id_key = table_info.get('id_key', 'id') if isinstance(table_info, dict) else 'id'
+    if id_key != 'id' and id_key in row and row.get(id_key) is not None:
+        base.setdefault('id', row[id_key])
+    return base
+
+
+def fetch_from_supabase(table: str, limit: int = 5000) -> list:
+    """Vraca listu SQLite-shape dictova iz Supabase za datu tabelu.
+
+    Koristi se u `get_data` kao READ-FALLBACK kada je SQLite prazan (npr.
+    posle Render deploy-a koji brise efemerni disk). Best-effort — vraca []
+    ako Supabase nije dostupan ili tabela nije mapirana.
+    """
+    info = SUPPORTED_TABLES.get(table)
+    if not info:
+        return []
+    try:
+        from data_layer import select as _db_select
+        rows = _db_select(table, limit=limit) or []
+        return [_rehydrate_row(r, info) for r in rows if isinstance(r, dict)]
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).info(
+            f'Supabase read-fallback failed for {table}: {type(e).__name__}: {str(e)[:200]}')
+        return []
+
+
+def fetch_one_from_supabase(table: str, row_id: str) -> dict | None:
+    """Isto kao fetch_from_supabase ali za jedan red po ID-u."""
+    info = SUPPORTED_TABLES.get(table)
+    if not info or not row_id:
+        return None
+    try:
+        from data_layer import select_one as _db_select_one
+        id_key = info.get('id_key', 'id')
+        row = _db_select_one(table, {id_key: row_id})
+        if not row:
+            return None
+        return _rehydrate_row(row, info)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).info(
+            f'Supabase read-one fallback failed for {table}/{row_id}: {type(e).__name__}: {str(e)[:200]}')
+        return None
+
+
+def backfill_sqlite_from_supabase(table: str, conn, encrypt_fn=None) -> int:
+    """Kad SQLite ostane bez podataka, restore-uje ga iz Supabase u istoj
+    formi kakvu su get_data endpoint-i ocekivali (`{id, data}` gde je `data`
+    JSON blob). Vraca broj upisanih redova. Idempotentno preko UPSERT-a.
+    """
+    rows = fetch_from_supabase(table)
+    if not rows:
+        return 0
+    written = 0
+    c = conn.cursor()
+    for item in rows:
+        try:
+            item_id = item.get('id') or item.get('key')
+            if not item_id:
+                continue
+            payload = encrypt_fn(item) if callable(encrypt_fn) else json.dumps(item)
+            c.execute(f'INSERT OR REPLACE INTO "{table}" (id, data) VALUES (?, ?)',
+                      (item_id, payload))
+            written += 1
+        except Exception:
+            continue
+    try:
+        conn.commit()
+    except Exception:
+        pass
+    return written
+
+
 def mirror_delete_to_supabase(table: str, row_id: str) -> bool:
     """Isto ali za delete."""
     if not row_id:

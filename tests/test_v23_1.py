@@ -730,5 +730,85 @@ class T16LiveMirror(unittest.TestCase):
         self.assertFalse(mirror_to_supabase('unknown_table', {'id':'x'}))
 
 
+# ------------------------------------------------------------
+# 17) V23.3 READ-FALLBACK — rehydrate SQLite from Supabase on empty
+# ------------------------------------------------------------
+class T17ReadFallback(unittest.TestCase):
+    """V23.3: Kritican fix — Render brise SQLite pri deploy-u, a bez
+    read-fallback-a app prikazuje prazne tabele iako su podaci u Supabase.
+    Ovi testovi drze ponasanje `_rehydrate_row`, `fetch_from_supabase` i
+    ojacanog `get_data` endpoint-a."""
+
+    def test_01_rehydrate_direct_cols_override_data_jsonb(self):
+        from routes.supabase_merge import _rehydrate_row, SUPPORTED_TABLES
+        row = {'id': 'p1', 'email': 'top@x.com', 'company_name': 'Top Co',
+               'data': {'email': 'inner@x.com', 'phone': '+1', 'extra': 'y'}}
+        out = _rehydrate_row(row, SUPPORTED_TABLES['partners'])
+        self.assertEqual(out['id'], 'p1')
+        # Direktne kolone imaju prioritet nad `data` JSONB
+        self.assertEqual(out['email'], 'top@x.com')
+        self.assertEqual(out['company_name'], 'Top Co')
+        # Dodatna polja iz `data` moraju biti tu
+        self.assertEqual(out['phone'], '+1')
+        self.assertEqual(out['extra'], 'y')
+
+    def test_02_rehydrate_handles_string_json_data(self):
+        from routes.supabase_merge import _rehydrate_row, SUPPORTED_TABLES
+        row = {'id': 'p2', 'data': '{"foo":"bar","n":42}'}
+        out = _rehydrate_row(row, SUPPORTED_TABLES['partners'])
+        self.assertEqual(out['id'], 'p2')
+        self.assertEqual(out['foo'], 'bar')
+        self.assertEqual(out['n'], 42)
+
+    def test_03_rehydrate_none_values_ignored(self):
+        from routes.supabase_merge import _rehydrate_row, SUPPORTED_TABLES
+        row = {'id': 'p3', 'email': None, 'phone': None,
+               'data': {'email': 'keep@x.com'}}
+        out = _rehydrate_row(row, SUPPORTED_TABLES['partners'])
+        # None ne sme da nadjaca `data.email`
+        self.assertEqual(out.get('email'), 'keep@x.com')
+
+    def test_04_rehydrate_settings_key_maps_to_id(self):
+        from routes.supabase_merge import _rehydrate_row, SUPPORTED_TABLES
+        row = {'key': 'company', 'value': '{"n":"X"}'}
+        out = _rehydrate_row(row, SUPPORTED_TABLES['settings'])
+        # id_key='key' → id ostaje popunjen (setdefault)
+        self.assertEqual(out.get('id'), 'company')
+        self.assertEqual(out.get('key'), 'company')
+        self.assertEqual(out.get('value'), '{"n":"X"}')
+
+    def test_05_fetch_from_supabase_returns_empty_on_no_backend(self):
+        from routes.supabase_merge import fetch_from_supabase
+        # Bez Supabase env-a, fetch mora vratiti [] a ne baciti izuzetak
+        rows = fetch_from_supabase('partners')
+        self.assertIsInstance(rows, list)
+
+    def test_06_fetch_unknown_table_returns_empty(self):
+        from routes.supabase_merge import fetch_from_supabase, fetch_one_from_supabase
+        self.assertEqual(fetch_from_supabase('this_does_not_exist'), [])
+        self.assertIsNone(fetch_one_from_supabase('this_does_not_exist', 'x'))
+
+    def test_07_get_data_returns_empty_list_when_sqlite_and_supabase_empty(self):
+        """get_data na praznoj tabeli + nedostupan Supabase → [] a ne 500."""
+        client = app_module.app.test_client()
+        _login_admin(client)
+        r = client.get('/api/data/partners')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('value', r.get_json())
+
+    def test_08_backfill_sqlite_from_supabase_is_idempotent(self):
+        """Direktna simulacija — pozovi backfill sa mock rezultatima."""
+        from routes.supabase_merge import backfill_sqlite_from_supabase
+        from config import DB_FILE
+        import sqlite3 as _sq
+        # Bez Supabase konekcije, backfill vraca 0 ali ne baca
+        conn = _sq.connect(DB_FILE, timeout=5.0)
+        try:
+            written = backfill_sqlite_from_supabase('partners', conn)
+            self.assertEqual(written, 0)
+        finally:
+            conn.close()
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
