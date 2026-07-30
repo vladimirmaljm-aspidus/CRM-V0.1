@@ -5,6 +5,10 @@ from cryptography.fernet import Fernet
 
 logger = logging.getLogger(__name__)
 
+# V22.04.05 (user's parallel work) — verzija + public base URL za magic links / QR
+VERSION = "23.2"
+APP_BASE_URL = os.getenv("APP_BASE_URL", "").rstrip("/")
+
 # Apsolutna putanja do glavnog direktorijuma projekta
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
@@ -42,6 +46,9 @@ else:
     except Exception:
         # Na read-only/efemernom disku fajl možda ne može da se upiše; nastavi sa in-memory ključem.
         logger.warning("SECRET_KEY se ne može trajno sačuvati. Postavite env SECRET_KEY za stabilne sesije u produkciji.")
+
+# V22.04.05: signal za app.py da prikaže upozorenje ako SECRET_KEY nije eksplicitno postavljen
+SECRET_KEY_IS_GENERATED = not bool(os.getenv("SECRET_KEY"))
 
 # ==========================================================
 # ENCRYPTION KEY (FERNET) — šifruje osetljive podatke (SMTP lozinke, KYC, permisije)
@@ -98,6 +105,7 @@ ALLOWED_EXTENSIONS = {
     "png",
     "jpg",
     "jpeg",
+    "webp",
     "csv",
     "json",
     "txt",
@@ -106,3 +114,25 @@ ALLOWED_EXTENSIONS = {
     "xls",
     "xlsx",
 }
+
+
+def validate_config():
+    """V22.04.05 (user): production config sanity check.
+    Called from app.py at boot — logs warnings for missing env vars so
+    Render/Heroku deploys fail loudly instead of silently losing data."""
+    warnings = []
+    if SECRET_KEY_IS_GENERATED:
+        warnings.append("SECRET_KEY is auto-generated. Set SECRET_KEY env var for stable sessions.")
+    if not os.getenv("ENCRYPTION_KEY"):
+        warnings.append("ENCRYPTION_KEY is auto-generated. Set ENCRYPTION_KEY env var or encrypted data will be lost on redeploy.")
+    if os.getenv("USE_SUPABASE_AUTH", "").lower() in ("true", "1", "yes"):
+        for var in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_JWT_SECRET"):
+            if not os.getenv(var):
+                warnings.append(f"USE_SUPABASE_AUTH is enabled but {var} is not set.")
+    if os.getenv("USE_SUPABASE_STORAGE", "").lower() in ("true", "1", "yes"):
+        for var in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"):
+            if not os.getenv(var):
+                warnings.append(f"USE_SUPABASE_STORAGE is enabled but {var} is not set.")
+    for w in warnings:
+        logger.warning(f"CONFIG WARNING: {w}")
+    return warnings

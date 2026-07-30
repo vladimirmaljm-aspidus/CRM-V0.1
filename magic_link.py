@@ -18,6 +18,7 @@ Single-use is critical: without a jti register, an attacker who steals
 the link (browser history export, referrer leak) can replay it. The
 _USED_JTI set persists in the same DB used for portal sessions.
 """
+import db
 import base64
 import hashlib
 import hmac
@@ -32,10 +33,28 @@ from config import DB_FILE
 
 
 def _secret():
-    """SECRET_KEY iz env-a; fallback na jedinstveni per-instance ključ ako je
-    ostavljen prazan. Nikad ne treba biti 'change-me'."""
+    """SECRET_KEY za HMAC potpis magic linkova.
+
+    Prioritet:
+      1) os.environ['SECRET_KEY']  — najsigurnije, admin postavi u produkciji
+      2) config.SECRET_KEY         — auto-generisan + persistiran u instance/secret.key
+                                    (bezbedno: fajl je 600, per-instance jedinstven)
+
+    Vraća None SAMO ako oba fail-uju (mint i verify tada vraćaju no_secret_key)."""
     key = (os.environ.get('SECRET_KEY') or '').strip()
-    return key.encode('utf-8') if key else b'aspidus-fallback-secret-do-not-use-in-production-XXX'
+    if key:
+        return key.encode('utf-8')
+    try:
+        from config import SECRET_KEY as _cfg_secret
+        if _cfg_secret:
+            return str(_cfg_secret).encode('utf-8')
+    except Exception:
+        pass
+    import logging
+    logging.getLogger(__name__).warning(
+        'MAGIC_LINK: SECRET_KEY nije postavljen — magic linkovi su onemogućeni.'
+    )
+    return None
 
 
 def _b64url_enc(b):
@@ -48,8 +67,7 @@ def _b64url_dec(s):
 
 
 def _ensure_jti_table():
-    with sqlite3.connect(DB_FILE, timeout=15) as conn:
-        conn.execute('PRAGMA journal_mode=WAL')
+    with db.connect_raw(DB_FILE) as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS magic_link_used_jti (
             jti TEXT PRIMARY KEY,
             token TEXT,
@@ -63,7 +81,11 @@ def _ensure_jti_table():
 
 
 def mint(portal_token, ttl_minutes=15):
-    """Vraća potpisan payload string koji ide u URL kao ?ml=<...>"""
+    """Vraća potpisan payload string koji ide u URL kao ?ml=<...>
+    Vraća None ako SECRET_KEY nije konfigurisan."""
+    secret = _secret()
+    if secret is None:
+        return None
     now = datetime.now(timezone.utc)
     payload = {
         't': portal_token,
@@ -73,7 +95,7 @@ def mint(portal_token, ttl_minutes=15):
     }
     body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
     p_b64 = _b64url_enc(body)
-    sig = hmac.new(_secret(), p_b64.encode('ascii'), hashlib.sha256).digest()
+    sig = hmac.new(secret, p_b64.encode('ascii'), hashlib.sha256).digest()
     s_b64 = _b64url_enc(sig)
     return f'{p_b64}.{s_b64}'
 
@@ -83,13 +105,16 @@ def verify(ml_param, expected_portal_token, client_ip=None):
 
     Reason kodovi:
         'invalid_format', 'bad_signature', 'expired', 'token_mismatch',
-        'already_used', 'ok'
+        'already_used', 'no_secret_key', 'ok'
     """
+    secret = _secret()
+    if secret is None:
+        return (False, 'no_secret_key')
     if not ml_param or '.' not in ml_param:
         return (False, 'invalid_format')
     try:
         p_b64, s_b64 = ml_param.split('.', 1)
-        expected_sig = hmac.new(_secret(), p_b64.encode('ascii'), hashlib.sha256).digest()
+        expected_sig = hmac.new(secret, p_b64.encode('ascii'), hashlib.sha256).digest()
         got_sig = _b64url_dec(s_b64)
         if not hmac.compare_digest(expected_sig, got_sig):
             return (False, 'bad_signature')
@@ -115,7 +140,7 @@ def verify(ml_param, expected_portal_token, client_ip=None):
         return (False, 'invalid_format')
     _ensure_jti_table()
     try:
-        with sqlite3.connect(DB_FILE, timeout=15) as conn:
+        with db.connect_raw(DB_FILE) as conn:
             # Atomično: pokušaj INSERT — ako već postoji, PK conflict → already_used
             try:
                 conn.execute(
