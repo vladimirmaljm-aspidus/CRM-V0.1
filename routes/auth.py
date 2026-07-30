@@ -54,67 +54,21 @@ def login():
         log_audit('SECURITY', 'system', f'Blocked Blacklisted IP Attempt: {client_ip}. Device: {device_info}', is_suspicious=True, location=location)
         return jsonify({"error": "AUTH_ERROR"}), 401
     
-    # 3. Konekcija na bazu i provera korisnika
+    # 3. Ucitaj user-a DIREKTNO IZ SUPABASE (V24.0 — bez SQLite fallback-a)
     user = None
     try:
-        with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-            conn.execute('PRAGMA busy_timeout=30000;')
-            c = conn.cursor()
-            c.execute('SELECT id, username, password, role, permissions, signature, totp_secret, totp_enabled, totp_recovery, locked_until FROM users WHERE LOWER(username)=LOWER(?)', (username,))
-            user = c.fetchone()
-
-            # V23.4 SUPABASE FALLBACK: kada SQLite ne poznaje user-a (npr. posle
-            # Render deploy-a koji je obrisao efemerni disk), potrazi ga u
-            # Supabase i upisi ga nazad u SQLite pre login provere. Bez ovoga
-            # svaki redeploy izbacuje sve postojece korisnike.
-            if user is None:
-                try:
-                    from routes.supabase_merge import fetch_from_supabase
-                    all_sb = fetch_from_supabase('users')
-                    match = next((u for u in all_sb
-                                  if str(u.get('username','')).lower() == username.lower()), None)
-                    if match and match.get('password'):
-                        _pw = match['password']
-                        _perms = match.get('permissions') or {}
-                        if not isinstance(_perms, str):
-                            import json as _j
-                            _perms = _j.dumps(_perms, default=str)
-                        c.execute(
-                            'INSERT OR REPLACE INTO users (id, username, password, role, permissions, '
-                            'signature, totp_secret, totp_enabled, totp_recovery, locked_until, '
-                            'token_version, last_password_change_at, last_login_country, '
-                            'must_change_password, password_expires_at) '
-                            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                            (match['id'], match['username'], _pw,
-                             match.get('role') or 'employee', _perms,
-                             match.get('signature'), match.get('totp_secret'),
-                             int(bool(match.get('totp_enabled', False))),
-                             match.get('totp_recovery'), match.get('locked_until'),
-                             int(match.get('token_version', 1) or 1),
-                             match.get('last_password_change_at'),
-                             match.get('last_login_country'),
-                             int(bool(match.get('must_change_password', False))),
-                             match.get('password_expires_at'))
-                        )
-                        conn.commit()
-                        c.execute('SELECT id, username, password, role, permissions, signature, totp_secret, totp_enabled, totp_recovery, locked_until FROM users WHERE LOWER(username)=LOWER(?)', (username,))
-                        user = c.fetchone()
-                        if user:
-                            logger.info(f'LOGIN: user {username} restored from Supabase after SQLite miss')
-                except Exception as _sb_err:
-                    logger.info(f'LOGIN: Supabase fallback skipped for {username}: {_sb_err}')
+        import supabase_store as store
+        user = store.get_user_by_username(username)
     except Exception as e:
-        # Detaljno logovanje u server log (Render) radi dijagnostike; klijent dobija generičku poruku.
-        logger.error(f"LOGIN DB ERROR for user '{username}': {e}", exc_info=True)
-        log_audit('CRITICAL_ERROR', 'system', f'Login failed due to database error: {e}', is_suspicious=True, location=location)
+        logger.error(f"LOGIN Supabase read failed for '{username}': {e}", exc_info=True)
+        log_audit('CRITICAL_ERROR', 'system', f'Login failed — Supabase read: {e}',
+                  is_suspicious=True, location=location)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
 
     # ROUND F: account-level lockout — nezavisno od IP blacklist-a.
-    # Napadac iz razlicitih IP-a moze i dalje pokusati previse puta protiv istog user-a;
-    # sada, nakon N neuspelih pokusaja, konkretan nalog se zakljucava na M minuta.
-    if user and len(user) > 9 and user[9]:
+    if user and user.get('locked_until'):
         try:
-            _until = datetime.datetime.fromisoformat(user[9].replace('Z', '+00:00'))
+            _until = datetime.datetime.fromisoformat(str(user['locked_until']).replace('Z', '+00:00'))
             _now_dt = datetime.datetime.now(datetime.timezone.utc)
             if _until > _now_dt:
                 remaining = int((_until - _now_dt).total_seconds())
@@ -127,23 +81,21 @@ def login():
     # Dijagnostika (samo u server log): razlog neuspeha, bez otkrivanja klijentu.
     if not user:
         logger.info(f"LOGIN: unknown username '{username}' from IP {client_ip}")
-    elif not check_password_hash(user[2], password):
+    elif not (user.get('password') and check_password_hash(user['password'], password)):
         logger.info(f"LOGIN: wrong password for '{username}' from IP {client_ip}")
 
     # 4. Uspešna provera lozinke
-    if user and check_password_hash(user[2], password):
-        # 4a. 2FA gate — ako je korisnik uključio TOTP, mora predati validan kod
-        totp_secret_db = user[6] if len(user) > 6 else None
-        totp_enabled_db = int(user[7] or 0) if len(user) > 7 else 0
-        totp_recovery_db = user[8] if len(user) > 8 else None
+    if user and user.get('password') and check_password_hash(user['password'], password):
+        # 4a. 2FA gate
+        totp_secret_db = user.get('totp_secret')
+        totp_enabled_db = 1 if user.get('totp_enabled') else 0
+        totp_recovery_db = user.get('totp_recovery')
         if totp_enabled_db and totp_secret_db:
-            # Klijent ne šalje kod → tražimo drugi korak
             if not totp_code and not recovery_code:
                 log_audit('LOGIN', 'system', f'Password OK, waiting for 2FA code: {username}', location=location)
                 return jsonify({"status": "totp_required",
                                 "message": "Enter the 6-digit code from your Authenticator app, or a recovery code."}), 200
             ok = False
-            # Recovery code path — iskoristi (jedan-put) recovery i disable TOTP zahtev za tu prijavu
             if recovery_code:
                 try:
                     recovery_list = json.loads(totp_recovery_db) if totp_recovery_db else []
@@ -152,19 +104,15 @@ def login():
                 matched, remaining = verify_recovery_code(recovery_list, recovery_code)
                 if matched:
                     ok = True
-                    # Overwriteuj recovery listu u bazi (skinut korišćeni kod)
                     try:
-                        with sqlite3.connect(DB_FILE, timeout=15.0) as _con:
-                            _cc = _con.cursor()
-                            _cc.execute("UPDATE users SET totp_recovery=? WHERE id=?",
-                                        (json.dumps(remaining), user[0]))
-                            _con.commit()
+                        import supabase_store as _st
+                        from data_layer import update as _upd
+                        _upd('users', {'id': user['id']}, {'totp_recovery': json.dumps(remaining)})
                         log_audit('SECURITY', 'system',
                                   f'2FA login via recovery code (one used): {username}. Remaining: {len(remaining)}',
                                   is_suspicious=True, location=location)
                     except Exception:
                         logger.warning('recovery code update failed', exc_info=True)
-            # TOTP code path
             if not ok and totp_code:
                 ok = totp_verify(totp_secret_db, totp_code)
             if not ok:
@@ -172,9 +120,9 @@ def login():
                 return jsonify({"error": "TOTP_INVALID",
                                 "message": "Invalid 2FA code. Try again or use a recovery code."}), 401
         session.permanent = True
-        session['user_id'] = user[0]
-        session['username'] = user[1]
-        session['role'] = user[3]
+        session['user_id'] = user['id']
+        session['username'] = user['username']
+        session['role'] = user.get('role') or 'employee'
         session['login_time'] = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
         session['login_ip'] = client_ip
@@ -182,69 +130,57 @@ def login():
         session['login_ua_family'] = f"{request.user_agent.browser or ''}|{request.user_agent.platform or ''}"
         # Snimi aktuelnu token_version u sesiju; promena lozinke uveća broj u bazi
         # i sve stare sesije padnu na prvoj sledećoj zaštićenoj ruti.
-        session['token_version'] = get_user_token_version(user[0])
+        session['token_version'] = int(user.get('token_version', 1) or 1)
 
         if client_ip in FirewallCache.login_attempts:
             del FirewallCache.login_attempts[client_ip]
 
-        # ANOMALY DETEKCIJA: iznenadna prijava iz druge zemlje u odnosu na prethodnu.
+        # ANOMALY DETEKCIJA: iznenadna prijava iz druge zemlje. V24.0 — Supabase direktno.
         try:
             _, ip_location, _tz = get_ip_info(client_ip) if client_ip else ('', '', '')
-            # last_login_country se čuva u users tabeli (šema migrirana); poredimo
-            # ipapi.co "network_info" reprezentaciju grada/zemlje.
-            with sqlite3.connect(DB_FILE, timeout=15.0) as _conn:
-                _c = _conn.cursor()
-                _c.execute("SELECT last_login_country FROM users WHERE id=?", (user[0],))
-                prev = _c.fetchone()
-                prev_country = (prev[0] or '').strip() if prev else ''
-                # Grubo poređenje po "Country" tokenu (poslednji token u ipapi label-u)
-                new_country = ''
-                for _piece in [location, ip_location]:
-                    if _piece and ',' in _piece:
-                        new_country = _piece.split(',')[-1].strip()
-                        if new_country: break
-                if prev_country and new_country and prev_country != new_country:
-                    log_audit('SECURITY', 'system',
-                              f'ANOMALY: user {username} logged in from {new_country} — previous session was {prev_country}',
-                              is_suspicious=True, location=location)
-                if new_country:
-                    _c.execute("UPDATE users SET last_login_country=? WHERE id=?", (new_country, user[0]))
-                    _conn.commit()
+            prev_country = (user.get('last_login_country') or '').strip()
+            new_country = ''
+            for _piece in [location, ip_location]:
+                if _piece and ',' in _piece:
+                    new_country = _piece.split(',')[-1].strip()
+                    if new_country: break
+            if prev_country and new_country and prev_country != new_country:
+                log_audit('SECURITY', 'system',
+                          f'ANOMALY: user {username} logged in from {new_country} — previous session was {prev_country}',
+                          is_suspicious=True, location=location)
+            if new_country:
+                from data_layer import update as _upd
+                _upd('users', {'id': user['id']}, {'last_login_country': new_country})
         except Exception:
             logger.warning('anomaly detection failed', exc_info=True)
 
-        # ROUND F: per-session tracking + known-IP notification
+        # ROUND F: per-session tracking + known-IP notification (best-effort)
         try:
             from routes.security_center import (_create_session_row, record_login_ip,
                                                 send_new_ip_alert)
-            session['session_id'] = _create_session_row(user[0])
+            session['session_id'] = _create_session_row(user['id'])
             if client_ip:
-                is_new_ip = record_login_ip(user[0], client_ip)
+                is_new_ip = record_login_ip(user['id'], client_ip)
                 if is_new_ip:
-                    send_new_ip_alert(user[0], client_ip)
+                    send_new_ip_alert(user['id'], client_ip)
         except Exception:
             logger.warning('session_row/known_ip tracking failed', exc_info=True)
 
-        # ROUND F: must-change-password gate — postavi flag u response da frontend
-        # gura na Security > Password. Ne blokiramo login (jer je password check prosao),
-        # samo obavestimo klijenta i login_required ce nakon toga blokirati sve
-        # ne-security rute dok se lozinka ne promeni.
-        must_change = False
-        try:
-            with sqlite3.connect(DB_FILE, timeout=5.0) as _pc:
-                _r = _pc.execute("SELECT must_change_password FROM users WHERE id=?", (user[0],)).fetchone()
-                must_change = bool(_r and _r[0])
-        except Exception:
-            pass
+        must_change = bool(user.get('must_change_password'))
+        permissions = user.get('permissions') or {}
+        if isinstance(permissions, str):
+            try: permissions = json.loads(permissions)
+            except Exception: permissions = {}
 
         full_details = f"Successful login. Device: {device_info}"
         log_audit('LOGIN', 'system', full_details, location=location)
         return jsonify({
             "status": "success",
             "user": {
-                "id": user[0], "username": user[1], "role": user[3],
-                "permissions": json.loads(user[4]) if user[4] else {},
-                "signature": user[5] if len(user) > 5 else None,
+                "id": user['id'], "username": user['username'],
+                "role": user.get('role') or 'employee',
+                "permissions": permissions,
+                "signature": user.get('signature'),
             },
             "must_change_password": must_change,
         })
@@ -271,47 +207,53 @@ def login():
             max_attempts = int(policy.get('max_login_attempts', 10))
             lockout_min = int(policy.get('lockout_minutes', 15))
             # Count recent failed logins iz audit_logs za ovog user-a (poslednjih 15 min)
+            # V24.0: count failed attempts u Supabase audit_logs
             cutoff = (datetime.datetime.now(datetime.timezone.utc)
                       - datetime.timedelta(minutes=lockout_min)).isoformat().replace('+00:00', 'Z')
-            from config import AUDIT_DB_FILE
-            with sqlite3.connect(AUDIT_DB_FILE, timeout=5.0) as _ac:
-                # user_id nije jos postavljen na login (guest); brojimo po username-u u details.
-                _pattern = f"%Failed login attempt: {username}.%"
-                _fail_count = _ac.execute(
-                    "SELECT COUNT(*) FROM audit_logs WHERE action='SECURITY' "
-                    "AND details LIKE ? AND timestamp>=?",
-                    (_pattern, cutoff)
-                ).fetchone()[0]
+            _fail_count = 0
+            try:
+                from data_layer import select as _ds
+                _all = _ds('audit_logs',
+                           filters={'action': 'SECURITY', 'timestamp': ('gte', cutoff)},
+                           limit=200) or []
+                _pattern = f'Failed login attempt: {username}.'
+                _fail_count = sum(1 for r in _all if _pattern in (r.get('details') or ''))
+            except Exception:
+                _fail_count = 0
             if _fail_count + 1 >= max_attempts:
                 until_iso = (datetime.datetime.now(datetime.timezone.utc)
                              + datetime.timedelta(minutes=lockout_min)).isoformat().replace('+00:00', 'Z')
-                with sqlite3.connect(DB_FILE, timeout=10.0) as _lc:
-                    _lc.execute('PRAGMA busy_timeout=10000')
-                    _lc.execute("UPDATE users SET locked_until=? WHERE id=?", (until_iso, user[0]))
+                try:
+                    from data_layer import update as _upd
+                    _upd('users', {'id': user['id']}, {'locked_until': until_iso})
+                except Exception:
+                    pass
                 log_audit('SECURITY', 'system',
                           f'Auto-locked account {username} for {lockout_min}min after {_fail_count+1} failed attempts',
                           is_suspicious=True, location=location)
-                # Emailuj user-a sa unlock magic-link-om
+                # Emailuj user-a sa unlock magic-link-om (best-effort)
                 try:
-                    with sqlite3.connect(DB_FILE, timeout=5.0) as _uc:
-                        _u = _uc.execute("SELECT email FROM users WHERE id=?", (user[0],)).fetchone()
-                    if _u and _u[0]:
+                    _email = user.get('email')
+                    if _email:
                         from routes.security_center import _hash_token, _now_iso
-                        import secrets
-                        tok = secrets.token_urlsafe(48)
+                        import secrets as _sec
+                        tok = _sec.token_urlsafe(48)
                         expires = (datetime.datetime.now(datetime.timezone.utc)
                                    + datetime.timedelta(hours=2)).isoformat().replace('+00:00', 'Z')
-                        with sqlite3.connect(DB_FILE, timeout=5.0) as _tc:
-                            _tc.execute(
-                                "INSERT INTO magic_login_tokens (token, user_id, purpose, created_at, expires_at, request_ip) "
-                                "VALUES (?, ?, 'unlock', ?, ?, ?)",
-                                (_hash_token(tok), user[0], _now_iso(), expires, client_ip)
-                            )
+                        from data_layer import insert as _ins
+                        try:
+                            _ins('magic_login_tokens', {
+                                'token': _hash_token(tok), 'user_id': user['id'],
+                                'purpose': 'unlock', 'created_at': _now_iso(),
+                                'expires_at': expires, 'request_ip': client_ip,
+                            })
+                        except Exception:
+                            pass
                         base = request.host_url.rstrip('/')
                         link = f"{base}/login/magic?t={tok}"
                         from utils_email import send_email_now
                         send_email_now(
-                            _u[0], 'Aspidus — Account locked, unlock link',
+                            _email, 'Aspidus — Account locked, unlock link',
                             f"<p>Hi {username},</p>"
                             f"<p>Your account was temporarily locked after {_fail_count+1} failed sign-in attempts. "
                             f"It will unlock automatically in {lockout_min} minutes.</p>"
@@ -343,33 +285,27 @@ def logout():
 @auth_bp.route('/api/auth/me', methods=['GET'])
 def me():
     if 'user_id' in session:
-        row = None
-        try:
-            with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-                conn.execute('PRAGMA busy_timeout=30000;')
-                c = conn.cursor()
-                c.execute('SELECT permissions, signature, full_name, email, phone, notif_prefs '
-                          'FROM users WHERE id=?', (session['user_id'],))
-                row = c.fetchone()
-        except Exception:
-            pass
-
-        notif_prefs = {}
-        if row and row[5]:
-            try: notif_prefs = json.loads(row[5])
-            except Exception: pass
-
+        import supabase_store as store
+        u = store.get_user_by_id(session['user_id']) or {}
+        perms = u.get('permissions') or {}
+        if isinstance(perms, str):
+            try: perms = json.loads(perms)
+            except Exception: perms = {}
+        notif = u.get('notif_prefs') or {}
+        if isinstance(notif, str):
+            try: notif = json.loads(notif)
+            except Exception: notif = {}
         return jsonify({
             "user": {
                 "id": session['user_id'],
                 "username": session['username'],
                 "role": session['role'],
-                "permissions": json.loads(row[0]) if row and row[0] else {},
-                "signature": (row[1] if row and len(row) > 1 else None),
-                "full_name": (row[2] if row and len(row) > 2 else '') or '',
-                "email":     (row[3] if row and len(row) > 3 else '') or '',
-                "phone":     (row[4] if row and len(row) > 4 else '') or '',
-                "notif_prefs": notif_prefs,
+                "permissions": perms,
+                "signature": u.get('signature'),
+                "full_name": u.get('full_name') or '',
+                "email":     u.get('email') or '',
+                "phone":     u.get('phone') or '',
+                "notif_prefs": notif,
             }
         })
     return jsonify({"error": "UNAUTHORIZED"}), 401
@@ -420,27 +356,15 @@ def change_password():
     try:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
         pw_hash = generate_password_hash(new_password, method='scrypt:32768:8:1')
-        with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-            conn.execute('PRAGMA busy_timeout=30000;')
-            c = conn.cursor()
-            c.execute('UPDATE users SET password=?, last_password_change_at=? WHERE id=?', (pw_hash, now_iso, session['user_id']))
-            conn.commit()
-        # V23.4: mirror novog password hash-a u Supabase da preziveli redeploy
-        try:
-            from routes.supabase_merge import mirror_to_supabase
-            mirror_to_supabase('users', {
-                'id': session['user_id'],
-                'username': session.get('username'),
-                'password': pw_hash,
-                'last_password_change_at': now_iso,
-            })
-        except Exception as _mirr_err:
-            logger.info(f'password mirror to Supabase skipped: {_mirr_err}')
+        # V24.0: direktno u Supabase, bez SQLite
+        import supabase_store as _store
+        _store.update_user_password(session['user_id'], pw_hash, now_iso)
         try:
             add_password_history(session['user_id'], pw_hash)
         except Exception:
             pass
     except Exception:
+        logger.error('change_password failed', exc_info=True)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
 
     # Invalidate SVE prethodne sesije (uključujući trenutnu) — korisnik mora ponovo
@@ -488,11 +412,11 @@ def set_signature():
         sig = None
 
     try:
-        with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-            conn.execute('PRAGMA busy_timeout=30000;')
-            conn.execute('UPDATE users SET signature=? WHERE id=?', (sig, session['user_id']))
-            conn.commit()
+        # V24.0: direktno u Supabase
+        from data_layer import update as _upd
+        _upd('users', {'id': session['user_id']}, {'signature': sig})
     except Exception:
+        logger.error('set_signature failed', exc_info=True)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
 
     log_audit('EDIT', 'users', 'User updated their personal signature.' if sig else 'User removed their personal signature.')

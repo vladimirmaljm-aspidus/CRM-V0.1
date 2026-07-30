@@ -76,6 +76,13 @@ if not app.config['SESSION_COOKIE_SECURE']:
 # (npr. kolona 'signature') se ne bi primenile. Sada se izvršava uvek.
 init_db()
 
+# V24.0: Osiguraj da admin postoji u Supabase (login sada cita samo Supabase).
+try:
+    from database import seed_admin_supabase as _seed_sb
+    _seed_sb()
+except Exception as _seed_err:
+    print(f'[seed supabase] {_seed_err}')
+
 # Bulletproof DB — postavi WAL, mmap, cache-size, busy_timeout na SVIM DB
 # fajlovima. WAL mode je persistan na disku, tako da svi budući konektori
 # (uključujući i one koji zovu sqlite3.connect direktno) rade preko WAL-a.
