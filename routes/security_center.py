@@ -50,25 +50,25 @@ def _hash_token(raw: str) -> str:
 
 
 def _get_policy() -> dict:
-    """Cita security policy iz settings tabele. Defaults ako nema entry-ja."""
+    """V24.1 SUPABASE-ONLY: cita security policy iz Supabase settings tabele."""
     defaults = {
         'enforce_2fa_for_admins': False,
         'max_login_attempts': 10,
         'lockout_minutes': 15,
         'password_min_length': 12,
-        'password_max_age_days': 0,        # 0 = disabled
+        'password_max_age_days': 0,
         'password_history_count': 5,
         'notify_new_ip': True,
         'trusted_device_ttl_days': 30,
         'magic_link_ttl_minutes': 15,
     }
     try:
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='security_policy'").fetchone()
-            if row and row[0]:
-                stored = json.loads(row[0])
-                if isinstance(stored, dict):
-                    defaults.update(stored)
+        import supabase_store as _store
+        v = _store.get_setting('security_policy')
+        if v:
+            stored = json.loads(v) if isinstance(v, str) else v
+            if isinstance(stored, dict):
+                defaults.update(stored)
     except Exception:
         pass
     return defaults
@@ -77,13 +77,11 @@ def _get_policy() -> dict:
 def _set_policy(patch: dict) -> dict:
     current = _get_policy()
     current.update({k: v for k, v in patch.items() if k in current})
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('security_policy', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (json.dumps(current),)
-        )
+    try:
+        import supabase_store as _store
+        _store.set_setting('security_policy', json.dumps(current))
+    except Exception:
+        pass
     return current
 
 
@@ -104,19 +102,20 @@ def security_page():
 @security_bp.route('/api/security/sessions', methods=['GET'])
 @login_required
 def my_sessions():
+    """V24.1 SUPABASE-ONLY."""
     uid = session.get('user_id')
     current_sid = session.get('session_id')
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT id, created_at, last_seen_at, ip, country, ua_family, device_label, revoked "
-            "FROM user_sessions WHERE user_id=? ORDER BY last_seen_at DESC LIMIT 50",
-            (uid,)
-        ).fetchall()
+    from data_layer import select as _dl_select
+    rows = _dl_select('user_sessions', filters={'user_id': uid},
+                      order='-last_seen_at', limit=50) or []
     return jsonify({
         'sessions': [{
-            'id': r[0], 'created_at': r[1], 'last_seen_at': r[2],
-            'ip': r[3], 'country': r[4], 'ua': r[5], 'device': r[6],
-            'revoked': bool(r[7]), 'is_current': r[0] == current_sid,
+            'id': r.get('id'), 'created_at': r.get('created_at'),
+            'last_seen_at': r.get('last_seen_at'),
+            'ip': r.get('ip'), 'country': r.get('country'),
+            'ua': r.get('ua_family'), 'device': r.get('device_label'),
+            'revoked': bool(r.get('revoked')),
+            'is_current': r.get('id') == current_sid,
         } for r in rows]
     })
 
@@ -124,17 +123,14 @@ def my_sessions():
 @security_bp.route('/api/security/sessions/<sid>/revoke', methods=['POST'])
 @login_required
 def revoke_session(sid):
+    """V24.1 SUPABASE-ONLY."""
     uid = session.get('user_id')
     now = _now_iso()
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        # user moze da revoke-uje SAMO svoje sesije (WHERE user_id=?)
-        n = conn.execute(
-            "UPDATE user_sessions SET revoked=1, revoked_at=?, revoked_reason='user_revoked' "
-            "WHERE id=? AND user_id=? AND revoked=0",
-            (now, sid, uid)
-        ).rowcount
-    if not n:
+    from data_layer import update as _dl_update
+    updated = _dl_update('user_sessions',
+                         {'id': sid, 'user_id': uid, 'revoked': False},
+                         {'revoked': True, 'revoked_at': now, 'revoked_reason': 'user_revoked'})
+    if not updated:
         return jsonify({'error': 'not_found_or_already_revoked'}), 404
     log_audit('SECURITY', 'session', f'User revoked session {sid[:8]}…')
     return jsonify({'revoked': True})
@@ -173,17 +169,17 @@ def login_history():
 @security_bp.route('/api/security/known-ips', methods=['GET'])
 @login_required
 def known_ips():
+    """V24.1 SUPABASE-ONLY."""
     uid = session.get('user_id')
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT id, ip, country, city, first_seen, last_seen, login_count "
-            "FROM known_ips WHERE user_id=? ORDER BY last_seen DESC",
-            (uid,)
-        ).fetchall()
+    from data_layer import select as _dl_select
+    rows = _dl_select('known_ips', filters={'user_id': uid},
+                      order='-last_seen') or []
     return jsonify({
         'ips': [{
-            'id': r[0], 'ip': r[1], 'country': r[2], 'city': r[3],
-            'first_seen': r[4], 'last_seen': r[5], 'login_count': r[6],
+            'id': r.get('id'), 'ip': r.get('ip'),
+            'country': r.get('country'), 'city': r.get('city'),
+            'first_seen': r.get('first_seen'), 'last_seen': r.get('last_seen'),
+            'login_count': r.get('login_count'),
         } for r in rows]
     })
 
@@ -191,13 +187,12 @@ def known_ips():
 @security_bp.route('/api/security/known-ips/<kid>/forget', methods=['POST'])
 @login_required
 def forget_ip(kid):
+    """V24.1 SUPABASE-ONLY."""
     uid = session.get('user_id')
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        n = conn.execute("DELETE FROM known_ips WHERE id=? AND user_id=?",
-                         (kid, uid)).rowcount
+    from data_layer import delete as _dl_delete
+    n = _dl_delete('known_ips', {'id': kid, 'user_id': uid})
     log_audit('SECURITY', 'known_ips', f'User forgot known IP {kid}')
-    return jsonify({'deleted': n})
+    return jsonify({'deleted': int(n or 0)})
 
 
 # =========================================================================
@@ -207,17 +202,17 @@ def forget_ip(kid):
 @security_bp.route('/api/security/trusted-devices', methods=['GET'])
 @login_required
 def trusted_devices():
+    """V24.1 SUPABASE-ONLY."""
     uid = session.get('user_id')
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT id, label, created_at, expires_at, last_seen_at, last_ip, revoked "
-            "FROM trusted_devices WHERE user_id=? ORDER BY last_seen_at DESC NULLS LAST",
-            (uid,)
-        ).fetchall()
+    from data_layer import select as _dl_select
+    rows = _dl_select('trusted_devices', filters={'user_id': uid},
+                      order='-last_seen_at') or []
     return jsonify({
         'devices': [{
-            'id': r[0], 'label': r[1], 'created_at': r[2], 'expires_at': r[3],
-            'last_seen_at': r[4], 'last_ip': r[5], 'revoked': bool(r[6]),
+            'id': r.get('id'), 'label': r.get('label'),
+            'created_at': r.get('created_at'), 'expires_at': r.get('expires_at'),
+            'last_seen_at': r.get('last_seen_at'), 'last_ip': r.get('last_ip'),
+            'revoked': bool(r.get('revoked')),
         } for r in rows]
     })
 
@@ -225,13 +220,12 @@ def trusted_devices():
 @security_bp.route('/api/security/trusted-devices/<did>/revoke', methods=['POST'])
 @login_required
 def revoke_device(did):
+    """V24.1 SUPABASE-ONLY."""
     uid = session.get('user_id')
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        n = conn.execute("UPDATE trusted_devices SET revoked=1 WHERE id=? AND user_id=?",
-                         (did, uid)).rowcount
+    from data_layer import update as _dl_update
+    updated = _dl_update('trusted_devices', {'id': did, 'user_id': uid}, {'revoked': True})
     log_audit('SECURITY', 'trusted_device', f'User revoked device {did}')
-    return jsonify({'revoked': n})
+    return jsonify({'revoked': len(updated) if isinstance(updated, list) else int(bool(updated))})
 
 
 # =========================================================================
@@ -265,27 +259,25 @@ def request_magic_link():
         return jsonify({'status': 'ok'})  # constant response
 
     ip = get_client_ip()
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        row = conn.execute("SELECT id, email, username FROM users WHERE LOWER(username)=?",
-                           (username,)).fetchone()
-
-    if not row or not row[1]:
-        # I dalje vracamo ok da napadac ne moze da otkrije koji username-i imaju email
+    import supabase_store as _store
+    u = _store.get_user_by_username(username)
+    if not u or not u.get('email'):
+        # Constant response da napadac ne otkrije koji usernames imaju email
         return jsonify({'status': 'ok'})
+    uid = u['id']; email = u['email']; real_username = u['username']
 
-    uid, email, real_username = row
     tok = secrets.token_urlsafe(48)
     policy = _get_policy()
     expires = (datetime.now(timezone.utc) + timedelta(minutes=policy['magic_link_ttl_minutes'])).isoformat().replace('+00:00', 'Z')
 
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute(
-            "INSERT INTO magic_login_tokens (token, user_id, purpose, created_at, expires_at, request_ip) "
-            "VALUES (?, ?, 'login', ?, ?, ?)",
-            (_hash_token(tok), uid, _now_iso(), expires, ip)
-        )
+    from data_layer import insert as _dl_insert
+    try:
+        _dl_insert('magic_login_tokens', {
+            'token': _hash_token(tok), 'user_id': uid, 'purpose': 'login',
+            'created_at': _now_iso(), 'expires_at': expires, 'request_ip': ip,
+        })
+    except Exception:
+        pass
 
     # Sastavi link i posalji preko utils_email
     from urllib.parse import urljoin
@@ -318,39 +310,34 @@ def consume_magic_link():
         return "Missing token.", 400
     tok_hash = _hash_token(tok)
     now_iso = _now_iso()
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        row = conn.execute(
-            "SELECT user_id, expires_at, used_at, purpose FROM magic_login_tokens WHERE token=?",
-            (tok_hash,)
-        ).fetchone()
-        if not row:
-            return "Invalid or already-used link.", 400
-        uid, expires_at, used_at, purpose = row
-        if used_at:
-            return "This link has already been used.", 400
-        if expires_at < now_iso:
-            return "This link has expired. Request a new one from the sign-in page.", 400
-        # Ucitaj usera
-        u = conn.execute("SELECT id, username, role, permissions, signature FROM users WHERE id=?", (uid,)).fetchone()
-        if not u:
-            return "User not found.", 400
-        # Mark used
-        conn.execute("UPDATE magic_login_tokens SET used_at=? WHERE token=?", (now_iso, tok_hash))
+    from data_layer import select_one as _dl_select_one, update as _dl_update
+    row = _dl_select_one('magic_login_tokens', {'token': tok_hash})
+    if not row:
+        return "Invalid or already-used link.", 400
+    uid = row.get('user_id'); expires_at = row.get('expires_at')
+    used_at = row.get('used_at'); purpose = row.get('purpose')
+    if used_at:
+        return "This link has already been used.", 400
+    if str(expires_at) < now_iso:
+        return "This link has expired. Request a new one from the sign-in page.", 400
+    import supabase_store as _store
+    u = _store.get_user_by_id(uid)
+    if not u:
+        return "User not found.", 400
+    _dl_update('magic_login_tokens', {'token': tok_hash}, {'used_at': now_iso})
 
-    # Postavi session isto kao standardni login (bez GPS/2FA gate-a — magic link je vec pouzdan)
     from utils import get_user_token_version
     session.permanent = True
-    session['user_id'] = u[0]
-    session['username'] = u[1]
-    session['role'] = u[2]
+    session['user_id'] = u.get('id')
+    session['username'] = u.get('username')
+    session['role'] = u.get('role')
     session['login_time'] = datetime.now(timezone.utc).timestamp()
     session['login_ip'] = get_client_ip()
     session['login_ua'] = request.user_agent.string if request.user_agent else 'Unknown'
     session['login_ua_family'] = f"{request.user_agent.browser or ''}|{request.user_agent.platform or ''}"
-    session['token_version'] = get_user_token_version(u[0])
-    session['session_id'] = _create_session_row(u[0])
-    log_audit('LOGIN', 'system', f'Magic-link successful login for {u[1]} (purpose={purpose})')
+    session['token_version'] = get_user_token_version(u.get('id'))
+    session['session_id'] = _create_session_row(u.get('id'))
+    log_audit('LOGIN', 'system', f'Magic-link successful login for {u.get("username")} (purpose={purpose})')
     from flask import redirect
     if purpose == 'break_glass':
         return redirect('/profile/security#password')
@@ -369,13 +356,12 @@ def lockout_status():
     username = str(body.get('username') or '').strip().lower()[:100]
     if not username:
         return jsonify({'locked': False, 'remaining_seconds': 0})
-    with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-        row = conn.execute("SELECT locked_until FROM users WHERE LOWER(username)=?",
-                           (username,)).fetchone()
-    if not row or not row[0]:
+    import supabase_store as _store
+    u = _store.get_user_by_username(username)
+    if not u or not u.get('locked_until'):
         return jsonify({'locked': False, 'remaining_seconds': 0})
     try:
-        until = datetime.fromisoformat(row[0].replace('Z', '+00:00'))
+        until = datetime.fromisoformat(str(u['locked_until']).replace('Z', '+00:00'))
         remaining = int((until - datetime.now(timezone.utc)).total_seconds())
     except Exception:
         return jsonify({'locked': False, 'remaining_seconds': 0})
@@ -434,11 +420,10 @@ def admin_policy_set():
 def admin_force_reset(uid):
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        n = conn.execute("UPDATE users SET must_change_password=1 WHERE id=?", (uid,)).rowcount
+    from data_layer import update as _dl_update
+    n = _dl_update('users', {'id': uid}, {'must_change_password': True})
     log_audit('SECURITY', 'admin', f'Admin forced password reset for user {uid}')
-    return jsonify({'forced': n})
+    return jsonify({'forced': len(n) if isinstance(n, list) else int(bool(n))})
 
 
 @security_bp.route('/api/admin/security/unlock/<uid>', methods=['POST'])
@@ -446,11 +431,10 @@ def admin_force_reset(uid):
 def admin_unlock(uid):
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        n = conn.execute("UPDATE users SET locked_until=NULL WHERE id=?", (uid,)).rowcount
+    from data_layer import update as _dl_update
+    n = _dl_update('users', {'id': uid}, {'locked_until': None})
     log_audit('SECURITY', 'admin', f'Admin unlocked user {uid}')
-    return jsonify({'unlocked': n})
+    return jsonify({'unlocked': len(n) if isinstance(n, list) else int(bool(n))})
 
 
 @security_bp.route('/api/admin/security/break-glass/<uid>', methods=['POST'])
@@ -462,29 +446,30 @@ def admin_break_glass(uid):
     change-password stranicu (purpose='break_glass')."""
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        row = conn.execute("SELECT username, email FROM users WHERE id=?", (uid,)).fetchone()
-    if not row or not row[1]:
+    import supabase_store as _store
+    from data_layer import insert as _dl_insert
+    u = _store.get_user_by_id(uid)
+    if not u or not u.get('email'):
         return jsonify({'error': 'user_has_no_email'}), 400
 
     tok = secrets.token_urlsafe(48)
     expires = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat().replace('+00:00', 'Z')
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute(
-            "INSERT INTO magic_login_tokens (token, user_id, purpose, created_at, expires_at, request_ip) "
-            "VALUES (?, ?, 'break_glass', ?, ?, ?)",
-            (_hash_token(tok), uid, _now_iso(), expires, get_client_ip())
-        )
+    try:
+        _dl_insert('magic_login_tokens', {
+            'token': _hash_token(tok), 'user_id': uid, 'purpose': 'break_glass',
+            'created_at': _now_iso(), 'expires_at': expires, 'request_ip': get_client_ip(),
+        })
+    except Exception:
+        pass
 
     base = request.host_url.rstrip('/')
     link = f"{base}/login/magic?t={tok}"
     try:
         from utils_email import send_email_now
         send_email_now(
-            row[1],
+            u.get('email'),
             'Aspidus — Emergency account recovery',
-            f"<p>Hi {row[0]},</p>"
+            f"<p>Hi {u.get('username')},</p>"
             f"<p>An administrator ({session.get('username')}) issued a one-time recovery link for your account. "
             f"It expires in 30 minutes. After clicking, you'll be signed in and asked to set a new password.</p>"
             f"<p><a href=\"{link}\">Recover my account</a></p>"
@@ -526,16 +511,9 @@ def _create_session_row(uid: str) -> str:
         'id': sid, 'user_id': uid, 'created_at': now, 'last_seen_at': now,
         'ip': ip, 'country': country, 'user_agent': ua,
         'ua_family': ua_family, 'device_label': device_label,
+        'revoked': False,
     }
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute(
-            "INSERT INTO user_sessions (id, user_id, created_at, last_seen_at, ip, country, "
-            "user_agent, ua_family, device_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (sid, uid, now, now, ip, country, ua, ua_family, device_label)
-        )
-    # V23.1 #1 — Supabase mirror (best-effort). Ako se sesija ne prenese,
-    # nista strasno — sledeci HEARTBEAT ce ponovo probati preko touch_session.
+    # V24.1 SUPABASE-ONLY
     try:
         from data_layer import upsert as _db_upsert
         _db_upsert('user_sessions', row, on_conflict='id')
@@ -545,14 +523,12 @@ def _create_session_row(uid: str) -> str:
 
 
 def touch_session(sid: str) -> None:
-    """Poziva se iz login_required da azurira last_seen_at. Best-effort."""
+    """V24.1 SUPABASE-ONLY."""
     if not sid:
         return
     try:
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            conn.execute('PRAGMA busy_timeout=5000')
-            conn.execute("UPDATE user_sessions SET last_seen_at=? WHERE id=?",
-                         (_now_iso(), sid))
+        from data_layer import update as _dl_update
+        _dl_update('user_sessions', {'id': sid}, {'last_seen_at': _now_iso()})
     except Exception:
         pass
 
@@ -561,9 +537,9 @@ def is_session_revoked(sid: str) -> bool:
     if not sid:
         return False
     try:
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            row = conn.execute("SELECT revoked FROM user_sessions WHERE id=?", (sid,)).fetchone()
-        return bool(row and row[0])
+        from data_layer import select_one as _dl_select_one
+        row = _dl_select_one('user_sessions', {'id': sid})
+        return bool(row and row.get('revoked'))
     except Exception:
         return False
 
@@ -589,19 +565,24 @@ def record_login_ip(uid: str, ip: str) -> bool:
             country = parts[-1].strip()[:80]
     except Exception:
         pass
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        r = conn.execute("SELECT id FROM known_ips WHERE user_id=? AND ip=?", (uid, ip)).fetchone()
-        if r:
-            conn.execute("UPDATE known_ips SET last_seen=?, login_count=login_count+1 WHERE id=?",
-                         (now, r[0]))
+    # V24.1 SUPABASE-ONLY
+    try:
+        from data_layer import select as _dl_select, update as _dl_update, insert as _dl_insert
+        rows = _dl_select('known_ips', filters={'user_id': uid, 'ip': ip}, limit=1) or []
+        if rows:
+            existing = rows[0]
+            _dl_update('known_ips', {'id': existing.get('id')},
+                       {'last_seen': now,
+                        'login_count': int(existing.get('login_count', 0) or 0) + 1})
         else:
             is_new = True
-            conn.execute(
-                "INSERT INTO known_ips (id, user_id, ip, country, city, first_seen, last_seen) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), uid, ip, country, city, now, now)
-            )
+            _dl_insert('known_ips', {
+                'id': str(uuid.uuid4()), 'user_id': uid, 'ip': ip,
+                'country': country, 'city': city,
+                'first_seen': now, 'last_seen': now, 'login_count': 1,
+            })
+    except Exception:
+        pass
     return is_new
 
 
@@ -611,11 +592,11 @@ def send_new_ip_alert(uid: str, ip: str) -> None:
     if not policy.get('notify_new_ip'):
         return
     try:
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            row = conn.execute("SELECT username, email FROM users WHERE id=?", (uid,)).fetchone()
-        if not row or not row[1]:
+        import supabase_store as _store
+        _u = _store.get_user_by_id(uid)
+        if not _u or not _u.get('email'):
             return
-        username, email = row
+        username = _u.get('username'); email = _u.get('email')
         ua = 'Unknown'
         try:
             ua = request.user_agent.string
@@ -653,21 +634,21 @@ def send_new_ip_alert(uid: str, ip: str) -> None:
 # =========================================================================
 
 def check_password_reuse(uid: str, plain_password: str) -> bool:
-    """Vraca True ako plain_password matchuje bilo koji od poslednjih N hasheva."""
+    """V24.1 SUPABASE-ONLY."""
     from werkzeug.security import check_password_hash
     policy = _get_policy()
     n = int(policy.get('password_history_count', 5))
     if n <= 0:
         return False
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT password_hash FROM password_history "
-            "WHERE user_id=? ORDER BY changed_at DESC LIMIT ?",
-            (uid, n)
-        ).fetchall()
-    for (h,) in rows:
+    try:
+        from data_layer import select as _dl_select
+        rows = _dl_select('password_history', filters={'user_id': uid},
+                          order='-changed_at', limit=n) or []
+    except Exception:
+        return False
+    for r in rows:
         try:
-            if check_password_hash(h, plain_password):
+            if check_password_hash(r.get('password_hash', ''), plain_password):
                 return True
         except Exception:
             pass
@@ -675,28 +656,29 @@ def check_password_reuse(uid: str, plain_password: str) -> bool:
 
 
 def add_password_history(uid: str, password_hash: str) -> None:
+    """V24.1 SUPABASE-ONLY."""
     now = _now_iso()
     policy = _get_policy()
     keep = int(policy.get('password_history_count', 5))
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute(
-            "INSERT INTO password_history (id, user_id, password_hash, changed_at) "
-            "VALUES (?, ?, ?, ?)",
-            (str(uuid.uuid4()), uid, password_hash, now)
-        )
+    try:
+        from data_layer import insert as _dl_insert, select as _dl_select, delete as _dl_delete, update as _dl_update
+        _dl_insert('password_history', {
+            'id': str(uuid.uuid4()), 'user_id': uid,
+            'password_hash': password_hash, 'changed_at': now,
+        })
         # Prune old
         if keep > 0:
-            conn.execute(
-                "DELETE FROM password_history WHERE user_id=? AND id NOT IN ("
-                "SELECT id FROM password_history WHERE user_id=? ORDER BY changed_at DESC LIMIT ?)",
-                (uid, uid, keep)
-            )
-        # Postavi password_expires_at ako je policy > 0
+            all_rows = _dl_select('password_history', filters={'user_id': uid},
+                                  order='-changed_at') or []
+            for r in all_rows[keep:]:
+                try: _dl_delete('password_history', {'id': r.get('id')})
+                except Exception: pass
+        # password_expires_at ako je policy > 0
         max_age = int(policy.get('password_max_age_days', 0))
         if max_age > 0:
             expires = (datetime.now(timezone.utc) + timedelta(days=max_age)).isoformat().replace('+00:00', 'Z')
-            conn.execute("UPDATE users SET password_expires_at=?, must_change_password=0 WHERE id=?",
-                         (expires, uid))
-        else:
-            conn.execute("UPDATE users SET must_change_password=0 WHERE id=?", (uid,))
+            _dl_update('users', {'id': uid},
+                       {'password_expires_at': expires, 'must_change_password': False})
+    except Exception:
+        pass
+    return
