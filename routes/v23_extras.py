@@ -1,26 +1,18 @@
-"""
-V23.1 extras — bulk actions, custom fields, API keys, outbound webhooks.
-
-Sve pod admin permissions kljucevima iz PERMISSION_CATALOG.
-"""
+"""V24.4 SUPABASE-ONLY: bulk actions, custom fields, API keys, outbound webhooks."""
 from __future__ import annotations
 
 import hashlib
 import hmac
 import json
 import secrets
-import sqlite3
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request, session
-
-from config import DB_FILE
+from flask import Blueprint, jsonify, request, session, render_template
 from utils import login_required, log_audit
-
-from flask import render_template
+import supabase_store as store
 
 v23_extras_bp = Blueprint('v23_extras_bp', __name__)
 
@@ -46,7 +38,7 @@ def _now() -> str:
 
 
 # =========================================================================
-#  BULK ACTIONS — apply operation to N entities at once
+#  BULK ACTIONS
 # =========================================================================
 
 BULK_ALLOWED = {
@@ -69,49 +61,40 @@ def bulk_action(entity, action):
         return jsonify({'error': 'ids_required'}), 400
     if len(ids) > 500:
         return jsonify({'error': 'too_many_ids_max_500'}), 400
-
     tag_value = str(body.get('tag') or '').strip()[:60] if action == 'tag' else None
 
-    ok = 0
-    failed = 0
-    with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-        conn.execute('PRAGMA busy_timeout=30000')
-        for eid in ids:
-            try:
-                if action == 'delete':
-                    n = conn.execute(f"DELETE FROM {entity} WHERE id=?", (eid,)).rowcount
-                    if n:
-                        ok += 1
-                    else:
-                        failed += 1
-                else:
-                    r = conn.execute(f"SELECT data FROM {entity} WHERE id=?", (eid,)).fetchone()
-                    if not r:
-                        failed += 1
-                        continue
-                    try:
-                        data = json.loads(r[0]) if r[0] else {}
-                    except Exception:
-                        data = {}
-                    if action == 'archive':
-                        data['archived'] = True
-                        data['archivedAt'] = _now()
-                        data['archivedBy'] = session.get('username')
-                    elif action == 'unarchive':
-                        data['archived'] = False
-                        data.pop('archivedAt', None)
-                    elif action == 'tag':
-                        tags = set(data.get('tags') or [])
-                        if tag_value:
-                            tags.add(tag_value)
-                        data['tags'] = sorted(tags)
-                    conn.execute(f"UPDATE {entity} SET data=? WHERE id=?", (json.dumps(data), eid))
+    ok = 0; failed = 0
+    for eid in ids:
+        try:
+            if action == 'delete':
+                if store.delete_entity(entity, eid):
                     ok += 1
-            except Exception:
-                failed += 1
+                else:
+                    failed += 1
+            else:
+                item = store.get_entity(entity, eid)
+                if not item:
+                    failed += 1
+                    continue
+                if action == 'archive':
+                    item['archived'] = True
+                    item['archivedAt'] = _now()
+                    item['archivedBy'] = session.get('username')
+                elif action == 'unarchive':
+                    item['archived'] = False
+                    item.pop('archivedAt', None)
+                elif action == 'tag':
+                    tags = set(item.get('tags') or [])
+                    if tag_value:
+                        tags.add(tag_value)
+                    item['tags'] = sorted(tags)
+                item['id'] = eid
+                store.upsert_entity(entity, item)
+                ok += 1
+        except Exception:
+            failed += 1
 
     log_audit('EDIT', entity, f'Bulk {action}: {ok} OK, {failed} failed ({tag_value or "-"})')
-    # Emit webhook event za bulk operations
     try:
         emit_event(f'{entity}.bulk_{action}', {'count_ok': ok, 'count_failed': failed, 'ids': ids[:50]})
     except Exception:
@@ -120,39 +103,33 @@ def bulk_action(entity, action):
 
 
 # =========================================================================
-#  CUSTOM FIELDS — admin definise, svaki entitet ih koristi kroz .customFields dict
+#  CUSTOM FIELDS
 # =========================================================================
 
 @v23_extras_bp.route('/api/custom-fields', methods=['GET'])
 @login_required
 def list_custom_fields():
-    """Vraca sve aktivne definicije, opcionalno filter po entity_type."""
     entity = request.args.get('entity', '')
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        if entity:
-            rows = conn.execute(
-                "SELECT id, entity_type, field_key, field_label, field_type, options_json, "
-                "required, display_order FROM custom_field_defs "
-                "WHERE entity_type=? AND is_active=1 ORDER BY display_order ASC",
-                (entity,)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, entity_type, field_key, field_label, field_type, options_json, "
-                "required, display_order FROM custom_field_defs "
-                "WHERE is_active=1 ORDER BY entity_type, display_order ASC"
-            ).fetchall()
+    from data_layer import select as _dl_select
+    filters = {'is_active': True}
+    if entity:
+        filters['entity_type'] = entity
+    rows = _dl_select('custom_field_defs', filters=filters, order='display_order') or []
     out = []
     for r in rows:
         opts = None
-        if r[5]:
-            try: opts = json.loads(r[5])
+        raw = r.get('options_json')
+        if isinstance(raw, dict):
+            opts = raw
+        elif isinstance(raw, str):
+            try: opts = json.loads(raw)
             except Exception: opts = None
         out.append({
-            'id': r[0], 'entity_type': r[1], 'field_key': r[2],
-            'field_label': r[3], 'field_type': r[4],
-            'options': opts, 'required': bool(r[6]),
-            'display_order': r[7],
+            'id': r.get('id'), 'entity_type': r.get('entity_type'),
+            'field_key': r.get('field_key'),
+            'field_label': r.get('field_label'), 'field_type': r.get('field_type'),
+            'options': opts, 'required': bool(r.get('required')),
+            'display_order': r.get('display_order'),
         })
     return jsonify({'fields': out})
 
@@ -172,23 +149,29 @@ def create_custom_field():
     if not entity or not key or not label:
         return jsonify({'error': 'entity_key_label_required'}), 400
     opts = body.get('options') if isinstance(body.get('options'), list) else None
-
     fid = str(uuid.uuid4())
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000')
-            conn.execute(
-                "INSERT INTO custom_field_defs (id, entity_type, field_key, field_label, "
-                "field_type, options_json, required, display_order, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (fid, entity, key, label, ftype,
-                 json.dumps(opts) if opts else None,
-                 1 if body.get('required') else 0,
-                 int(body.get('display_order') or 100),
-                 _now())
-            )
-    except sqlite3.IntegrityError:
+    # V24.4: rucna provera duplog (entity_type, field_key) — Supabase UNIQUE
+    # constraint takodje pukne, ali ovde uhvatimo pre INSERT-a za bolji msg
+    from data_layer import select as _dl_select, insert as _dl_insert
+    dupe = _dl_select('custom_field_defs',
+                      filters={'entity_type': entity, 'field_key': key, 'is_active': True},
+                      limit=1) or []
+    if dupe:
         return jsonify({'error': 'field_key_already_exists'}), 409
+    try:
+        _dl_insert('custom_field_defs', {
+            'id': fid, 'entity_type': entity, 'field_key': key,
+            'field_label': label, 'field_type': ftype,
+            'options_json': opts,
+            'required': bool(body.get('required')),
+            'display_order': int(body.get('display_order') or 100),
+            'is_active': True,
+            'created_at': _now(),
+        })
+    except Exception as e:
+        if 'duplicate' in str(e).lower() or '23505' in str(e):
+            return jsonify({'error': 'field_key_already_exists'}), 409
+        raise
     return jsonify({'id': fid})
 
 
@@ -197,14 +180,13 @@ def create_custom_field():
 def delete_custom_field(fid):
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute("UPDATE custom_field_defs SET is_active=0 WHERE id=?", (fid,))
+    from data_layer import update as _dl_update
+    _dl_update('custom_field_defs', {'id': fid}, {'is_active': False})
     return jsonify({'deleted': True})
 
 
 # =========================================================================
-#  API KEYS — external system access via Bearer token
+#  API KEYS
 # =========================================================================
 
 def _hash_key(raw: str) -> str:
@@ -216,25 +198,17 @@ def _hash_key(raw: str) -> str:
 def list_api_keys():
     uid = session.get('user_id')
     is_admin = session.get('role') == 'admin'
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        if is_admin:
-            rows = conn.execute(
-                "SELECT id, name, key_prefix, owner_user_id, scope, rate_limit_per_min, "
-                "created_at, last_used_at, revoked FROM api_keys ORDER BY created_at DESC"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, name, key_prefix, owner_user_id, scope, rate_limit_per_min, "
-                "created_at, last_used_at, revoked FROM api_keys "
-                "WHERE owner_user_id=? ORDER BY created_at DESC",
-                (uid,)
-            ).fetchall()
+    from data_layer import select as _dl_select
+    filters = {} if is_admin else {'owner_user_id': uid}
+    rows = _dl_select('api_keys', filters=filters, order='-created_at') or []
     return jsonify({
         'keys': [{
-            'id': r[0], 'name': r[1], 'key_prefix': r[2], 'owner': r[3],
-            'scope': r[4], 'rate_limit_per_min': r[5],
-            'created_at': r[6], 'last_used_at': r[7],
-            'revoked': bool(r[8]),
+            'id': r.get('id'), 'name': r.get('name'),
+            'key_prefix': r.get('key_prefix'), 'owner': r.get('owner_user_id'),
+            'scope': r.get('scope'),
+            'rate_limit_per_min': r.get('rate_limit_per_min'),
+            'created_at': r.get('created_at'), 'last_used_at': r.get('last_used_at'),
+            'revoked': bool(r.get('revoked')),
         } for r in rows]
     })
 
@@ -251,20 +225,17 @@ def create_api_key():
         return jsonify({'error': 'invalid_scope'}), 400
     if scope == 'admin' and session.get('role') != 'admin':
         return jsonify({'error': 'admin_scope_admin_only'}), 403
-
-    raw = 'ask_' + secrets.token_urlsafe(40)  # ask_ = Aspidus Key
+    raw = 'ask_' + secrets.token_urlsafe(40)
     prefix = raw[:12]
     kid = str(uuid.uuid4())
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute(
-            "INSERT INTO api_keys (id, name, key_hash, key_prefix, owner_user_id, "
-            "scope, rate_limit_per_min, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (kid, name, _hash_key(raw), prefix, session.get('user_id'),
-             scope, int(body.get('rate_limit_per_min') or 60), _now())
-        )
+    from data_layer import insert as _dl_insert
+    _dl_insert('api_keys', {
+        'id': kid, 'name': name, 'key_hash': _hash_key(raw),
+        'key_prefix': prefix, 'owner_user_id': session.get('user_id'),
+        'scope': scope, 'rate_limit_per_min': int(body.get('rate_limit_per_min') or 60),
+        'created_at': _now(), 'revoked': False,
+    })
     log_audit('CREATE', 'api_key', f'Created API key "{name}" ({scope})', is_suspicious=True)
-    # Vratimo RAW jednom — sledeci put samo prefix
     return jsonify({'id': kid, 'raw_key': raw, 'name': name, 'scope': scope,
                     'warning': 'Save this key now — it will not be shown again.'})
 
@@ -274,44 +245,38 @@ def create_api_key():
 def revoke_api_key(kid):
     uid = session.get('user_id')
     is_admin = session.get('role') == 'admin'
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        if is_admin:
-            n = conn.execute("UPDATE api_keys SET revoked=1, revoked_at=? WHERE id=?",
-                             (_now(), kid)).rowcount
-        else:
-            n = conn.execute("UPDATE api_keys SET revoked=1, revoked_at=? "
-                             "WHERE id=? AND owner_user_id=?",
-                             (_now(), kid, uid)).rowcount
+    from data_layer import update as _dl_update
+    filters = {'id': kid} if is_admin else {'id': kid, 'owner_user_id': uid}
+    n = _dl_update('api_keys', filters, {'revoked': True, 'revoked_at': _now()})
     log_audit('SECURITY', 'api_key', f'Revoked API key {kid}')
-    return jsonify({'revoked': n})
+    return jsonify({'revoked': len(n) if isinstance(n, list) else int(bool(n))})
 
 
 def verify_api_key(bearer_token: str) -> dict | None:
-    """Middleware helper — vrati user info ili None. Zove je routes/api_v1.py
-    (buduci blueprint). Ovde je API dostupan svima koji zele da naprave javni endpoint."""
+    """V24.4 SUPABASE-ONLY."""
     if not bearer_token or not bearer_token.startswith('ask_'):
         return None
     h = _hash_key(bearer_token)
-    with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-        r = conn.execute(
-            "SELECT ak.id, ak.owner_user_id, ak.scope, ak.rate_limit_per_min, "
-            "u.username, u.role FROM api_keys ak "
-            "LEFT JOIN users u ON u.id=ak.owner_user_id "
-            "WHERE ak.key_hash=? AND ak.revoked=0",
-            (h,)
-        ).fetchone()
-        if not r:
-            return None
-        conn.execute("UPDATE api_keys SET last_used_at=? WHERE id=?", (_now(), r[0]))
+    from data_layer import select as _dl_select, update as _dl_update
+    rows = _dl_select('api_keys', filters={'key_hash': h, 'revoked': False}, limit=1) or []
+    if not rows:
+        return None
+    ak = rows[0]
+    u = store.get_user_by_id(ak.get('owner_user_id')) or {}
+    try:
+        _dl_update('api_keys', {'id': ak.get('id')}, {'last_used_at': _now()})
+    except Exception:
+        pass
     return {
-        'key_id': r[0], 'user_id': r[1], 'scope': r[2],
-        'rate_limit_per_min': r[3], 'username': r[4], 'role': r[5],
+        'key_id': ak.get('id'), 'user_id': ak.get('owner_user_id'),
+        'scope': ak.get('scope'),
+        'rate_limit_per_min': ak.get('rate_limit_per_min'),
+        'username': u.get('username'), 'role': u.get('role'),
     }
 
 
 # =========================================================================
-#  OUTBOUND WEBHOOKS — admin registruje URL + events, mi POST-ujemo
+#  OUTBOUND WEBHOOKS
 # =========================================================================
 
 @v23_extras_bp.route('/api/webhooks', methods=['GET'])
@@ -319,19 +284,19 @@ def verify_api_key(bearer_token: str) -> dict | None:
 def list_webhooks():
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT id, name, target_url, events, is_active, created_at, "
-            "created_by, last_fired_at, last_status, fail_count "
-            "FROM outbound_webhooks ORDER BY created_at DESC"
-        ).fetchall()
+    from data_layer import select as _dl_select
+    rows = _dl_select('outbound_webhooks', order='-created_at') or []
     return jsonify({
         'webhooks': [{
-            'id': r[0], 'name': r[1], 'target_url': r[2],
-            'events': (r[3] or '').split(','),
-            'is_active': bool(r[4]), 'created_at': r[5],
-            'created_by': r[6], 'last_fired_at': r[7],
-            'last_status': r[8], 'fail_count': r[9],
+            'id': r.get('id'), 'name': r.get('name'),
+            'target_url': r.get('target_url'),
+            'events': (str(r.get('events') or '')).split(','),
+            'is_active': bool(r.get('is_active')),
+            'created_at': r.get('created_at'),
+            'created_by': r.get('created_by'),
+            'last_fired_at': r.get('last_fired_at'),
+            'last_status': r.get('last_status'),
+            'fail_count': r.get('fail_count'),
         } for r in rows]
     })
 
@@ -352,13 +317,13 @@ def create_webhook():
     events_csv = ','.join([str(e).strip()[:60] for e in events if str(e).strip()])[:1000]
     secret = 'whsec_' + secrets.token_urlsafe(32)
     wid = str(uuid.uuid4())
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute(
-            "INSERT INTO outbound_webhooks (id, name, target_url, events, secret, "
-            "created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (wid, name, url, events_csv, secret, _now(), session.get('username'))
-        )
+    from data_layer import insert as _dl_insert
+    _dl_insert('outbound_webhooks', {
+        'id': wid, 'name': name, 'target_url': url,
+        'events': events_csv, 'secret': secret,
+        'is_active': True, 'created_at': _now(),
+        'created_by': session.get('username'), 'fail_count': 0,
+    })
     log_audit('CREATE', 'webhook', f'Created webhook "{name}" → {url}', is_suspicious=True)
     return jsonify({'id': wid, 'secret': secret,
                     'warning': 'Signing secret shown once — save it now.'})
@@ -369,10 +334,9 @@ def create_webhook():
 def delete_webhook(wid):
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute("DELETE FROM outbound_webhooks WHERE id=?", (wid,))
-        conn.execute("DELETE FROM webhook_deliveries WHERE webhook_id=?", (wid,))
+    from data_layer import delete as _dl_delete
+    _dl_delete('outbound_webhooks', {'id': wid})
+    _dl_delete('webhook_deliveries', {'webhook_id': wid})
     return jsonify({'deleted': True})
 
 
@@ -381,39 +345,36 @@ def delete_webhook(wid):
 def webhook_deliveries(wid):
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT id, event, status_code, response_snippet, delivered_at, duration_ms "
-            "FROM webhook_deliveries WHERE webhook_id=? "
-            "ORDER BY delivered_at DESC LIMIT 100", (wid,)
-        ).fetchall()
+    from data_layer import select as _dl_select
+    rows = _dl_select('webhook_deliveries', filters={'webhook_id': wid},
+                      order='-delivered_at', limit=100) or []
     return jsonify({
         'deliveries': [{
-            'id': r[0], 'event': r[1], 'status_code': r[2],
-            'response': r[3], 'delivered_at': r[4], 'duration_ms': r[5],
+            'id': r.get('id'), 'event': r.get('event'),
+            'status_code': r.get('status_code'),
+            'response': r.get('response_snippet'),
+            'delivered_at': r.get('delivered_at'),
+            'duration_ms': r.get('duration_ms'),
         } for r in rows]
     })
 
 
 # =========================================================================
-#  emit_event — pozivaju drugi moduli kada se nesto interesantno desi.
-#  Sve slanje ide u background thread da ne blokira request.
+#  emit_event / _deliver_webhook
 # =========================================================================
 
 def emit_event(event_name: str, payload: dict) -> None:
-    """Broadcast na sve aktivne webhook-e koji su subscribed na event_name."""
+    """V24.4 SUPABASE-ONLY."""
     try:
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            rows = conn.execute(
-                "SELECT id, target_url, events, secret FROM outbound_webhooks "
-                "WHERE is_active=1"
-            ).fetchall()
+        from data_layer import select as _dl_select
+        rows = _dl_select('outbound_webhooks', filters={'is_active': True}) or []
     except Exception:
         return
     for r in rows:
-        wid, url, events_csv, secret = r
-        events = (events_csv or '').split(',')
-        # Podrska za wildcard: "deal.*" matchuje "deal.created"
+        wid = r.get('id'); url = r.get('target_url')
+        events_csv = r.get('events') or ''
+        secret = r.get('secret') or ''
+        events = str(events_csv).split(',')
         matched = False
         for ev in events:
             ev = ev.strip()
@@ -423,7 +384,6 @@ def emit_event(event_name: str, payload: dict) -> None:
                 matched = True; break
         if not matched:
             continue
-        # Fire in background
         t = threading.Thread(target=_deliver_webhook,
                              args=(wid, url, secret, event_name, payload),
                              daemon=True)
@@ -431,18 +391,13 @@ def emit_event(event_name: str, payload: dict) -> None:
 
 
 def _deliver_webhook(wid, url, secret, event, payload):
-    """POST na target_url sa X-Aspidus-Event i X-Aspidus-Signature (HMAC-SHA256)."""
+    """V24.4 SUPABASE-ONLY."""
     import urllib.request, urllib.error
-    body_dict = {
-        'event': event,
-        'delivered_at': _now(),
-        'payload': payload,
-    }
+    body_dict = {'event': event, 'delivered_at': _now(), 'payload': payload}
     body = json.dumps(body_dict).encode('utf-8')
     sig = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).hexdigest()
     started = time.time()
-    status = 0
-    snippet = ''
+    status = 0; snippet = ''
     try:
         req = urllib.request.Request(url, data=body, headers={
             'Content-Type': 'application/json',
@@ -463,32 +418,25 @@ def _deliver_webhook(wid, url, secret, event, payload):
         status = 0
         snippet = f'{type(e).__name__}: {e}'
     duration_ms = int((time.time() - started) * 1000)
-
     outcome = 'ok' if 200 <= status < 300 else ('4xx' if 400 <= status < 500 else ('5xx' if status >= 500 else 'timeout'))
 
     try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000')
-            conn.execute(
-                "INSERT INTO webhook_deliveries (id, webhook_id, event, payload_hash, "
-                "status_code, response_snippet, delivered_at, duration_ms) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), wid, event,
-                 hashlib.sha256(body).hexdigest()[:32],
-                 status, snippet[:500], _now(), duration_ms)
-            )
-            if outcome == 'ok':
-                conn.execute(
-                    "UPDATE outbound_webhooks SET last_fired_at=?, last_status='ok', "
-                    "fail_count=0 WHERE id=?", (_now(), wid))
-            else:
-                conn.execute(
-                    "UPDATE outbound_webhooks SET last_fired_at=?, last_status=?, "
-                    "fail_count=fail_count+1 WHERE id=?", (_now(), outcome, wid))
-                # Auto-disable after 20 consecutive fails
-                fc = conn.execute("SELECT fail_count FROM outbound_webhooks WHERE id=?",
-                                  (wid,)).fetchone()
-                if fc and fc[0] >= 20:
-                    conn.execute("UPDATE outbound_webhooks SET is_active=0 WHERE id=?", (wid,))
+        from data_layer import insert as _dl_insert, update as _dl_update, select_one as _dl_select_one
+        _dl_insert('webhook_deliveries', {
+            'id': str(uuid.uuid4()), 'webhook_id': wid, 'event': event,
+            'payload_hash': hashlib.sha256(body).hexdigest()[:32],
+            'status_code': status, 'response_snippet': snippet[:500],
+            'delivered_at': _now(), 'duration_ms': duration_ms,
+        })
+        if outcome == 'ok':
+            _dl_update('outbound_webhooks', {'id': wid},
+                       {'last_fired_at': _now(), 'last_status': 'ok', 'fail_count': 0})
+        else:
+            row = _dl_select_one('outbound_webhooks', {'id': wid}) or {}
+            new_fc = int(row.get('fail_count', 0) or 0) + 1
+            patch = {'last_fired_at': _now(), 'last_status': outcome, 'fail_count': new_fc}
+            if new_fc >= 20:
+                patch['is_active'] = False
+            _dl_update('outbound_webhooks', {'id': wid}, patch)
     except Exception:
         pass
