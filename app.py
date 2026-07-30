@@ -91,6 +91,16 @@ try:
 except Exception as _e:
     print(f'[db bootstrap] failed: {_e}')
 
+# V23.2 (user's V22.04.05 improvement): sanity check env vars za produkciju.
+# Ne baca izuzetak — samo loguje warning-e. Render/Heroku deploy odmah vidi
+# šta nedostaje umesto da se u runtime-u iznenadi (Supabase env var missing,
+# ENCRYPTION_KEY auto-generisan pa se enkriptovani podaci gube pri restart-u).
+try:
+    from config import validate_config as _validate_config
+    _validate_config()
+except Exception as _cfg_err:
+    print(f'[config validation] {_cfg_err}')
+
 # Učitaj firewall/session postavke (admin ih menja preko Settings modula) i
 # pokreni pozadinsko održavanje (rotacija audit log-a, čišćenje kešova).
 load_firewall_settings()

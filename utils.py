@@ -97,7 +97,33 @@ class FirewallCache:
     }
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    # V22.04.05 (user's improvement): defense against double-extension bypass
+    # (npr. shell.php.jpg, backdoor.jsp.png). Ekstenzija POSLEDNJA mora biti u
+    # dozvoljenom skupu, i NIJEDNA prethodna ekstenzija (dot-separated segment)
+    # ne sme biti u opasnom skupu.
+    if not filename or '.' not in filename:
+        return False
+    ext = filename.rsplit('.', 1)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return False
+    dangerous_extensions = {
+        'php', 'php3', 'php4', 'php5', 'php7', 'phtml', 'pht',
+        'asp', 'aspx', 'asa', 'ascx', 'ashx', 'asmx', 'asax',
+        'jsp', 'jspx', 'jspa', 'jsw', 'jsv',
+        'cgi', 'pl', 'py', 'rb', 'sh', 'bash', 'bat', 'cmd', 'com',
+        'exe', 'dll', 'so', 'dylib', 'msi', 'scr', 'vbs', 'vbe',
+        'wsf', 'wsh', 'ps1', 'psm1', 'psd1',
+        'htaccess', 'htpasswd', 'ini', 'conf', 'cfg', 'env',
+        'html', 'htm', 'shtml', 'xhtml',
+        'js', 'mjs', 'ts', 'tsx', 'jsx',
+        'svg', 'xml', 'xsl', 'xslt', 'rss',
+    }
+    parts = filename.lower().split('.')
+    # All middle segments (between name and final ext) must not be dangerous
+    for mid in parts[1:-1]:
+        if mid in dangerous_extensions:
+            return False
+    return True
 
 # Kes za geolokaciju po IP adresi. Ranije se za SVAKI request (login_required) i
 # SVAKI audit-log upis (log_audit) pravio sinhroni HTTP poziv ka ip-api.com i

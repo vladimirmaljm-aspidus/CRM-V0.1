@@ -127,6 +127,47 @@ def retry_on_lock(max_attempts=6, base_delay=0.1):
     return decorator
 
 
+def retry_call(fn, *args, max_attempts=6, base_delay=0.1, **kwargs):
+    """Wrapper funkcija (ne dekorator) za retry na SQLITE_BUSY.
+
+    Koristi se kada treba retry-ovati jedan poziv bez definisanja posebne
+    funkcije. Primer:
+        db.retry_call(c.execute, 'INSERT INTO ...', (params,))
+    """
+    for attempt in range(max_attempts):
+        try:
+            return fn(*args, **kwargs)
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if 'database is locked' not in msg and 'database is busy' not in msg:
+                raise
+            if attempt == max_attempts - 1:
+                logger.error(f'db.retry_call: DB lock persisted after {max_attempts} retries — giving up: {e}')
+                raise
+            wait = base_delay * (2 ** attempt)
+            logger.warning(f'db.retry_call: DB locked (attempt {attempt+1}/{max_attempts}) — retrying in {wait:.2f}s')
+            time.sleep(wait)
+
+
+def connect_raw(db_path, timeout=60.0):
+    """Drop-in replacement za sqlite3.connect() — vraća raw konekciju sa svim
+    PRAGMA optimizacijama (WAL, mmap, cache, busy_timeout). Koristi se za
+    migraciju postojećeg koda koji ne može da koristi context manager:
+    
+        conn = db.connect_raw(DB_FILE)  # umesto sqlite3.connect(DB_FILE, ...)
+        try:
+            ...
+        finally:
+            conn.close()
+    
+    Sve PRAGMA-e se automatski primenjuju — nema potrebe za ručnim
+    conn.execute('PRAGMA busy_timeout=...') u svakom fajlu.
+    """
+    conn = sqlite3.connect(db_path, timeout=timeout, isolation_level='DEFERRED')
+    _apply_pragmas(conn, db_path)
+    return conn
+
+
 def health_check(db_path):
     """Vraća dictionary sa health metrikama za dati DB fajl.
     Koristi se u /api/system/health endpoint-u."""
