@@ -1,31 +1,11 @@
-"""
-Round B — Report Builder.
-
-Admin definise custom SQL SELECT upit (READ-ONLY) i cuva ga u
-`custom_reports` tabelu. Dashboard onda renderuje rezultat kao KPI,
-bar, line, pie, ili table chart preko Chart.js.
-
-BEZBEDNOST:
-  * Prihvata samo SELECT statement-e (SQL keyword whitelist)
-  * Blokira sve pisace kljucne reci (INSERT/UPDATE/DELETE/DROP/ALTER/
-    CREATE/REPLACE/GRANT/PRAGMA/ATTACH/DETACH)
-  * Zabrana ";" (multi-statement injection)
-  * Timeout 10s
-  * Limit rezultata: 5000 redova
-  * Vidljivo samo admin-u za sada
-"""
+"""V24.4 SUPABASE-ONLY: report builder metadata (SQL run zahteva RPC funkciju u Supabase)."""
 from __future__ import annotations
 
-import json
 import re
-import sqlite3
-import time
 import uuid
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, session, render_template
-
-from config import DB_FILE
 from utils import login_required, log_audit
 
 reports_bp = Blueprint('reports_bp', __name__)
@@ -49,24 +29,20 @@ FORBIDDEN_KEYWORDS = {
 
 
 def _validate_sql(sql: str) -> tuple[bool, str]:
-    """Vrati (ok, error_message). Prihvata samo READ-ONLY SELECT."""
     if not sql or not isinstance(sql, str):
         return False, 'SQL required'
     sql = sql.strip()
     if len(sql) > 5000:
         return False, 'SQL too long (max 5000 chars)'
-    # Ne dozvoli semicolons (multi-statement)
     if ';' in sql.rstrip(';'):
         return False, 'Multiple statements not allowed'
     sql_clean = sql.rstrip(';').strip()
-    # Mora poceti sa SELECT ili WITH
     first_word = re.match(r'^\s*(\w+)', sql_clean)
     if not first_word:
         return False, 'Invalid SQL'
     fw = first_word.group(1).upper()
     if fw not in ('SELECT', 'WITH'):
         return False, f'Must start with SELECT or WITH, got {fw}'
-    # Blokiraj forbidden keyword-e (case-insensitive word boundaries)
     upper = sql_clean.upper()
     for kw in FORBIDDEN_KEYWORDS:
         if re.search(r'\b' + kw + r'\b', upper):
@@ -77,35 +53,23 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
 @reports_bp.route('/api/reports', methods=['GET'])
 @login_required
 def reports_list():
-    """Lista svih izvestaja koje user vidi: svoje + shared."""
+    """V24.4 SUPABASE-ONLY."""
     uid = session.get('user_id')
     role = session.get('role')
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000')
-            if role == 'admin':
-                # Admin vidi sve
-                rows = conn.execute(
-                    "SELECT id, owner_user_id, title, description, chart_type, "
-                    "is_shared, created_at, updated_at FROM custom_reports "
-                    "ORDER BY updated_at DESC"
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT id, owner_user_id, title, description, chart_type, "
-                    "is_shared, created_at, updated_at FROM custom_reports "
-                    "WHERE owner_user_id=? OR is_shared=1 "
-                    "ORDER BY updated_at DESC",
-                    (uid,)
-                ).fetchall()
-    except sqlite3.OperationalError as e:
-        return jsonify({'error': str(e)[:200]}), 500
+    from data_layer import select as _dl_select
+    all_rows = _dl_select('custom_reports', order='-updated_at', limit=1000) or []
+    if role != 'admin':
+        rows = [r for r in all_rows if r.get('owner_user_id') == uid or r.get('is_shared')]
+    else:
+        rows = all_rows
     return jsonify({
         'reports': [{
-            'id': r[0], 'owner_user_id': r[1], 'title': r[2],
-            'description': r[3], 'chart_type': r[4],
-            'is_shared': bool(r[5]), 'created_at': r[6], 'updated_at': r[7],
-            'is_owner': r[1] == uid,
+            'id': r.get('id'), 'owner_user_id': r.get('owner_user_id'),
+            'title': r.get('title'), 'description': r.get('description'),
+            'chart_type': r.get('chart_type'),
+            'is_shared': bool(r.get('is_shared')),
+            'created_at': r.get('created_at'), 'updated_at': r.get('updated_at'),
+            'is_owner': r.get('owner_user_id') == uid,
         } for r in rows]
     })
 
@@ -113,7 +77,6 @@ def reports_list():
 @reports_bp.route('/api/reports', methods=['POST'])
 @login_required
 def reports_create():
-    """Sacuvaj novi izvestaj."""
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
     body = request.get_json(silent=True) or {}
@@ -122,7 +85,6 @@ def reports_create():
     sql = str(body.get('sql_query') or '').strip()
     chart_type = str(body.get('chart_type') or 'table').lower()
     is_shared = bool(body.get('is_shared'))
-
     if not title:
         return jsonify({'error': 'title_required'}), 400
     if chart_type not in VALID_CHART_TYPES:
@@ -130,21 +92,16 @@ def reports_create():
     ok, err = _validate_sql(sql)
     if not ok:
         return jsonify({'error': 'invalid_sql', 'detail': err}), 400
-
     rid = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000')
-            conn.execute(
-                "INSERT INTO custom_reports (id, owner_user_id, title, description, "
-                "sql_query, chart_type, is_shared, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (rid, session.get('user_id'), title, description, sql,
-                 chart_type, 1 if is_shared else 0, now, now)
-            )
-    except sqlite3.OperationalError as e:
-        return jsonify({'error': str(e)[:200]}), 500
+    from data_layer import insert as _dl_insert
+    _dl_insert('custom_reports', {
+        'id': rid, 'owner_user_id': session.get('user_id'),
+        'title': title, 'description': description,
+        'sql_query': sql, 'chart_type': chart_type,
+        'is_shared': is_shared,
+        'created_at': now, 'updated_at': now,
+    })
     log_audit('CREATE', 'reports', f'Custom report "{title}" ({chart_type})')
     return jsonify({'id': rid, 'title': title, 'chart_type': chart_type})
 
@@ -152,27 +109,19 @@ def reports_create():
 @reports_bp.route('/api/reports/<rid>', methods=['GET'])
 @login_required
 def reports_get(rid):
-    """Vrati definiciju izvestaja."""
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000')
-            r = conn.execute(
-                "SELECT id, owner_user_id, title, description, sql_query, "
-                "chart_type, is_shared, created_at, updated_at FROM custom_reports WHERE id=?",
-                (rid,)
-            ).fetchone()
-    except sqlite3.OperationalError as e:
-        return jsonify({'error': str(e)[:200]}), 500
+    from data_layer import select_one as _dl_select_one
+    r = _dl_select_one('custom_reports', {'id': rid})
     if not r:
         return jsonify({'error': 'not_found'}), 404
-    # Provera pristupa
     uid = session.get('user_id')
-    if r[1] != uid and not r[6] and session.get('role') != 'admin':
+    if r.get('owner_user_id') != uid and not r.get('is_shared') and session.get('role') != 'admin':
         return jsonify({'error': 'forbidden'}), 403
     return jsonify({
-        'id': r[0], 'owner_user_id': r[1], 'title': r[2], 'description': r[3],
-        'sql_query': r[4], 'chart_type': r[5], 'is_shared': bool(r[6]),
-        'created_at': r[7], 'updated_at': r[8],
+        'id': r.get('id'), 'owner_user_id': r.get('owner_user_id'),
+        'title': r.get('title'), 'description': r.get('description'),
+        'sql_query': r.get('sql_query'), 'chart_type': r.get('chart_type'),
+        'is_shared': bool(r.get('is_shared')),
+        'created_at': r.get('created_at'), 'updated_at': r.get('updated_at'),
     })
 
 
@@ -181,69 +130,45 @@ def reports_get(rid):
 def reports_delete(rid):
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000')
-            n = conn.execute("DELETE FROM custom_reports WHERE id=?", (rid,)).rowcount
-    except sqlite3.OperationalError as e:
-        return jsonify({'error': str(e)[:200]}), 500
-    return jsonify({'deleted': n})
+    from data_layer import delete as _dl_delete
+    n = _dl_delete('custom_reports', {'id': rid})
+    return jsonify({'deleted': int(n or 0)})
 
 
 @reports_bp.route('/api/reports/<rid>/run', methods=['GET'])
 @login_required
 def reports_run(rid):
-    """Pokreni SQL izvestaja i vrati rezultat u obliku pogodnom za render."""
-    # Ucitaj izvestaj
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000')
-            r = conn.execute(
-                "SELECT owner_user_id, sql_query, chart_type, is_shared, title "
-                "FROM custom_reports WHERE id=?", (rid,)
-            ).fetchone()
-    except sqlite3.OperationalError as e:
-        return jsonify({'error': str(e)[:200]}), 500
+    """V24.4: pokretanje custom SQL izvestaja zahteva Postgres RPC funkciju
+    u Supabase-u (npr. `run_report(rid uuid)`). Za sada vraca 501 sa jasnom
+    porukom umesto da lazno pokrece protiv prazne SQLite-e. Da bi radilo:
+        1. U Supabase → SQL Editor kreiraj SECURITY DEFINER funkciju koja
+           izvrsava sql_query kolonu bezbedno (RLS/whitelist).
+        2. Ovde pozovi data_layer.rpc('run_report', {'rid': rid})."""
+    from data_layer import select_one as _dl_select_one
+    r = _dl_select_one('custom_reports', {'id': rid})
     if not r:
         return jsonify({'error': 'not_found'}), 404
-    if r[0] != session.get('user_id') and not r[3] and session.get('role') != 'admin':
+    if r.get('owner_user_id') != session.get('user_id') and not r.get('is_shared') and session.get('role') != 'admin':
         return jsonify({'error': 'forbidden'}), 403
 
-    sql = r[1]
-    chart_type = r[2]
-    title = r[4]
-
-    # Duple provere sigurnosti (u slucaju izmene direktno u tabeli)
-    ok, err = _validate_sql(sql)
-    if not ok:
-        return jsonify({'error': 'invalid_sql_in_stored_report', 'detail': err}), 500
-
-    # Izvrsi read-only konekciju
-    start = time.time()
+    # Try RPC
     try:
-        # SQLite read-only URI mode
-        uri = f'file:{DB_FILE}?mode=ro'
-        conn = sqlite3.connect(uri, uri=True, timeout=10.0)
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute('PRAGMA query_only = 1')
-        cur = conn.execute(sql + ' LIMIT 5000' if 'LIMIT' not in sql.upper() else sql)
-        columns = [d[0] for d in cur.description] if cur.description else []
-        rows = cur.fetchall()
-        conn.close()
+        from data_layer import rpc as _dl_rpc
+        data = _dl_rpc('run_report', {'report_id': rid}) or []
+        columns = list(data[0].keys()) if data and isinstance(data[0], dict) else []
+        rows = [[row.get(c) for c in columns] for row in data] if data else []
+        log_audit('READ', 'reports',
+                  f'Custom report run via Supabase RPC: "{r.get("title")}" ({len(data)} rows)')
+        return jsonify({
+            'id': rid, 'title': r.get('title'),
+            'chart_type': r.get('chart_type'),
+            'columns': columns,
+            'rows': [dict(zip(columns, row)) for row in rows],
+            'row_count': len(data),
+        })
     except Exception as e:
         return jsonify({
-            'error': 'query_failed',
-            'detail': f'{type(e).__name__}: {str(e)[:200]}'
-        }), 500
-
-    elapsed_ms = int((time.time() - start) * 1000)
-    data = [dict(zip(columns, row)) for row in rows]
-
-    log_audit('READ', 'reports',
-              f'Custom report run: "{title}" ({elapsed_ms}ms, {len(rows)} rows)')
-
-    return jsonify({
-        'id': rid, 'title': title, 'chart_type': chart_type,
-        'columns': columns, 'rows': data,
-        'row_count': len(rows), 'elapsed_ms': elapsed_ms,
-    })
+            'error': 'rpc_not_configured',
+            'detail': ('Report execution requires a Supabase RPC function `run_report(report_id)`. '
+                       f'See routes/reports.py comment for setup. RPC error: {str(e)[:200]}'),
+        }), 501

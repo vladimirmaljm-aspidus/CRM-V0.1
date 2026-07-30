@@ -442,13 +442,11 @@ class T09BulkActions(unittest.TestCase):
         self.client = app_module.app.test_client()
         _login_admin(self.client)
         self.csrf = _csrf(self.client)
-        from config import DB_FILE
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            conn.execute('CREATE TABLE IF NOT EXISTS partners (id TEXT PRIMARY KEY, data TEXT)')
-            self.ids = [f'bulk-{i}-{uuid.uuid4().hex[:6]}' for i in range(5)]
-            for pid in self.ids:
-                conn.execute("INSERT INTO partners (id,data) VALUES (?,?)",
-                             (pid, json.dumps({'id':pid,'name':f'Bulk-{pid[:6]}'})))
+        # V24.4 SUPABASE-ONLY: seed direktno u Supabase (mock backend)
+        import supabase_store as _store
+        self.ids = [f'bulk-{i}-{uuid.uuid4().hex[:6]}' for i in range(5)]
+        for pid in self.ids:
+            _store.upsert_entity('partners', {'id': pid, 'name': f'Bulk-{pid[:6]}'})
 
     def test_01_bulk_archive(self):
         r = self.client.post('/api/bulk/partners/archive',
@@ -463,11 +461,11 @@ class T09BulkActions(unittest.TestCase):
                              headers={'Content-Type':'application/json','X-CSRF-Token': self.csrf},
                              json={'ids': self.ids, 'tag':'promo2026'})
         self.assertEqual(r.status_code, 200)
-        from config import DB_FILE
-        with sqlite3.connect(DB_FILE) as conn:
-            r = conn.execute("SELECT data FROM partners WHERE id=?", (self.ids[0],)).fetchone()
-        d = json.loads(r[0])
-        self.assertIn('promo2026', d.get('tags') or [])
+        # Verify via supabase_store
+        import supabase_store as _store
+        p = _store.get_entity('partners', self.ids[0])
+        self.assertIsNotNone(p)
+        self.assertIn('promo2026', p.get('tags') or [])
 
     def test_03_rejects_disallowed_entity_action(self):
         r = self.client.post('/api/bulk/users/delete',
