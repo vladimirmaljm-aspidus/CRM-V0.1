@@ -113,10 +113,24 @@ class RestBackend:
         return resp.data or []
 
     def upsert(self, table, row, on_conflict="id"):
-        # supabase-py: on_conflict as kwarg
-        resp = self._table(table).upsert(row, on_conflict=on_conflict).execute()
-        data = resp.data or []
-        return data[0] if data else row
+        # supabase-py: on_conflict as kwarg. Neki Supabase projekti vracaju
+        # 409 Conflict kada UNIQUE constraint pukne u toku upsert-a — pokusaj
+        # eksplicitan UPDATE preko PK kao fallback.
+        try:
+            resp = self._table(table).upsert(row, on_conflict=on_conflict).execute()
+            data = resp.data or []
+            return data[0] if data else row
+        except Exception as e:
+            if '409' in str(e) or 'Conflict' in str(e):
+                try:
+                    pk_val = row.get(on_conflict)
+                    if pk_val is not None:
+                        resp = self._table(table).update(row).eq(on_conflict, pk_val).execute()
+                        data = resp.data or []
+                        return data[0] if data else row
+                except Exception:
+                    return row
+            raise
 
     def delete(self, table, filters):
         q = self._table(table).delete()
