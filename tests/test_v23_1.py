@@ -810,5 +810,95 @@ class T17ReadFallback(unittest.TestCase):
             conn.close()
 
 
+# ------------------------------------------------------------
+# 18) V23.4 LOGIN FALLBACK — user restored from Supabase after SQLite wipe
+# ------------------------------------------------------------
+class T18LoginSupabaseFallback(unittest.TestCase):
+    """V23.4: kada je SQLite wiped (Render redeploy), login mora da povuce
+    user-a iz Supabase, upisu ga u SQLite, i zavrsi prijavu bez greske."""
+
+    def test_01_login_reads_supabase_when_sqlite_missing_user(self):
+        from werkzeug.security import generate_password_hash
+        import data_layer as dl
+
+        # Simuliraj sveze-obrisan SQLite tako sto obrisemo admin-a
+        from config import DB_FILE
+        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
+            conn.execute("DELETE FROM users WHERE username=?", (os.environ['ADMIN_USERNAME'],))
+            conn.commit()
+
+        # Monkey-patch data_layer.select da vrati "Supabase" red
+        fake_pw = generate_password_hash(os.environ['ADMIN_PASSWORD'], method='scrypt:32768:8:1')
+        fake_user = {
+            'id': 'supabase-admin-id',
+            'username': os.environ['ADMIN_USERNAME'],
+            'password': fake_pw,
+            'role': 'admin',
+            'permissions': {},
+            'token_version': 1,
+        }
+        orig_select = dl.select
+        def _fake_select(table, filters=None, columns='*', order=None, limit=None):
+            if table == 'users':
+                return [fake_user]
+            return orig_select(table, filters, columns, order, limit) if orig_select else []
+        dl.select = _fake_select
+        try:
+            client = app_module.app.test_client()
+            r = client.post('/api/auth/login', json={
+                'username': os.environ['ADMIN_USERNAME'],
+                'password': os.environ['ADMIN_PASSWORD'],
+                'location': '45,19', 'device': 'Test/1.0',
+            })
+            self.assertEqual(r.status_code, 200,
+                             f'login should succeed via Supabase fallback: {r.data[:200]}')
+            j = r.get_json()
+            self.assertEqual(j['user']['username'], os.environ['ADMIN_USERNAME'])
+        finally:
+            dl.select = orig_select
+
+    def test_02_settings_read_fallback_from_supabase(self):
+        """Settings ne postoji u SQLite → povuci iz Supabase i backfiluj."""
+        import data_layer as dl
+        from utils import encrypt_data as _enc
+        from config import DB_FILE
+        test_key = 'v234_test_company_' + uuid.uuid4().hex[:6]
+        # Encrypt-ovan value string (isto sto Supabase mirror ocekuje)
+        stored_value = _enc({'company_name': 'Test Corp', 'currency': 'EUR'})
+
+        orig_select = dl.select
+        orig_select_one = dl.select_one
+        def _fake_select_one(table, filters, columns='*'):
+            if table == 'settings' and filters and filters.get('key') == test_key:
+                return {'key': test_key, 'value': stored_value}
+            return None
+        dl.select_one = _fake_select_one
+        try:
+            client = app_module.app.test_client()
+            _login_admin(client)
+            r = client.get(f'/api/data/{test_key}')
+            self.assertEqual(r.status_code, 200)
+            j = r.get_json()
+            self.assertIsNotNone(j.get('value'))
+            v = j['value']
+            self.assertEqual(v.get('company_name'), 'Test Corp')
+        finally:
+            dl.select = orig_select
+            dl.select_one = orig_select_one
+            # cleanup
+            with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
+                conn.execute("DELETE FROM settings WHERE key=?", (test_key,))
+                conn.commit()
+
+    def test_03_users_table_has_password_in_supabase_whitelist(self):
+        """V23.4: users mirror mora da salje password kolonu."""
+        from routes.supabase_merge import SUPPORTED_TABLES
+        cols = SUPPORTED_TABLES['users']['cols']
+        for required in ('password', 'totp_secret', 'totp_recovery',
+                         'token_version', 'last_password_change_at'):
+            self.assertIn(required, cols,
+                          f'users mirror mora imati "{required}" u whitelist-u')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

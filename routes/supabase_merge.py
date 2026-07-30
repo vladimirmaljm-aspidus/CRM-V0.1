@@ -125,10 +125,12 @@ SUPPORTED_TABLES = {
                                     'is_active', 'created_at', 'created_by',
                                     'last_fired_at', 'last_status', 'fail_count']},
     'users':              {'bools': ['must_change_password', 'totp_enabled'],
-                           'cols': ['id', 'username', 'role', 'full_name', 'email',
+                           'cols': ['id', 'username', 'password', 'role', 'full_name', 'email',
                                     'phone', 'notif_prefs', 'permissions',
                                     'must_change_password', 'locked_until',
-                                    'password_expires_at', 'signature', 'totp_enabled',
+                                    'password_expires_at', 'signature',
+                                    'totp_secret', 'totp_enabled', 'totp_recovery',
+                                    'token_version', 'last_password_change_at',
                                     'last_login_country', 'data']},
 }
 
