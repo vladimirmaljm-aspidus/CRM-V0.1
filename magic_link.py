@@ -18,18 +18,16 @@ Single-use is critical: without a jti register, an attacker who steals
 the link (browser history export, referrer leak) can replay it. The
 _USED_JTI set persists in the same DB used for portal sessions.
 """
-import db
 import base64
 import hashlib
 import hmac
 import json
 import os
-import sqlite3
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from config import DB_FILE
+# V25 SUPABASE-ONLY: SQLite uklonjen. magic_link_used_jti tabela postoji u Supabase.
 
 
 def _secret():
@@ -67,17 +65,10 @@ def _b64url_dec(s):
 
 
 def _ensure_jti_table():
-    with db.connect_raw(DB_FILE) as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS magic_link_used_jti (
-            jti TEXT PRIMARY KEY,
-            token TEXT,
-            used_at TEXT NOT NULL,
-            client_ip TEXT
-        )''')
-        # Housekeeping: pobrišemo jti-je starije od 7 dana (već su davno istekli)
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat().replace('+00:00','Z')
-        conn.execute("DELETE FROM magic_link_used_jti WHERE used_at < ?", (cutoff,))
-        conn.commit()
+    """V25 SUPABASE-ONLY: tabela magic_link_used_jti vec postoji u Supabase
+    (kreirana u schemas/supabase_v23_1.sql). Ova funkcija je ostala kao no-op
+    radi backward-compat sa pozivima iz drugih modula."""
+    pass
 
 
 def mint(portal_token, ttl_minutes=15):

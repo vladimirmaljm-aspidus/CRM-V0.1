@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -24,6 +23,14 @@ from pathlib import Path
 from flask import Blueprint, request, jsonify, session, render_template
 
 from utils import login_required, log_audit
+import supabase_store as store
+from data_layer import (
+    select as _dl_select,
+    select_one as _dl_select_one,
+    update as _dl_update,
+    delete as _dl_delete,
+    count as _dl_count,
+)
 
 supabase_admin_bp = Blueprint('supabase_admin', __name__)
 
@@ -137,16 +144,11 @@ def session_info_api():
 @supabase_admin_bp.route('/api/2fa/status', methods=['GET'])
 @login_required
 def two_fa_status_api():
-    """Vraca status 2FA — za Profile > Security tab."""
+    """Vraca status 2FA — za Profile > Security tab.
+    V24.0 SUPABASE-ONLY: čita totp_secret iz users tabele preko supabase_store."""
     try:
-        import sqlite3
-        from config import DB_FILE
-        conn = sqlite3.connect(DB_FILE, timeout=5.0)
-        c = conn.cursor()
-        c.execute("SELECT totp_secret FROM users WHERE id=?", (session.get('user_id'),))
-        row = c.fetchone()
-        conn.close()
-        enabled = bool(row and row[0])
+        u = store.get_user_by_id(session.get('user_id'))
+        enabled = bool(u and u.get('totp_secret'))
     except Exception:
         enabled = False
     return jsonify({"enabled": enabled})
@@ -245,13 +247,16 @@ def admin_health_api():
 
 @supabase_admin_bp.route('/api/health', methods=['GET'])
 def public_health():
-    """Public heartbeat — bez auth, minimalan info (za uptime monitor)."""
+    """Public heartbeat — bez auth, minimalan info (za uptime monitor).
+    V24.0 SUPABASE-ONLY: proverava da li data_layer backend odgovara
+    (umesto da li SQLite fajl postoji na disku)."""
     try:
-        import os
-        from config import DB_FILE
+        from data_layer import health as _dl_health
+        info = _dl_health()
         return jsonify({
-            "ok": os.path.exists(DB_FILE),
+            "ok": bool(info.get('ok')),
             "service": "aspidus-crm",
+            "backend": info.get('backend'),
             "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         })
     except Exception:
@@ -264,9 +269,12 @@ def users_change_password():
     """CRM user menja svoju lozinku. Prava implementacija je u
     /api/auth/change_password (routes/auth.py) — ovaj endpoint je thin
     adapter za preferences.js koji koristi { current, next } payload umesto
-    { new_password }."""
-    import sqlite3
-    from config import DB_FILE
+    { new_password }.
+
+    V24.0 SUPABASE-ONLY: čita user-a preko supabase_store.get_user_by_id;
+    verifikuje trenutnu lozinku preko werkzeug check_password_hash; piše
+    novi hash + bump token_version preko supabase_store.update_user_password
+    i store.bump_token_version."""
     from werkzeug.security import generate_password_hash, check_password_hash
     body = request.get_json(silent=True) or {}
     current = str(body.get('current') or '')
@@ -279,29 +287,19 @@ def users_change_password():
     if not uid:
         return jsonify({"error": "no_session"}), 401
     try:
-        conn = sqlite3.connect(DB_FILE, timeout=15.0)
-        conn.execute('PRAGMA busy_timeout=15000;')
-        c = conn.cursor()
-        c.execute("SELECT password, token_version FROM users WHERE id=?", (uid,))
-        row = c.fetchone()
-        if not row:
-            conn.close()
+        u = store.get_user_by_id(uid)
+        if not u:
             return jsonify({"error": "user_not_found"}), 404
-        if not check_password_hash(row[0], current):
-            conn.close()
+        if not check_password_hash(u.get('password') or '', current):
             log_audit('SECURITY', 'users',
                       f'Failed password change (wrong current) by {session.get("username")}',
                       is_suspicious=True)
             return jsonify({"error": "Current password is incorrect."}), 401
         # Match sto auth.py radi: nova lozinka, bump token_version, timestamp
-        import time as _time
-        now_iso = _time.strftime('%Y-%m-%dT%H:%M:%SZ', _time.gmtime())
+        now_iso = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
         new_hash = generate_password_hash(nxt, method='scrypt:32768:8:1')
-        new_ver = int(row[1] or 1) + 1
-        c.execute("UPDATE users SET password=?, last_password_change_at=?, token_version=? WHERE id=?",
-                  (new_hash, now_iso, new_ver, uid))
-        conn.commit()
-        conn.close()
+        store.update_user_password(uid, new_hash, now_iso)
+        new_ver = store.bump_token_version(uid)
         # Osvezi trenutnu sesiju sa novim token_version da user ne bude odjavljen
         session['token_version'] = new_ver
         log_audit('SECURITY', 'users',
@@ -339,11 +337,13 @@ def _admin_only():
 @login_required
 def supabase_status():
     """Vraća pun status Supabase integracije — flag-ovi, konekcija, brojevi
-    redova u SQLite vs Supabase, migracija progress."""
+    redova u Supabase, migracija progress.
+
+    V24.0 SUPABASE-ONLY (Faza 3-c): SQLite counts se više ne prikazuju jer
+    su lokalni .db fajlovi deprecated. Vraćamo prazan dict — frontend vidi
+    da SQLite više nije u upotrebi."""
     r = _admin_only()
     if r: return r
-
-    from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE
 
     # Env flag-ovi
     flags = {
@@ -354,23 +354,8 @@ def supabase_status():
         "DB_BACKEND": os.environ.get("DB_BACKEND", "rest"),
     }
 
-    # SQLite brojevi
+    # V24.0: SQLite counts su uklonjeni (100% Supabase-only).
     sqlite_counts = {}
-    for label, path in (("crm", DB_FILE), ("portal", PORTAL_DB_FILE), ("audit", AUDIT_DB_FILE)):
-        if os.path.exists(path):
-            try:
-                conn = sqlite3.connect(path, timeout=5.0)
-                for (tname,) in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                ).fetchall():
-                    try:
-                        cnt = conn.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
-                        sqlite_counts[f"{label}.{tname}"] = int(cnt)
-                    except Exception:
-                        pass
-                conn.close()
-            except Exception as e:
-                sqlite_counts[f"{label}.error"] = str(e)
 
     # Supabase brojevi (samo ako je kljuc podesen)
     supabase_counts = {}
@@ -413,6 +398,7 @@ def supabase_status():
             "auth_users": auth_users,
         },
         "sqlite_counts": sqlite_counts,
+        "sqlite_deprecated": True,
         "migration": dict(_migration_state),
     })
 
@@ -645,48 +631,43 @@ def admin_mail_queue_page():
 @supabase_admin_bp.route('/api/admin/mail-queue', methods=['GET'])
 @login_required
 def admin_mail_queue_list():
+    """V24.0 SUPABASE-ONLY: čita email_queue iz Supabase preko data_layer.select."""
     if session.get('role') != 'admin':
         return jsonify({"error": "Admin only."}), 403
-    import sqlite3
-    from config import DB_FILE
     status_filter = (request.args.get('status') or '').strip().lower()
     try:
         limit = min(int(request.args.get('limit') or 200), 500)
     except ValueError:
         limit = 200
-    q = ("SELECT id, recipient, subject, status, attempts, last_error, "
-         "queued_at, next_retry_at, sent_at, sending_started_at "
-         "FROM email_queue")
-    params = []
+    filters = None
     if status_filter in ('pending', 'sending', 'sent', 'failed', 'dead'):
-        q += " WHERE status=?"
-        params.append(status_filter)
-    q += " ORDER BY queued_at DESC LIMIT ?"
-    params.append(limit)
+        filters = {'status': status_filter}
     try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000;')
-            rows = conn.execute(q, tuple(params)).fetchall()
-            # Ukupni brojevi po statusu (za summary)
-            summary = {}
-            for st in ('pending', 'sending', 'sent', 'failed', 'dead'):
-                cnt = conn.execute(
-                    "SELECT COUNT(*) FROM email_queue WHERE status=?",
-                    (st,)
-                ).fetchone()[0]
-                summary[st] = cnt
-    except sqlite3.OperationalError as e:
+        rows = _dl_select('email_queue', filters=filters, order='-queued_at', limit=limit) or []
+        # Summary counts per status
+        summary = {}
+        for st in ('pending', 'sending', 'sent', 'failed', 'dead'):
+            try:
+                summary[st] = int(_dl_count('email_queue', {'status': st}) or 0)
+            except Exception:
+                summary[st] = 0
+    except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 500
     return jsonify({
         "ok": True,
         "summary": summary,
         "total_shown": len(rows),
         "emails": [{
-            "id": r[0], "recipient": r[1], "subject": r[2] or '',
-            "status": r[3], "attempts": r[4] or 0,
-            "last_error": (r[5] or '')[:400],
-            "queued_at": r[6], "next_retry_at": r[7],
-            "sent_at": r[8], "sending_started_at": r[9],
+            "id": r.get('id'),
+            "recipient": r.get('recipient'),
+            "subject": r.get('subject') or '',
+            "status": r.get('status'),
+            "attempts": r.get('attempts') or 0,
+            "last_error": (r.get('last_error') or '')[:400],
+            "queued_at": r.get('queued_at'),
+            "next_retry_at": r.get('next_retry_at'),
+            "sent_at": r.get('sent_at'),
+            "sending_started_at": r.get('sending_started_at'),
         } for r in rows]
     })
 
@@ -695,34 +676,46 @@ def admin_mail_queue_list():
 @login_required
 def admin_mail_queue_retry():
     """Resetuje status='pending' + next_retry_at=NULL za date ID-eve (ili
-    sve failed/dead ako je body prazan). Sledeci drain ce ih pokupiti."""
+    sve failed/dead ako je body prazan). Sledeci drain ce ih pokupiti.
+
+    V24.0 SUPABASE-ONLY: koristi data_layer.update / data_layer.count za
+    ažuriranje i brojanje."""
     if session.get('role') != 'admin':
         return jsonify({"error": "Admin only."}), 403
-    import sqlite3
-    from config import DB_FILE
     body = request.get_json(silent=True) or {}
     ids = body.get('ids') or []
     retry_all_failed = bool(body.get('retry_all_failed'))
+    reset_patch = {
+        'status': 'pending',
+        'next_retry_at': None,
+        'sending_started_at': None,
+        'worker_id': None,
+    }
+    cnt = 0
     try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000;')
-            if ids:
-                placeholders = ','.join('?' * len(ids))
-                cnt = conn.execute(
-                    f"UPDATE email_queue SET status='pending', next_retry_at=NULL, "
-                    f"sending_started_at=NULL, worker_id=NULL WHERE id IN ({placeholders})",
-                    tuple(ids)
-                ).rowcount
-            elif retry_all_failed:
-                cnt = conn.execute(
-                    "UPDATE email_queue SET status='pending', next_retry_at=NULL, "
-                    "sending_started_at=NULL, worker_id=NULL "
-                    "WHERE status IN ('failed', 'dead')"
-                ).rowcount
-            else:
-                return jsonify({"error": "Nothing to retry — pass ids or retry_all_failed."}), 400
-            conn.commit()
-    except sqlite3.OperationalError as e:
+        if ids:
+            # data_layer.update vraća listu ažuriranih redova
+            for _id in ids[:2000]:
+                try:
+                    updated = _dl_update('email_queue', {'id': _id}, reset_patch) or []
+                    cnt += len(updated)
+                except Exception:
+                    pass
+        elif retry_all_failed:
+            # Update svih failed i dead — prvo prebroj, pa update sa filterom IN
+            try:
+                updated_failed = _dl_update('email_queue', {'status': 'failed'}, reset_patch) or []
+                cnt += len(updated_failed)
+            except Exception:
+                pass
+            try:
+                updated_dead = _dl_update('email_queue', {'status': 'dead'}, reset_patch) or []
+                cnt += len(updated_dead)
+            except Exception:
+                pass
+        else:
+            return jsonify({"error": "Nothing to retry — pass ids or retry_all_failed."}), 400
+    except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 500
 
     log_audit('EDIT', 'system', f'Mail queue: retried {cnt} email(s) by {session.get("username")}',
@@ -733,32 +726,30 @@ def admin_mail_queue_retry():
 @supabase_admin_bp.route('/api/admin/mail-queue/delete', methods=['POST'])
 @login_required
 def admin_mail_queue_delete():
-    """Brise ID-eve iz email_queue tabele. Pazi — nema vracanja."""
+    """Brise ID-eve iz email_queue tabele. Pazi — nema vracanja.
+    V24.0 SUPABASE-ONLY: koristi data_layer.delete."""
     if session.get('role') != 'admin':
         return jsonify({"error": "Admin only."}), 403
-    import sqlite3
-    from config import DB_FILE
     body = request.get_json(silent=True) or {}
     ids = body.get('ids') or []
     purge_status = str(body.get('purge_status') or '').strip().lower()
+    cnt = 0
     try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000;')
-            if ids:
-                placeholders = ','.join('?' * len(ids))
-                cnt = conn.execute(
-                    f"DELETE FROM email_queue WHERE id IN ({placeholders})",
-                    tuple(ids)
-                ).rowcount
-            elif purge_status in ('sent', 'failed', 'dead'):
-                cnt = conn.execute(
-                    "DELETE FROM email_queue WHERE status=?",
-                    (purge_status,)
-                ).rowcount
-            else:
-                return jsonify({"error": "Nothing to delete — pass ids or purge_status."}), 400
-            conn.commit()
-    except sqlite3.OperationalError as e:
+        if ids:
+            for _id in ids[:2000]:
+                try:
+                    n = _dl_delete('email_queue', {'id': _id})
+                    cnt += int(n or 0)
+                except Exception:
+                    pass
+        elif purge_status in ('sent', 'failed', 'dead'):
+            try:
+                cnt = int(_dl_delete('email_queue', {'status': purge_status}) or 0)
+            except Exception:
+                pass
+        else:
+            return jsonify({"error": "Nothing to delete — pass ids or purge_status."}), 400
+    except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 500
 
     log_audit('DELETE', 'system',
@@ -893,21 +884,16 @@ def supabase_sync_back():
 def users_kill_all_sessions():
     """Bump token_version za trenutnog user-a — sve postojece sesije se
     trenutno prekidaju osim ove koja je pozvala. Koristi se kad user
-    misli da je nalog kompromitovan (bez potrebe za password change)."""
-    import sqlite3
-    from config import DB_FILE
+    misli da je nalog kompromitovan (bez potrebe za password change).
+
+    V24.0 SUPABASE-ONLY: koristi supabase_store.bump_token_version."""
     uid = session.get('user_id')
     if not uid:
         return jsonify({"error": "no_session"}), 401
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            conn.execute('PRAGMA busy_timeout=15000;')
-            row = conn.execute("SELECT token_version FROM users WHERE id=?", (uid,)).fetchone()
-            if not row:
-                return jsonify({"error": "user_not_found"}), 404
-            new_ver = int(row[0] or 1) + 1
-            conn.execute("UPDATE users SET token_version=? WHERE id=?", (new_ver, uid))
-            conn.commit()
+        new_ver = store.bump_token_version(uid)
+        if not new_ver:
+            return jsonify({"error": "user_not_found"}), 404
         # Osvezi trenutnu sesiju da NE ostanem odjavljen
         session['token_version'] = new_ver
         log_audit('SECURITY', 'users',
@@ -923,67 +909,22 @@ def users_kill_all_sessions():
 @supabase_admin_bp.route('/api/admin/backup/trigger', methods=['POST'])
 @login_required
 def admin_backup_trigger():
-    """Rucno pokreni Fernet backup snapshot odmah. Ne ceka noc.
-    Vraca listu kreiranih fajlova + off-site status."""
+    """DEPRECATED (Faza 3-c): SQLite backup je uklonjen — aplikacija je
+    100% Supabase-only. Supabase radi svoje nightly snapshot-e na backend-u;
+    admin može ručno da izveze podatke preko Supabase Dashboard-a ako je
+    potrebno. Vraćamo 410 Gone sa korisnom porukom."""
     if session.get('role') != 'admin':
         return jsonify({"error": "Admin only."}), 403
-    try:
-        import sqlite3, datetime as _dt, os as _os
-        from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE, DATA_DIR
-        from utils import cipher_suite
-        backups_dir = _os.path.join(DATA_DIR, 'backups')
-        _os.makedirs(backups_dir, exist_ok=True)
-        ts = _dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-        created = []
-        errors = []
-        offsite = []
-        for db_path in (DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE):
-            if not _os.path.exists(db_path):
-                continue
-            tmp_copy = _os.path.join(backups_dir, f'.tmp_manual_{_os.path.basename(db_path)}')
-            try:
-                src_conn = sqlite3.connect(db_path, timeout=30.0)
-                dst_conn = sqlite3.connect(tmp_copy, timeout=30.0)
-                with dst_conn:
-                    src_conn.backup(dst_conn)
-                dst_conn.close(); src_conn.close()
-                with open(tmp_copy, 'rb') as f:
-                    raw = f.read()
-                enc = cipher_suite.encrypt(raw)
-                out = _os.path.join(backups_dir, f'{_os.path.basename(db_path)}.{ts}.MANUAL.fernet')
-                with open(out, 'wb') as f:
-                    f.write(enc)
-                _os.remove(tmp_copy)
-                try: _os.chmod(out, 0o600)
-                except Exception: pass
-                created.append({'file': _os.path.basename(out), 'size_bytes': len(enc)})
-                # Off-site mirror ako je enabled
-                if _os.environ.get('BACKUP_OFFSITE', '').strip().lower() in ('1','true','yes','on'):
-                    try:
-                        import utils_storage as _st
-                        if _st.use_supabase_storage():
-                            r = _st.upload_bytes('backups', f'manual/{_os.path.basename(out)}',
-                                                 enc, content_type='application/octet-stream')
-                            offsite.append({'file': _os.path.basename(out), 'ok': bool(r.get('ok'))})
-                    except Exception as ee:
-                        offsite.append({'file': _os.path.basename(out), 'error': str(ee)[:120]})
-            except Exception as e:
-                errors.append({'db': _os.path.basename(db_path), 'error': str(e)[:120]})
-                try:
-                    if _os.path.exists(tmp_copy): _os.remove(tmp_copy)
-                except Exception: pass
-        log_audit('CREATE', 'system',
-                  f'Manual backup triggered by {session.get("username")}: {len(created)} files, {len(errors)} errors',
-                  is_suspicious=False)
-        return jsonify({
-            'ok': len(errors) == 0,
-            'created': created,
-            'errors': errors,
-            'offsite': offsite,
-            'timestamp': ts,
-        })
-    except Exception as e:
-        return jsonify({'ok': False, 'error': f'{type(e).__name__}: {str(e)[:200]}'}), 500
+    log_audit('EDIT', 'system',
+              f'Admin {session.get("username")} tried deprecated /backup/trigger endpoint',
+              is_suspicious=False)
+    return jsonify({
+        "ok": False,
+        "error": "deprecated",
+        "message": ("SQLite backup endpoint is removed (Faza 3-c — 100% Supabase-only). "
+                    "Use Supabase Dashboard for nightly snapshots / pg_dump export."),
+        "timestamp": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    }), 410
 
 
 @supabase_admin_bp.route('/api/admin/backup/list', methods=['GET'])
@@ -1018,106 +959,22 @@ def admin_backup_list():
 @supabase_admin_bp.route('/api/admin/backup/restore', methods=['POST'])
 @login_required
 def admin_backup_restore():
-    """Vrati SQLite bazu iz Fernet backup fajla.
-    Body: {"backup_file": "aspidus_crm.db.20261228T080000Z.fernet",
-           "target": "crm" | "portal" | "audit",
-           "confirm": true}
-    Ako confirm=false -> samo vrati info, ne dira nista.
-    Ovo je DESTRUKTIVNA operacija — pravi backup postojeceg DB-a pre restore-a."""
+    """DEPRECATED (Faza 3-c): SQLite restore je uklonjen — aplikacija je
+    100% Supabase-only. Postojeći .fernet backup fajlovi se mogu čuvati
+    zbog compliance-a, ali restore u live SQLite fajl više nema smisla jer
+    se SQLite ne koristi. Vraćamo 410 Gone sa korisnom porukom."""
     if session.get('role') != 'admin':
         return jsonify({"error": "Admin only."}), 403
-    import os as _os, sqlite3 as _sq, tempfile as _tf
-    from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE, DATA_DIR
-    from utils import cipher_suite, log_audit as _log
-
     body = request.get_json(silent=True) or {}
     fname = str(body.get('backup_file') or '').strip()
     target = str(body.get('target') or '').strip().lower()
-    confirm = bool(body.get('confirm'))
-
-    if not fname or '/' in fname or '..' in fname or not fname.endswith('.fernet'):
-        return jsonify({'error': 'invalid_backup_file'}), 400
-    target_map = {'crm': DB_FILE, 'portal': PORTAL_DB_FILE, 'audit': AUDIT_DB_FILE}
-    if target not in target_map:
-        return jsonify({'error': 'target_must_be_crm_portal_or_audit'}), 400
-
-    backups_dir = _os.path.join(DATA_DIR, 'backups')
-    src_path = _os.path.join(backups_dir, fname)
-    if not _os.path.isfile(src_path):
-        return jsonify({'error': 'backup_not_found'}), 404
-
-    target_path = target_map[target]
-
-    # Dry-run: pokazi info sto ce se desiti
-    if not confirm:
-        try:
-            src_size = _os.path.getsize(src_path)
-            tgt_size = _os.path.getsize(target_path) if _os.path.exists(target_path) else 0
-            return jsonify({
-                'confirm_required': True,
-                'backup_file': fname,
-                'backup_size_mb': round(src_size / (1024 * 1024), 2),
-                'target': target,
-                'target_current_size_mb': round(tgt_size / (1024 * 1024), 2),
-                'target_path': target_path,
-                'warning': ('This will REPLACE the current database. '
-                            'The existing DB will be quarantined as .pre_restore.<ts>. '
-                            'Pass confirm=true to proceed.')
-            })
-        except Exception as e:
-            return jsonify({'error': str(e)[:200]}), 500
-
-    # Real restore
-    import time as _t, datetime as _dt
-    ts = _dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    try:
-        # 1) Decrypt backup u temp fajl
-        with open(src_path, 'rb') as f:
-            enc = f.read()
-        try:
-            raw = cipher_suite.decrypt(enc)
-        except Exception as e:
-            return jsonify({'error': 'decrypt_failed',
-                            'detail': f'Wrong vault.key? {type(e).__name__}: {str(e)[:120]}'}), 500
-
-        # 2) Verifikuj da je validan SQLite (integrity check)
-        tmp = _tf.NamedTemporaryFile(delete=False, suffix='.sqlite', dir=backups_dir)
-        tmp.write(raw); tmp.close()
-        try:
-            tconn = _sq.connect(tmp.name, timeout=15.0)
-            integ = tconn.execute('PRAGMA integrity_check').fetchone()
-            tconn.close()
-            if not (integ and integ[0] == 'ok'):
-                _os.remove(tmp.name)
-                return jsonify({'error': 'integrity_check_failed',
-                                'detail': str(integ)}), 500
-        except Exception as e:
-            try: _os.remove(tmp.name)
-            except Exception: pass
-            return jsonify({'error': 'not_valid_sqlite', 'detail': str(e)[:200]}), 500
-
-        # 3) Kvarantiraj postojeci DB kao .pre_restore.<ts>
-        if _os.path.exists(target_path):
-            quarantine = f'{target_path}.pre_restore.{ts}'
-            _os.rename(target_path, quarantine)
-        else:
-            quarantine = None
-
-        # 4) Move decrypted temp na pravo mesto
-        _os.rename(tmp.name, target_path)
-        try: _os.chmod(target_path, 0o600)
-        except Exception: pass
-
-        _log('CRITICAL_ADMIN', 'system',
-             f'DB RESTORE: {target} <- {fname} (previous quarantined at {quarantine})',
-             is_suspicious=True)
-
-        return jsonify({
-            'ok': True, 'target': target, 'restored_from': fname,
-            'quarantined_previous_db': quarantine,
-            'warning': 'Restart the web app to pick up the new DB file.',
-            'timestamp': ts,
-        })
-    except Exception as e:
-        record_error('/api/admin/backup/restore', e)
-        return jsonify({'error': 'restore_failed', 'detail': str(e)[:200]}), 500
+    log_audit('CRITICAL_ADMIN', 'system',
+              f'Admin {session.get("username")} tried deprecated /backup/restore endpoint '
+              f'(file={fname!r}, target={target!r}) — request denied (Faza 3-c SQLite-free).',
+              is_suspicious=True)
+    return jsonify({
+        "ok": False,
+        "error": "deprecated",
+        "message": ("SQLite restore endpoint is removed (Faza 3-c — 100% Supabase-only). "
+                    "Live SQLite is no longer used; use Supabase Dashboard to restore snapshots."),
+    }), 410

@@ -15,16 +15,28 @@ Filozofija:
       POST /api/documents/revise               — dodaj -Rn reviziju
       GET  /api/documents/history/<docNumber>  — vraća sve revizije
       GET  /api/documents/register?type=offer&year=YYYY
+      POST /api/deals/<deal_id>/issue-document
+      GET  /api/deals/<deal_id>/documents
+
+V24.0 SUPABASE-ONLY: atomicity se oslanja na Postgres UNIQUE INDEX
+`(doc_type, year, seq)` — ako dva zahteva istovremeno pokušaju isti seq,
+drugi pukne sa 23505 unique_violation i retry-uje sa sledećim seq.
 """
+import hashlib
 import json
 import logging
-import sqlite3
 import uuid
 from datetime import datetime, timezone
+
 from flask import Blueprint, jsonify, request, session
 
-from config import DB_FILE
 from utils import login_required, log_audit
+from data_layer import (
+    select as _dl_select,
+    select_one as _dl_select_one,
+    insert as _dl_insert,
+    update as _dl_update,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,28 +57,70 @@ def _current_year():
     return datetime.now(timezone.utc).year
 
 
+def _iso_now():
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
 def _format_number(prefix, seq, year, revision=0):
     """OFF-042/2026 ili OFF-042/2026-R1 za reviziju."""
     core = f"{prefix}-{seq:03d}/{year}"
     return core if revision <= 0 else f"{core}-R{revision}"
 
 
-def _get_db():
-    con = sqlite3.connect(DB_FILE, timeout=30)
-    con.execute('PRAGMA journal_mode=WAL')
-    con.execute('PRAGMA busy_timeout=30000')
-    return con
+def _row_to_register(r: dict) -> dict:
+    """Normalizuje Supabase snake_case red u frontend-expected camelCase."""
+    return {
+        'docType': r.get('doc_type'),
+        'year': r.get('year'),
+        'seq': r.get('seq'),
+        'docNumber': r.get('doc_number'),
+        'entityId': r.get('entity_id'),
+        'revision': r.get('revision'),
+        'status': r.get('status'),
+        'issuedAt': r.get('issued_at'),
+        'issuedBy': r.get('issued_by'),
+    }
 
 
-def _next_seq(cur, doc_type, year):
-    """Atomsko pronalaženje sledećeg seq broja u datoj godini. Koristi
-    max(seq) + 1 unutar transakcije (SQLite locking obezbeđuje serialization).
-    Zadrži nu do commit-a → nema race condition-a."""
-    row = cur.execute(
-        'SELECT COALESCE(MAX(seq), 0) FROM document_register WHERE docType=? AND year=?',
-        (doc_type, year)
-    ).fetchone()
-    return int(row[0]) + 1
+def _next_seq(doc_type: str, year: int) -> int:
+    """Pronalazi sledeći seq broj u datoj godini — max(seq) + 1.
+    Atomicity osigurava UNIQUE INDEX (doc_type, year, seq) na Supabase.
+    Ako dva zahteva istovremeno pokušaju isti seq, drugi pukne sa 23505
+    i caller radi retry."""
+    try:
+        rows = _dl_select(
+            'document_register',
+            filters={'doc_type': doc_type, 'year': year},
+            columns='seq',
+            order='-seq',
+            limit=1,
+        ) or []
+        if rows and rows[0].get('seq') is not None:
+            return int(rows[0]['seq']) + 1
+    except Exception as e:
+        logger.warning('_next_seq select failed: %s', e)
+    return 1
+
+
+def _insert_register(doc_type, year, seq, number, entity_id, revision, status, username):
+    """Wrapper za insert sa unique_violation signalizacijom."""
+    return _dl_insert('document_register', {
+        'id': str(uuid.uuid4()),
+        'doc_type': doc_type,
+        'year': int(year),
+        'seq': int(seq),
+        'doc_number': number,
+        'entity_id': entity_id,
+        'revision': int(revision),
+        'status': status,
+        'issued_at': _iso_now(),
+        'issued_by': username,
+    })
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return '23505' in msg or 'unique' in msg or 'duplicate' in msg
 
 
 # ==========================================================
@@ -85,12 +139,7 @@ def next_number():
     except ValueError:
         return jsonify({'error': 'INVALID_YEAR'}), 400
 
-    con = _get_db()
-    try:
-        cur = con.cursor()
-        seq = _next_seq(cur, doc_type, year)
-    finally:
-        con.close()
+    seq = _next_seq(doc_type, year)
     number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
     return jsonify({
         'docType': doc_type,
@@ -117,56 +166,51 @@ def issue_number():
     except (TypeError, ValueError):
         return jsonify({'error': 'INVALID_YEAR'}), 400
 
-    con = _get_db()
-    try:
-        cur = con.cursor()
-        # Idempotentno: već izdato za istu entity
-        if entity_id:
-            existing = cur.execute(
-                'SELECT docNumber, seq, revision FROM document_register '
-                'WHERE docType=? AND entityId=? AND revision=0',
-                (doc_type, entity_id)
-            ).fetchone()
+    # Idempotentno: već izdato za istu entity
+    if entity_id:
+        try:
+            existing = _dl_select_one(
+                'document_register',
+                {'doc_type': doc_type, 'entity_id': entity_id, 'revision': 0},
+            )
             if existing:
                 return jsonify({
-                    'docNumber': existing[0], 'seq': existing[1],
-                    'revision': existing[2], 'year': year, 'status': 'existing'
+                    'docNumber': existing.get('doc_number'),
+                    'seq': existing.get('seq'),
+                    'revision': existing.get('revision'),
+                    'year': year, 'status': 'existing'
                 })
+        except Exception as e:
+            logger.warning('issue_number idempotency check failed: %s', e)
 
-        seq = _next_seq(cur, doc_type, year)
-        number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        try:
-            cur.execute(
-                'INSERT INTO document_register '
-                '(docType, year, seq, docNumber, entityId, revision, status, issuedAt, issuedBy) '
-                'VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
-                (doc_type, year, seq, number, entity_id, 'active', now,
-                 session.get('username') or 'system')
-            )
-            con.commit()
-        except sqlite3.IntegrityError as e:
-            # Duplikat UNIQUE(docNumber) → race → pokušaj još jednom
-            logger.warning(f'Duplicate docNumber, retrying: {e}')
-            seq = _next_seq(cur, doc_type, year)
+    username = session.get('username') or 'system'
+    seq = _next_seq(doc_type, year)
+    number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
+    try:
+        _insert_register(doc_type, year, seq, number, entity_id, 0, 'active', username)
+    except Exception as e:
+        if _is_unique_violation(e):
+            # Race na UNIQUE(doc_number, doc_type, year, seq) → retry sa novim seq
+            logger.warning('Duplicate docNumber, retrying: %s', e)
+            seq = _next_seq(doc_type, year)
             number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
-            cur.execute(
-                'INSERT INTO document_register '
-                '(docType, year, seq, docNumber, entityId, revision, status, issuedAt, issuedBy) '
-                'VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
-                (doc_type, year, seq, number, entity_id, 'active', now,
-                 session.get('username') or 'system')
-            )
-            con.commit()
+            try:
+                _insert_register(doc_type, year, seq, number, entity_id, 0, 'active', username)
+            except Exception as e2:
+                logger.error('issue_number retry failed: %s', e2)
+                return jsonify({'error': 'ISSUE_FAILED_RETRY',
+                                'detail': str(e2)[:200]}), 500
+        else:
+            logger.error('issue_number insert failed: %s', e)
+            return jsonify({'error': 'ISSUE_FAILED',
+                            'detail': str(e)[:200]}), 500
 
-        log_audit('CREATE', 'documents',
-                  f'Document number issued: {number} (entity {entity_id})')
-        return jsonify({
-            'docNumber': number, 'seq': seq, 'revision': 0,
-            'year': year, 'status': 'newly_issued'
-        })
-    finally:
-        con.close()
+    log_audit('CREATE', 'documents',
+              f'Document number issued: {number} (entity {entity_id})')
+    return jsonify({
+        'docNumber': number, 'seq': seq, 'revision': 0,
+        'year': year, 'status': 'newly_issued'
+    })
 
 
 @documents_register_bp.route('/api/documents/revise', methods=['POST'])
@@ -184,66 +228,83 @@ def revise():
         return jsonify({'error': 'CHANGE_REASON_REQUIRED',
                         'message': 'Legal requirement — every revision must have a reason.'}), 400
 
-    con = _get_db()
-    try:
-        cur = con.cursor()
-        # Nadji originalnu row
-        row = cur.execute(
-            'SELECT docType, year, seq, entityId, revision FROM document_register '
-            'WHERE docNumber=?', (base_number,)
-        ).fetchone()
-        if not row:
-            return jsonify({'error': 'DOC_NUMBER_NOT_FOUND'}), 404
-        doc_type, year, seq, entity_id, cur_rev = row
-        # Najveća postojeća revizija za taj docType/year/seq
-        max_rev = cur.execute(
-            'SELECT COALESCE(MAX(revision), 0) FROM document_register '
-            'WHERE docType=? AND year=? AND seq=?', (doc_type, year, seq)
-        ).fetchone()[0]
-        new_rev = int(max_rev) + 1
-        new_number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year, revision=new_rev)
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        username = session.get('username') or 'system'
+    # Nadji originalnu row
+    row = _dl_select_one('document_register', {'doc_number': base_number})
+    if not row:
+        return jsonify({'error': 'DOC_NUMBER_NOT_FOUND'}), 404
+    doc_type = row.get('doc_type')
+    year = row.get('year')
+    seq = row.get('seq')
+    entity_id = row.get('entity_id')
 
-        # Snimi u register
-        cur.execute(
-            'INSERT INTO document_register '
-            '(docType, year, seq, docNumber, entityId, revision, status, issuedAt, issuedBy) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (doc_type, year, seq, new_number, entity_id, new_rev, 'active', now, username)
-        )
-        # Označi sve prethodne kao superseded
-        cur.execute(
-            'UPDATE document_register SET status=? '
-            'WHERE docType=? AND year=? AND seq=? AND revision<?',
-            ('superseded', doc_type, year, seq, new_rev)
-        )
-        # Snimi puno snapshot podataka u revisions tabelu
-        import hashlib
-        binding_seed = json.dumps(snapshot, sort_keys=True, separators=(',', ':')).encode('utf-8')
-        binding_hash = hashlib.sha256(binding_seed).hexdigest().upper()
-        cur.execute(
-            'INSERT INTO document_revisions '
-            '(id, docNumber, revision, entityId, snapshot, bindingHash, '
-            ' changeReason, changedBy, changedAt) '
-            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (str(uuid.uuid4()), new_number, new_rev, entity_id,
-             json.dumps(snapshot, ensure_ascii=False), binding_hash,
-             change_reason, username, now)
-        )
-        con.commit()
-        log_audit('UPDATE', 'documents',
-                  f'Document revised: {base_number} → {new_number} '
-                  f'(reason: {change_reason[:80]})')
-        return jsonify({
-            'docNumber': new_number,
-            'previousDocNumber': base_number,
+    # Najveća postojeća revizija za taj docType/year/seq
+    try:
+        rev_rows = _dl_select(
+            'document_register',
+            filters={'doc_type': doc_type, 'year': year, 'seq': seq},
+            columns='revision',
+            order='-revision',
+            limit=1,
+        ) or []
+        max_rev = int(rev_rows[0]['revision']) if rev_rows else 0
+    except Exception:
+        max_rev = 0
+    new_rev = max_rev + 1
+    new_number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year, revision=new_rev)
+    now = _iso_now()
+    username = session.get('username') or 'system'
+
+    # Snimi u register
+    try:
+        _insert_register(doc_type, year, seq, new_number, entity_id,
+                         new_rev, 'active', username)
+    except Exception as e:
+        logger.error('revise insert failed: %s', e)
+        return jsonify({'error': 'REVISE_FAILED',
+                        'detail': str(e)[:200]}), 500
+
+    # Označi sve prethodne kao superseded
+    try:
+        prev_rows = _dl_select(
+            'document_register',
+            filters={'doc_type': doc_type, 'year': year, 'seq': seq},
+            columns='id,revision',
+        ) or []
+        for pr in prev_rows:
+            if int(pr.get('revision', 0)) < new_rev:
+                _dl_update('document_register', {'id': pr.get('id')},
+                           {'status': 'superseded'})
+    except Exception as e:
+        logger.warning('revise supersede update failed: %s', e)
+
+    # Snimi puno snapshot podataka u revisions tabelu
+    binding_seed = json.dumps(snapshot, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    binding_hash = hashlib.sha256(binding_seed).hexdigest().upper()
+    try:
+        _dl_insert('document_revisions', {
+            'id': str(uuid.uuid4()),
+            'doc_number': new_number,
             'revision': new_rev,
-            'bindingHash': binding_hash,
-            'issuedAt': now,
+            'entity_id': entity_id,
+            'snapshot': snapshot,  # JSONB — dict direktno
+            'binding_hash': binding_hash,
+            'change_reason': change_reason,
+            'changed_by': username,
+            'changed_at': now,
         })
-    finally:
-        con.close()
+    except Exception as e:
+        logger.warning('revise revision snapshot insert failed: %s', e)
+
+    log_audit('UPDATE', 'documents',
+              f'Document revised: {base_number} → {new_number} '
+              f'(reason: {change_reason[:80]})')
+    return jsonify({
+        'docNumber': new_number,
+        'previousDocNumber': base_number,
+        'revision': new_rev,
+        'bindingHash': binding_hash,
+        'issuedAt': now,
+    })
 
 
 @documents_register_bp.route('/api/documents/history/<path:doc_number>', methods=['GET'])
@@ -252,52 +313,54 @@ def document_history(doc_number):
     """Vraća sve revizije za dati broj (ili osnovni broj bez -R suffiksa)."""
     # Skini eventualni -Rn suffix da bi dobili base
     base = doc_number.split('-R')[0] if '-R' in doc_number else doc_number
-    con = _get_db()
-    try:
-        cur = con.cursor()
-        # Nadji tip/god/seq iz base
-        core = cur.execute(
-            'SELECT docType, year, seq FROM document_register '
-            'WHERE docNumber=?', (base,)
-        ).fetchone()
-        if not core:
-            return jsonify({'error': 'DOC_NUMBER_NOT_FOUND'}), 404
-        doc_type, year, seq = core
-        rows = cur.execute(
-            'SELECT docNumber, revision, status, issuedAt, issuedBy, entityId '
-            'FROM document_register WHERE docType=? AND year=? AND seq=? '
-            'ORDER BY revision ASC', (doc_type, year, seq)
-        ).fetchall()
-        register_rows = [{
-            'docNumber': r[0], 'revision': r[1], 'status': r[2],
-            'issuedAt': r[3], 'issuedBy': r[4], 'entityId': r[5],
-        } for r in rows]
+    # Nadji tip/god/seq iz base
+    core = _dl_select_one('document_register', {'doc_number': base})
+    if not core:
+        return jsonify({'error': 'DOC_NUMBER_NOT_FOUND'}), 404
+    doc_type = core.get('doc_type')
+    year = core.get('year')
+    seq = core.get('seq')
 
-        rev_rows = cur.execute(
-            'SELECT docNumber, revision, snapshot, bindingHash, contentHash, '
-            'changeReason, changedBy, changedAt FROM document_revisions '
-            'WHERE docNumber IN ({}) ORDER BY revision ASC'.format(
-                ','.join('?' * len(register_rows))
-            ),
-            tuple(r['docNumber'] for r in register_rows)
-        ).fetchall() if register_rows else []
-        revisions = [{
-            'docNumber': r[0], 'revision': r[1],
-            'snapshot': json.loads(r[2]) if r[2] else None,
-            'bindingHash': r[3], 'contentHash': r[4],
-            'changeReason': r[5], 'changedBy': r[6], 'changedAt': r[7],
-        } for r in rev_rows]
+    rows = _dl_select(
+        'document_register',
+        filters={'doc_type': doc_type, 'year': year, 'seq': seq},
+        order='revision',
+    ) or []
+    register_rows = [_row_to_register(r) for r in rows]
 
-        return jsonify({
-            'baseDocNumber': base,
-            'docType': doc_type, 'year': year, 'seq': seq,
-            'register': register_rows,
-            'revisions': revisions,
-            'currentActive': next((r['docNumber'] for r in register_rows
-                                   if r['status'] == 'active'), base),
-        })
-    finally:
-        con.close()
+    # Document revisions for these doc numbers
+    revisions = []
+    if register_rows:
+        for rr in register_rows:
+            rev_rows = _dl_select(
+                'document_revisions',
+                filters={'doc_number': rr['docNumber']},
+                order='revision',
+            ) or []
+            for r in rev_rows:
+                snap = r.get('snapshot')
+                if isinstance(snap, str):
+                    try: snap = json.loads(snap)
+                    except Exception: pass
+                revisions.append({
+                    'docNumber': r.get('doc_number'),
+                    'revision': r.get('revision'),
+                    'snapshot': snap,
+                    'bindingHash': r.get('binding_hash'),
+                    'contentHash': r.get('content_hash'),
+                    'changeReason': r.get('change_reason'),
+                    'changedBy': r.get('changed_by'),
+                    'changedAt': r.get('changed_at'),
+                })
+
+    return jsonify({
+        'baseDocNumber': base,
+        'docType': doc_type, 'year': year, 'seq': seq,
+        'register': register_rows,
+        'revisions': revisions,
+        'currentActive': next((r['docNumber'] for r in register_rows
+                               if r['status'] == 'active'), base),
+    })
 
 
 @documents_register_bp.route('/api/documents/register', methods=['GET'])
@@ -307,43 +370,31 @@ def register_list():
     year = request.args.get('year')
     limit = min(int(request.args.get('limit') or 200), 1000)
 
-    con = _get_db()
+    filters = {}
+    if doc_type:
+        filters['doc_type'] = doc_type
+    if year:
+        try: filters['year'] = int(year)
+        except ValueError: pass
+
     try:
-        cur = con.cursor()
-        q = 'SELECT docType, year, seq, docNumber, entityId, revision, status, issuedAt, issuedBy FROM document_register'
-        clauses, params = [], []
-        if doc_type:
-            clauses.append('docType=?')
-            params.append(doc_type)
-        if year:
-            try: clauses.append('year=?'); params.append(int(year))
-            except ValueError: pass
-        if clauses:
-            q += ' WHERE ' + ' AND '.join(clauses)
-        q += ' ORDER BY year DESC, seq DESC, revision DESC LIMIT ?'
-        params.append(limit)
-        rows = cur.execute(q, tuple(params)).fetchall()
-    finally:
-        con.close()
+        rows = _dl_select(
+            'document_register',
+            filters=filters or None,
+            order='-year,seq,revision' if False else '-seq',
+            limit=limit,
+        ) or []
+    except Exception as e:
+        logger.warning('register_list select failed: %s', e)
+        rows = []
     return jsonify({
-        'items': [{
-            'docType': r[0], 'year': r[1], 'seq': r[2],
-            'docNumber': r[3], 'entityId': r[4], 'revision': r[5],
-            'status': r[6], 'issuedAt': r[7], 'issuedBy': r[8]
-        } for r in rows]
+        'items': [_row_to_register(r) for r in rows]
     })
 
 
 # ==========================================================
 #  FAZA 4: Per-deal quick-issue endpoint
 # ==========================================================
-# Convenience wrapper koji iz UI-ja (deal edit forma) rezervise sledeci broj
-# za dati docType i vezuje ga za deal.id kao entityId. Idempotentno je - ako
-# je vec izdat aktivni broj za taj (docType, dealId), vraca postojeci.
-#
-# POST /api/deals/<deal_id>/issue-document
-# Body: { "docType": "proforma" | "contract" | "delivery_note" | "credit_note" }
-
 @documents_register_bp.route('/api/deals/<deal_id>/issue-document', methods=['POST'])
 @login_required
 def issue_document_for_deal(deal_id):
@@ -356,67 +407,58 @@ def issue_document_for_deal(deal_id):
                         'allowed': list(DOC_TYPE_PREFIX.keys())}), 400
 
     year = _current_year()
-    con = _get_db()
-    try:
-        cur = con.cursor()
-        # 1) Verifikuj da deal stvarno postoji (spreci pravljenje broja za tudju entity)
-        row = cur.execute("SELECT 1 FROM deals WHERE id=?", (deal_id,)).fetchone()
-        if not row:
-            return jsonify({'error': 'DEAL_NOT_FOUND'}), 404
+    # 1) Verifikuj da deal stvarno postoji (spreci pravljenje broja za tudju entity)
+    from data_layer import select_one as _dl_select_one_deal
+    deal = _dl_select_one_deal('deals', {'id': deal_id})
+    if not deal:
+        return jsonify({'error': 'DEAL_NOT_FOUND'}), 404
 
-        # 2) Idempotentno: postojeci aktivan broj za (docType, dealId)?
-        existing = cur.execute(
-            'SELECT docNumber, seq, revision, issuedAt, issuedBy '
-            'FROM document_register '
-            'WHERE docType=? AND entityId=? AND revision=0',
-            (doc_type, deal_id)
-        ).fetchone()
-        if existing:
-            return jsonify({
-                'docNumber': existing[0],
-                'seq': existing[1],
-                'revision': existing[2],
-                'issuedAt': existing[3],
-                'issuedBy': existing[4],
-                'year': year,
-                'status': 'existing'
-            })
-
-        # 3) Rezervisi novi seq atomicno
-        seq = _next_seq(cur, doc_type, year)
-        number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        username = session.get('username') or 'system'
-        try:
-            cur.execute(
-                'INSERT INTO document_register '
-                '(docType, year, seq, docNumber, entityId, revision, status, issuedAt, issuedBy) '
-                'VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
-                (doc_type, year, seq, number, deal_id, 'active', now, username)
-            )
-            con.commit()
-        except sqlite3.IntegrityError as e:
-            # Race na UNIQUE(docNumber) - probaj jos jednom sa novim seq
-            logger.warning(f'Duplicate docNumber for deal {deal_id} {doc_type}: {e}')
-            seq = _next_seq(cur, doc_type, year)
-            number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
-            cur.execute(
-                'INSERT INTO document_register '
-                '(docType, year, seq, docNumber, entityId, revision, status, issuedAt, issuedBy) '
-                'VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
-                (doc_type, year, seq, number, deal_id, 'active', now, username)
-            )
-            con.commit()
-
-        log_audit('CREATE', 'documents',
-                  f'Deal {deal_id}: issued {doc_type.upper()} → {number}')
+    # 2) Idempotentno: postojeci aktivan broj za (docType, dealId)?
+    existing = _dl_select_one(
+        'document_register',
+        {'doc_type': doc_type, 'entity_id': deal_id, 'revision': 0},
+    )
+    if existing:
         return jsonify({
-            'docNumber': number, 'seq': seq, 'revision': 0,
-            'year': year, 'issuedAt': now, 'issuedBy': username,
-            'status': 'newly_issued'
+            'docNumber': existing.get('doc_number'),
+            'seq': existing.get('seq'),
+            'revision': existing.get('revision'),
+            'issuedAt': existing.get('issued_at'),
+            'issuedBy': existing.get('issued_by'),
+            'year': year,
+            'status': 'existing'
         })
-    finally:
-        con.close()
+
+    # 3) Rezervisi novi seq atomicno
+    seq = _next_seq(doc_type, year)
+    number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
+    now = _iso_now()
+    username = session.get('username') or 'system'
+    try:
+        _insert_register(doc_type, year, seq, number, deal_id, 0, 'active', username)
+    except Exception as e:
+        if _is_unique_violation(e):
+            logger.warning('Duplicate docNumber for deal %s %s: %s', deal_id, doc_type, e)
+            seq = _next_seq(doc_type, year)
+            number = _format_number(DOC_TYPE_PREFIX[doc_type], seq, year)
+            try:
+                _insert_register(doc_type, year, seq, number, deal_id, 0, 'active', username)
+            except Exception as e2:
+                logger.error('issue_document_for_deal retry failed: %s', e2)
+                return jsonify({'error': 'ISSUE_FAILED_RETRY',
+                                'detail': str(e2)[:200]}), 500
+        else:
+            logger.error('issue_document_for_deal insert failed: %s', e)
+            return jsonify({'error': 'ISSUE_FAILED',
+                            'detail': str(e)[:200]}), 500
+
+    log_audit('CREATE', 'documents',
+              f'Deal {deal_id}: issued {doc_type.upper()} → {number}')
+    return jsonify({
+        'docNumber': number, 'seq': seq, 'revision': 0,
+        'year': year, 'issuedAt': now, 'issuedBy': username,
+        'status': 'newly_issued'
+    })
 
 
 @documents_register_bp.route('/api/deals/<deal_id>/documents', methods=['GET'])
@@ -425,22 +467,20 @@ def list_deal_documents(deal_id):
     """Vrati sve dokumente izdate za dati deal, sortirano po issuedAt DESC."""
     if not deal_id:
         return jsonify({'error': 'DEAL_ID_REQUIRED'}), 400
-    con = _get_db()
-    try:
-        cur = con.cursor()
-        rows = cur.execute(
-            'SELECT docType, docNumber, revision, status, issuedAt, issuedBy '
-            'FROM document_register WHERE entityId=? '
-            'ORDER BY issuedAt DESC, revision DESC',
-            (deal_id,)
-        ).fetchall()
-    finally:
-        con.close()
+    rows = _dl_select(
+        'document_register',
+        filters={'entity_id': deal_id},
+        order='-issued_at',
+    ) or []
     return jsonify({
         'dealId': deal_id,
         'total': len(rows),
         'documents': [{
-            'docType': r[0], 'docNumber': r[1], 'revision': r[2],
-            'status': r[3], 'issuedAt': r[4], 'issuedBy': r[5]
+            'docType': r.get('doc_type'),
+            'docNumber': r.get('doc_number'),
+            'revision': r.get('revision'),
+            'status': r.get('status'),
+            'issuedAt': r.get('issued_at'),
+            'issuedBy': r.get('issued_by'),
         } for r in rows]
     })

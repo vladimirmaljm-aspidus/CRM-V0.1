@@ -21,10 +21,8 @@ flow so nothing breaks for legacy configs.
 """
 import json
 import logging
-import sqlite3
 import urllib.request
 
-from config import DB_FILE
 from utils import decrypt_data
 
 logger = logging.getLogger(__name__)
@@ -41,13 +39,13 @@ def _load_config():
         return _CFG_CACHE['data']
     cfg = {'provider': 'smtp', 'magic_link_enabled': False, 'magic_link_ttl_min': 15}
     try:
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='otpMailProvider'").fetchone()
-        if row and row[0]:
+        import supabase_store as store
+        raw = store.get_setting('otpMailProvider')
+        if raw:
             try:
-                loaded = decrypt_data(row[0]) or {}
+                loaded = decrypt_data(raw) or {}
             except Exception:
-                try: loaded = json.loads(row[0])
+                try: loaded = json.loads(raw)
                 except Exception: loaded = {}
             if isinstance(loaded, dict):
                 cfg.update(loaded)

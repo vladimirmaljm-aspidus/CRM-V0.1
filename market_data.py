@@ -13,12 +13,9 @@ menjaju samo jednom dnevno.
 import json
 import logging
 import os
-import sqlite3
 import time
 import urllib.parse
 import urllib.request
-
-from config import DB_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +29,15 @@ _FX_TTL_S = 4 * 3600  # 4h — ECB stope se menjaju 16:00 CET, cache do svakih 4
 
 
 def _av_api_key():
-    """Alpha Vantage API key. Prvo iz env-a, pa iz settings tabele."""
+    """Alpha Vantage API key. Prvo iz env-a, pa iz settings tabele (Supabase)."""
     key = (os.environ.get('ALPHA_VANTAGE_KEY') or '').strip()
     if key: return key
     try:
         from utils import decrypt_data
-        with sqlite3.connect(DB_FILE, timeout=5) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='alphaVantageKey'").fetchone()
-        if row and row[0]:
-            try: return str(decrypt_data(row[0]) or '')
+        import supabase_store as store
+        raw = store.get_setting('alphaVantageKey')
+        if raw:
+            try: return str(decrypt_data(raw) or '')
             except Exception: return ''
     except Exception:
         pass

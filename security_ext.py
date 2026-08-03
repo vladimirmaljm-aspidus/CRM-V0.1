@@ -18,12 +18,9 @@ Open Ownership — PEP (Politically Exposed Persons) beneficial ownership
 import hashlib
 import json
 import logging
-import sqlite3
 import time
 import urllib.parse
 import urllib.request
-
-from config import DB_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -71,17 +68,17 @@ _HCAPTCHA_CACHE = {'ts': 0, 'secret': None}
 
 
 def _hcaptcha_secret():
-    """Čita hCaptcha secret iz settings.hcaptchaConfig. Cache 60s."""
+    """Čita hCaptcha secret iz settings.hcaptchaConfig (Supabase). Cache 60s."""
     now = time.time()
     if _HCAPTCHA_CACHE['secret'] is not None and (now - _HCAPTCHA_CACHE['ts']) < 60:
         return _HCAPTCHA_CACHE['secret']
     from utils import decrypt_data
+    import supabase_store as store
     secret = ''
     try:
-        with sqlite3.connect(DB_FILE, timeout=5) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='hcaptchaConfig'").fetchone()
-        if row and row[0]:
-            try: cfg = decrypt_data(row[0]) or {}
+        raw = store.get_setting('hcaptchaConfig')
+        if raw:
+            try: cfg = decrypt_data(raw) or {}
             except Exception: cfg = {}
             secret = str((cfg or {}).get('secret', ''))
     except Exception:
@@ -133,11 +130,11 @@ def get_public_sitekey():
     """Vraća hCaptcha sitekey (public) za frontend widget. Kad je prazan,
     frontend zna da ne renderuje widget."""
     from utils import decrypt_data
+    import supabase_store as store
     try:
-        with sqlite3.connect(DB_FILE, timeout=5) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='hcaptchaConfig'").fetchone()
-        if row and row[0]:
-            try: cfg = decrypt_data(row[0]) or {}
+        raw = store.get_setting('hcaptchaConfig')
+        if raw:
+            try: cfg = decrypt_data(raw) or {}
             except Exception: cfg = {}
             return str((cfg or {}).get('sitekey', ''))
     except Exception:

@@ -83,20 +83,8 @@ try:
 except Exception as _seed_err:
     print(f'[seed supabase] {_seed_err}')
 
-# Bulletproof DB — postavi WAL, mmap, cache-size, busy_timeout na SVIM DB
-# fajlovima. WAL mode je persistan na disku, tako da svi budući konektori
-# (uključujući i one koji zovu sqlite3.connect direktno) rade preko WAL-a.
-try:
-    import db as _db
-    from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE
-    for _p in (DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE):
-        try:
-            with _db.connect(_p) as _c:
-                pass  # _apply_pragmas se izvrši u connect() kontekstu
-        except Exception as _e:
-            print(f'[db bootstrap] {_p}: {_e}')
-except Exception as _e:
-    print(f'[db bootstrap] failed: {_e}')
+# V25 SUPABASE-ONLY: SQLite PRAGMA bootstrap blok je uklonjen — aplikacija
+# vise ne koristi SQLite ni u jednom toku. Sve ide preko Supabase-a (REST).
 
 # V23.2 (user's V22.04.05 improvement): sanity check env vars za produkciju.
 # Ne baca izuzetak — samo loguje warning-e. Render/Heroku deploy odmah vidi

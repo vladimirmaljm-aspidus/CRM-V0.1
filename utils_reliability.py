@@ -221,27 +221,17 @@ def health_smtp() -> dict:
 
 
 def health_sqlite() -> dict:
-    """Lokalne SQLite baze — može li da otvori, integrity_check."""
-    try:
-        import os
-        import sqlite3
-        from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE
-        checks = {}
-        for label, path in (("crm", DB_FILE), ("portal", PORTAL_DB_FILE), ("audit", AUDIT_DB_FILE)):
-            if not os.path.exists(path):
-                checks[label] = {"exists": False}
-                continue
-            try:
-                conn = sqlite3.connect(path, timeout=3.0)
-                integ = conn.execute("PRAGMA integrity_check").fetchone()
-                conn.close()
-                checks[label] = {"exists": True, "integrity": integ[0] if integ else "?"}
-            except Exception as e:
-                checks[label] = {"exists": True, "error": str(e)[:100]}
-        ok = all(v.get("integrity") == "ok" for v in checks.values() if v.get("exists"))
-        return {"ok": ok, "status": "checked", "detail": checks}
-    except Exception as e:
-        return {"ok": False, "status": "error", "detail": f"{type(e).__name__}: {str(e)[:200]}"}
+    """Lokalne SQLite baze — DEPRECATED (Supabase-only mod).
+
+    Faza 3-c: sve podatke držimo u Supabase Postgres-u; lokalni SQLite fajlovi
+    se više ne koriste u produkciji. Vraćamo statičku poruku "deprecated"
+    da ne lomimo interfejs /api/health endpoint-a koji i dalje očekuje ovu
+    sekciju u JSON-u."""
+    return {
+        "ok": True,
+        "status": "deprecated",
+        "detail": "SQLite no longer used — 100% Supabase Postgres since Faza 3-c",
+    }
 
 
 def health_backup() -> dict:
@@ -307,16 +297,13 @@ def health_ocr() -> dict:
 def health_mail_queue() -> dict:
     """Trenutno stanje email queue-a — broj pending / failed / dead."""
     try:
-        import sqlite3
-        from config import DB_FILE
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            conn.execute('PRAGMA busy_timeout=5000')
-            counts = {}
-            for st in ("pending", "sending", "sent", "failed", "dead"):
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM email_queue WHERE status=?", (st,)
-                ).fetchone()
-                counts[st] = row[0] if row else 0
+        from data_layer import count as db_count
+        counts = {}
+        for st in ("pending", "sending", "sent", "failed", "dead"):
+            try:
+                counts[st] = int(db_count('email_queue', {'status': st}) or 0)
+            except Exception:
+                counts[st] = 0
         failed = counts.get('failed', 0) + counts.get('dead', 0)
         return {
             "ok": failed == 0,

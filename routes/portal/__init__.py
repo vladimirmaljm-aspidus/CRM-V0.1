@@ -1,10 +1,25 @@
-import sqlite3
+"""ASPIDUS portal — package init (V24.2 SUPABASE-ONLY).
+
+Sadrži:
+  - In-memory auth state (portal_otps, portal_auth_sessions, pending_email_sessions)
+  - TTL konfiguraciju (FirewallCache)
+  - safe_parse() — legacy helper koji se još uvek koristi u actions.py / data.py
+  - find_partner_by_token(token) — V24.2: no cursor, čita iz Supabase preko data_layer
+  - find_partner_by_email(email) — V24.2: čita iz Supabase preko data_layer
+  - is_partner_premium(partner_dict | tuple | partner_id) — V24.2: ID case koristi supabase_store
+  - log_portal_activity() — V24.2: insert u Supabase preko data_layer
+  - init_portal_db() — V24.2: NO-OP (tabele već postoje na Supabase nakon Faze 1)
+"""
 import json
-import time
+import logging
 import secrets
+import time
+from datetime import datetime, timezone
+
 from flask import Blueprint
-from config import PORTAL_DB_FILE, DB_FILE
 from utils import decrypt_data, FirewallCache
+
+logger = logging.getLogger(__name__)
 
 portal_bp = Blueprint('portal', __name__)
 
@@ -14,6 +29,10 @@ portal_bp = Blueprint('portal', __name__)
 # portal_otps:          token -> {'otp', 'expires', 'attempts'}
 # portal_auth_sessions: token -> {'key', 'expires', 'last_active', 'partner_id'}
 # pending_email_sessions: session_id -> {'token', 'partner_id', 'email', 'expires'}
+#
+# NAPOMENA (V24.2): ova stanja ostaju u memoriji Python procesa — Supabase
+# ne čuvamo kratkoživeće OTP/session podatke (gube se na restartu, što
+# je prihvatljivo jer su kratkog veka i klijent lako može da ponovo zatraži OTP).
 portal_otps = {}
 portal_auth_sessions = {}
 pending_email_sessions = {}
@@ -35,25 +54,12 @@ def _fw_ttl(key, default):
 
 
 def init_portal_db():
-    conn = None
-    try:
-        conn = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
-        # WAL se postavlja SAMO ovde (init, pri startu pre workera) — trajno na
-        # fajlu. Per-request konekcije koriste busy_timeout, ne diraju journal mode
-        # (menjanje journal mode-a traži ekskluzivni lock → "database is locked").
-        conn.execute('PRAGMA journal_mode=WAL;')
-        conn.execute('PRAGMA busy_timeout=30000;')
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS kyc_submissions
-                     (id TEXT PRIMARY KEY, partner_id TEXT, token TEXT, data JSON, submitted_at TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS portal_products
-                     (id TEXT PRIMARY KEY, partner_id TEXT, data JSON, status TEXT, created_at TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS portal_activity_log
-                     (id TEXT PRIMARY KEY, partner_id TEXT, action TEXT, details TEXT,
-                      ip_address TEXT, user_agent TEXT, location TEXT, timestamp TEXT)''')
-        conn.commit()
-    finally:
-        if conn: conn.close()
+    """V24.2 SUPABASE-ONLY: tabele (kyc_submissions, portal_products,
+    portal_activity_log, …) već postoje na Supabase-u nakon Faza 1 šeme
+    migracije. Funkcija je sada NO-OP — ostavljena radi kompatibilnosti sa
+    app.py koji je poziva pri startu."""
+    logger.info('init_portal_db: skipped (Supabase-only mode; schema applied in Phase 1)')
+
 
 init_portal_db()
 
@@ -71,9 +77,17 @@ def safe_parse(data_str):
     """Pokušava JSON parse; ako ne uspe, pretpostavlja da je payload šifrovan
     Fernet-om pa poziva decrypt_data(). Bare except zamenjen preciznijim
     hvatanjem — hvatamo samo očekivane greške parsiranja/tipa, ne KeyboardInterrupt
-    i sl."""
+    i sl.
+
+    V24.2 NAPOMENA: ova funkcija se još uvek koristi u actions.py / data.py
+    gde se legacy `data` JSONB kolona čita kao sirov string (legacy tokovi).
+    Za novi kod koristite supabase_store.get_entity() koji vraća već rehidriran
+    dict (top-level kolone + data JSONB spojeni)."""
     if data_str is None or data_str == '':
         return {}
+    if isinstance(data_str, dict):
+        # V24.2: neki pozivaoci prosleđuju već rehidriran dict (defanzivno)
+        return data_str
     try:
         return json.loads(data_str)
     except (json.JSONDecodeError, TypeError, ValueError):
@@ -180,27 +194,114 @@ def verify_portal_session(token, auth_header):
     return True
 
 
-def find_partner_by_token(cursor, token, enforce_active=True):
-    """Pronalazi partnera po portalTokenu. Ako enforce_active i portal je opozvan
+# ==========================================================
+#  SUPABASE PARTNER LOOKUP — V24.2
+# ==========================================================
+
+# Mapa snake_case (top-level Supabase kolona) ↔ camelCase (legacy JSONB key koji
+# frontend / stari kod očekuje). Koristi se u _partner_compat() da obezbedi da
+# nakon read-a partner dict ima OBA oblika — bez menjaja svih pozivalaca.
+_PARTNER_KEY_MAP = {
+    'portal_token':       'portalToken',
+    'is_portal_active':   'isPortalActive',
+    'is_premium':         'isPremium',
+    'company_name':       'companyName',
+    'contact_person':     'contactPerson',
+    'kyc_approved':       'kycApproved',
+    'tax_id':             'taxId',
+    'portal_level':       'portalLevel',
+    'auth_user_id':       'authUserId',
+    'can_login':          'canLogin',
+}
+
+
+def _partner_compat(p):
+    """Uveri se da partner dict ima i snake_case (top-level kolona) i camelCase
+    (legacy JSONB key) parove. Ako je jedan oblik postavljen, drugi se
+    postavlja iz njega (ako nedostaje). Mutira i vraća isti dict."""
+    if not isinstance(p, dict):
+        return p
+    for snake, camel in _PARTNER_KEY_MAP.items():
+        if snake in p:
+            # top-level column je izvor istine — postavi camelCase ako nedostaje
+            if camel not in p or p.get(camel) is None:
+                p[camel] = p[snake]
+        elif camel in p:
+            # JSONB ima camelCase, top-level nedostaje — mirroruj
+            p[snake] = p[camel]
+    return p
+
+
+def find_partner_by_token(token, enforce_active=True):
+    """V24.2 SUPABASE-ONLY. Pronalazi partnera po portalToken (sada top-level
+    kolona `portal_token`). Ako enforce_active i portal je opozvan
     (isPortalActive == False), tretira se kao da partner ne postoji (Kill Switch).
-    Vraća (partner_id, partner_dict) ili (None, None)."""
+
+    POTPIS SE RAZLIKUJE OD LEGACY: više ne prima SQLite cursor!
+        STARI: find_partner_by_token(cursor, token, enforce_active=True)
+        NOVI:  find_partner_by_token(token, enforce_active=True)
+
+    Vraća (partner_id, partner_dict) ili (None, None). partner_dict ima i
+    snake_case i camelCase ključeve (backward compat)."""
     if not token:
         return None, None
-    cursor.execute("SELECT id, data FROM partners")
-    for r in cursor.fetchall():
-        p_data = safe_parse(r[1])
-        if p_data.get('portalToken') == token:
-            if enforce_active and p_data.get('isPortalActive', True) is False:
-                return None, None
-            return r[0], p_data
-    return None, None
+    try:
+        import supabase_store as store
+        from data_layer import select_one
+        # Top-level kolona `portal_token` (Faza 1)
+        row = select_one('partners', {'portal_token': ('eq', token)})
+        if not row:
+            return None, None
+        pid = row.get('id')
+        if not pid:
+            return None, None
+        # get_entity radi rehidraciju (top-level + data JSONB spojeni u flat dict)
+        partner = store.get_entity('partners', pid)
+        if not partner:
+            return None, None
+        _partner_compat(partner)
+        if enforce_active and partner.get('isPortalActive', True) is False:
+            return None, None
+        return pid, partner
+    except Exception as e:
+        logger.error(f'find_partner_by_token({token[:8]}…): {e}')
+        return None, None
+
+
+def find_partner_by_email(email):
+    """V24.2 SUPABASE-ONLY. Pronalazi partnera po top-level koloni `email`
+    (case-insensitive). Vraća (partner_id, partner_dict) ili (None, None)."""
+    if not email:
+        return None, None
+    try:
+        import supabase_store as store
+        from data_layer import select_one
+        # Top-level kolona `email` (Faza 1)
+        row = select_one('partners', {'email': ('ilike', email.strip())})
+        if not row:
+            return None, None
+        pid = row.get('id')
+        if not pid:
+            return None, None
+        partner = store.get_entity('partners', pid)
+        if not partner:
+            return None, None
+        _partner_compat(partner)
+        return pid, partner
+    except Exception as e:
+        logger.error(f'find_partner_by_email({email}): {e}')
+        return None, None
 
 
 def log_portal_activity(partner_id, action, details, ip=None, user_agent=None):
     """Beleži jedno dešavanje iz PORTALA (klijentski nalozi) u posebnu tabelu
     razdvojenu od CRM audit-a. Automatski obogaćuje unos IP geolokacijom
     (get_ip_info je kesiran, ne usporava) da admin može da vidi zemlju/grad
-    i klikne na Google Maps za koordinate."""
+    i klikne na Google Maps za koordinate.
+
+    V24.2 SUPABASE-ONLY: insert ide preko data_layer.insert u tabelu
+    `portal_activity_log` (Postgres). Best-effort — nikad ne bacamo iz ovog
+    helper-a da ne srušimo glavni request."""
     from flask import request as _req
     from utils import get_ip_info
     if ip is None:
@@ -231,18 +332,21 @@ def log_portal_activity(partner_id, action, details, ip=None, user_agent=None):
         pass
 
     entry_id = secrets.token_hex(12)
-    timestamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     try:
-        conn = sqlite3.connect(PORTAL_DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA busy_timeout=30000;')
-        conn.execute(
-            "INSERT INTO portal_activity_log (id, partner_id, action, details, ip_address, user_agent, location, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (entry_id, partner_id, action, details, ip, user_agent, location_str, timestamp)
-        )
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
+        from data_layer import insert as _dl_insert
+        _dl_insert('portal_activity_log', {
+            'id': entry_id,
+            'partner_id': partner_id,
+            'action': action,
+            'details': (details or '')[:4000],
+            'ip_address': ip,
+            'user_agent': (user_agent or '')[:200],
+            'location': location_str,
+            'timestamp': now_iso,
+        })
+    except Exception as e:
+        logger.debug(f'log_portal_activity skipped: {type(e).__name__}: {str(e)[:120]}')
 
 
 def is_partner_premium(cursor_or_data):
@@ -252,42 +356,32 @@ def is_partner_premium(cursor_or_data):
       • KYC forma sva polja opciona (nema IBAN/BIC/VIES hard-block-ova)
       • Poseban vizuelni prikaz (Premium tema)
 
-    Parametar može biti partner dict (već učitan) ili tuple (partner_id, partner_dict)
-    ili samo partner_id string (u tom slučaju učitavamo iz baze)."""
+    Parametar može biti:
+      • partner dict (već učitan) — čita isPremium / is_premium
+      • tuple (partner_id, partner_dict) — čita iz drugog elementa
+      • partner_id string — učitava iz Supabase preko supabase_store.get_entity
+
+    V24.2 SUPABASE-ONLY."""
     if isinstance(cursor_or_data, dict):
-        return bool(cursor_or_data.get('isPremium'))
+        return bool(cursor_or_data.get('isPremium') or cursor_or_data.get('is_premium'))
     if isinstance(cursor_or_data, tuple) and len(cursor_or_data) >= 2:
-        return bool((cursor_or_data[1] or {}).get('isPremium'))
-    # string ID case — učitaj iz baze
+        p = cursor_or_data[1] or {}
+        if isinstance(p, dict):
+            return bool(p.get('isPremium') or p.get('is_premium'))
+        return False
+    # string ID case — učitaj iz Supabase
     pid = str(cursor_or_data or '').strip()
     if not pid:
         return False
     try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            row = conn.execute("SELECT data FROM partners WHERE id=?", (pid,)).fetchone()
-        if row:
-            p = safe_parse(row[0])
-            return bool(isinstance(p, dict) and p.get('isPremium'))
-    except Exception:
-        pass
+        import supabase_store as store
+        p = store.get_entity('partners', pid)
+        if p:
+            _partner_compat(p)
+            return bool(p.get('isPremium') or p.get('is_premium'))
+    except Exception as e:
+        logger.debug(f'is_partner_premium({pid}): {e}')
     return False
-
-
-def find_partner_by_email(email):
-    if not email:
-        return None, None
-    email_lower = email.strip().lower()
-    conn = sqlite3.connect(DB_FILE, timeout=30.0)
-    c = conn.cursor()
-    c.execute('SELECT id, data FROM partners')
-    for row in c.fetchall():
-        p = safe_parse(row[1])
-        p_email = (p.get('contact', {}).get('email') or p.get('email', '')).strip().lower()
-        if p_email == email_lower:
-            conn.close()
-            return row[0], p
-    conn.close()
-    return None, None
 
 
 # Učitavanje svih modula kako bi rute bile aktivne

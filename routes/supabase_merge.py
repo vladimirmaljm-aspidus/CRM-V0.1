@@ -1,37 +1,36 @@
 """
-V23.1 — SUPABASE MERGE WIZARD
-==============================
-Admin-only UI + endpointi za bezbedno prebacivanje lokalnih SQLite podataka u
-Supabase, sa preview-om i per-row error reportom.
+V23.1 — SUPABASE MERGE WIZARD (DEPRECATED — Faza 3-c)
+=====================================================
+Admin-only UI + endpointi koji su ORIGINNALNO služili za prebacivanje
+lokalnih SQLite podataka u Supabase.
 
-Zamenjuje potrebu za pokretanjem migrate_data_to_supabase.py kroz shell
-(koji je bio krhak i tesko dijagnostikovan iz UI).
+Nakon Faza 3-c (100% Supabase-only), lokalni SQLite fajlovi se više ne
+koriste u produkciji. Endpointi koji čitaju SQLite (`merge_status`,
+`merge_preview`, `merge_push_table`, `merge_push_all`, `_open_local_for`)
+su SADA DEPRECATED — vraćaju 410 Gone sa korisnom porukom.
 
-Endpointi:
-  GET  /admin/supabase/merge                  — UI stranica
-  GET  /api/admin/supabase/merge/status       — lokalni broj + Supabase broj po tabeli
-  GET  /api/admin/supabase/merge/preview/<t>  — prvih N redova + transform preview
-  POST /api/admin/supabase/merge/push/<t>     — push jedne tabele, per-row error report
-  POST /api/admin/supabase/merge/push-all     — push svih tabela (opciono)
-
-Kljucne razlike vs migrate_data_to_supabase.py:
-  * Ne zaustavlja se na prvoj gresci — svaka row-a nezavisno, error se ponisti u JSON.
-  * Ako target tabela ne postoji u Supabase, vraca jasnu poruku "run schemas/supabase_schema.sql".
-  * JSONB / TEXT konverzija je defanzivna (json.loads od string → dict).
-  * Booleani se automatski coerce-uju iz 0/1.
-  * ISO timestamp normalizacija za Postgres.
+Helper funkcije koje se i dalje koriste iz drugih modula (data_layer
+fallback, supabase_store rehidracija) ostaju netaknute:
+  * `SUPPORTED_TABLES` — whitelist tabela + kolona
+  * `_coerce_row(row, info)` — pretvara raw dict u Supabase-friendly oblik
+  * `_rehydrate_row(row, info)` — suprotno od _coerce_row (flat za frontend)
+  * `mirror_to_supabase(table, row)` — upsert u Supabase (best-effort)
+  * `fetch_from_supabase(table, limit)` — select svih redova
+  * `fetch_one_from_supabase(table, row_id)` — select jednog reda
+  * `mirror_delete_to_supabase(table, row_id)` — delete u Supabase
+  * `backfill_sqlite_from_supabase(table, conn, encrypt_fn)` — ostavljen
+    jer ga poziva `database.py` za backup/restore flow; prima eksterni
+    SQLite conn (ne otvara ga sam — nije u scope Faza 3-c).
 """
 from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request, session, render_template
 
-from config import DB_FILE
 from utils import login_required, log_audit
 
 supabase_merge_bp = Blueprint('supabase_merge_bp', __name__)
@@ -149,15 +148,13 @@ def _admin_only():
 
 
 def _sqlite_table_exists(conn, name):
-    r = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
-    return bool(r)
+    """DEPRECATED — lokalni SQLite se više ne koristi (Faza 3-c)."""
+    return False
 
 
 def _sqlite_count(conn, table):
-    try:
-        return conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
-    except Exception:
-        return -1
+    """DEPRECATED — vraća -1 jer lokalni SQLite nije više u upotrebi."""
+    return -1
 
 
 def _iso_normalize(v):
@@ -412,32 +409,17 @@ def merge_status():
     except Exception as e:
         supabase_error = f"{type(e).__name__}: {e}"
 
-    # SQLite counts (from all three DBs)
-    from config import DB_FILE as _DB, PORTAL_DB_FILE, AUDIT_DB_FILE
-    dbs = {'crm': _DB, 'portal': PORTAL_DB_FILE, 'audit': AUDIT_DB_FILE}
+    # V24.0 SUPABASE-ONLY (Faza 3-c): SQLite counts se više ne prikazuju jer
+    # su lokalni .db fajlovi deprecated. Stavljamo prazan dict — frontend vidi
+    # da lokalnih count-ova više nema.
     local_counts = {}
-    for label, path in dbs.items():
-        try:
-            with sqlite3.connect(path, timeout=5.0) as conn:
-                rows = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                ).fetchall()
-                for (tname,) in rows:
-                    if tname in SUPPORTED_TABLES:
-                        try:
-                            n = conn.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()[0]
-                        except Exception:
-                            n = -1
-                        local_counts[tname] = {'db': label, 'count': int(n)}
-        except Exception:
-            pass
 
     # Supabase counts (only if backend ok)
     if supabase_ok:
         for t in SUPPORTED_TABLES.keys():
             try:
                 supabase_counts[t] = int(db_count(t))
-            except Exception as e:
+            except Exception:
                 supabase_counts[t] = -1  # table missing or error
 
     # Compose per-table view
@@ -455,27 +437,22 @@ def merge_status():
             'supabase_count': sup,
             'diff': diff,
             'supabase_exists': sup != -1,
+            'deprecated_sqlite': True,
         })
 
     return jsonify({
         'supabase_ok': supabase_ok,
         'supabase_error': supabase_error,
         'tables': tables,
+        'note': 'Local SQLite counts disabled (Faza 3-c — 100% Supabase-only).',
     })
 
 
 def _open_local_for(table):
-    """Otvara tacan .db u kome se tabela nalazi."""
-    from config import DB_FILE as _DB, PORTAL_DB_FILE, AUDIT_DB_FILE
-    for path in (_DB, PORTAL_DB_FILE, AUDIT_DB_FILE):
-        try:
-            conn = sqlite3.connect(path, timeout=10.0)
-            conn.row_factory = sqlite3.Row
-            if _sqlite_table_exists(conn, table):
-                return conn
-            conn.close()
-        except Exception:
-            continue
+    """DEPRECATED — lokalni SQLite se više ne koristi (Faza 3-c).
+
+    Vraća None da bi pozivaoci (`merge_preview`, `merge_push_table`,
+    `merge_push_all`) vraćali 404/410 — nijedan pozivaoc ne pada."""
     return None
 
 
@@ -486,26 +463,13 @@ def merge_preview(table):
     if err: return err
     if table not in SUPPORTED_TABLES:
         return jsonify({'error': 'table_not_supported'}), 400
-    limit = min(int(request.args.get('limit', 5)), 20)
-
-    conn = _open_local_for(table)
-    if not conn:
-        return jsonify({'error': 'table_not_found_locally'}), 404
-    try:
-        cursor = conn.execute(f'SELECT * FROM "{table}" LIMIT ?', (limit,))
-        cols = [d[0] for d in cursor.description]
-        rows = [dict(r) for r in cursor.fetchall()]
-    finally:
-        conn.close()
-
-    coerced = [_coerce_row(r, SUPPORTED_TABLES[table]) for r in rows]
+    # DEPRECATED (Faza 3-c): SQLite preview je uklonjen. Vraćamo 410 Gone.
     return jsonify({
+        'error': 'deprecated',
+        'message': ('SQLite→Supabase merge preview is no longer available. '
+                    'Faza 3-c: lokalni SQLite je ukinut; svi podaci su u Supabase.'),
         'table': table,
-        'columns': cols,
-        'sample_raw': rows,
-        'sample_coerced': coerced,
-        'note': 'coerced = kako će red izgledati poslat u Supabase',
-    })
+    }), 410
 
 
 @supabase_merge_bp.route('/api/admin/supabase/merge/push/<table>', methods=['POST'])
@@ -515,78 +479,13 @@ def merge_push_table(table):
     if err: return err
     if table not in SUPPORTED_TABLES:
         return jsonify({'error': 'table_not_supported'}), 400
-
-    body = request.get_json(silent=True) or {}
-    dry_run = bool(body.get('dry_run', False))
-    limit = body.get('limit')
-    if limit is not None:
-        try: limit = int(limit)
-        except Exception: limit = None
-
-    conn = _open_local_for(table)
-    if not conn:
-        return jsonify({'error': 'table_not_found_locally'}), 404
-
-    try:
-        # Load all rows (safe — SQLite streams, but we cap at 10k per call)
-        max_rows = 10000
-        cursor = conn.execute(f'SELECT * FROM "{table}" LIMIT ?', (max_rows,))
-        rows = [dict(r) for r in cursor.fetchall()]
-    finally:
-        conn.close()
-
-    if limit:
-        rows = rows[:limit]
-
-    if not rows:
-        return jsonify({'table': table, 'processed': 0, 'ok': 0, 'errors': [], 'skipped': True})
-
-    if dry_run:
-        # Just show what would be pushed
-        return jsonify({
-            'table': table,
-            'processed': len(rows),
-            'ok': 0,
-            'dry_run': True,
-            'first_row_coerced': _coerce_row(rows[0], SUPPORTED_TABLES[table]),
-        })
-
-    try:
-        from data_layer import upsert as db_upsert
-    except Exception as e:
-        return jsonify({'error': f'data_layer_import_failed: {e}'}), 500
-
-    ok = 0
-    errors = []
-    for idx, raw in enumerate(rows):
-        try:
-            coerced = _coerce_row(raw, SUPPORTED_TABLES[table])
-            if coerced.get('id') is None:
-                errors.append({'idx': idx, 'reason': 'missing_id', 'row_preview': str(raw)[:120]})
-                continue
-            db_upsert(table, coerced, on_conflict='id')
-            ok += 1
-        except Exception as e:
-            errors.append({
-                'idx': idx,
-                'id': raw.get('id'),
-                'reason': f'{type(e).__name__}: {str(e)[:250]}',
-            })
-            # Stop early if we have many errors — likely schema mismatch
-            if len(errors) >= 20:
-                errors.append({'idx': -1, 'reason': 'stopped_after_20_errors — proveri Supabase schemu za ovu tabelu'})
-                break
-
-    log_audit('EDIT', 'supabase_merge',
-              f'Pushed {ok}/{len(rows)} rows to {table} ({len(errors)} errors)')
-
+    # DEPRECATED (Faza 3-c): SQLite push je uklonjen. Vraćamo 410 Gone.
     return jsonify({
+        'error': 'deprecated',
+        'message': ('SQLite→Supabase push is no longer available. '
+                    'Faza 3-c: 100% Supabase-only; svi podaci su već u Supabase.'),
         'table': table,
-        'processed': len(rows),
-        'ok': ok,
-        'errors': errors[:30],
-        'error_count': len(errors),
-    })
+    }), 410
 
 
 @supabase_merge_bp.route('/api/admin/supabase/mirror-health', methods=['GET'])
@@ -640,54 +539,15 @@ def mirror_health():
 @supabase_merge_bp.route('/api/admin/supabase/merge/push-all', methods=['POST'])
 @login_required
 def merge_push_all():
-    """Pushuje SVE tabele iz SUPPORTED_TABLES po redu. Vraca per-tabelu report."""
+    """DEPRECATED (Faza 3-c): push-all je uklonjen. Vraćamo 410 Gone.
+
+    Originalno je push-ovao SVE tabele iz SUPPORTED_TABLES iz lokalnog
+    SQLite-a u Supabase. Sada svi podaci već žive u Supabase pa ova funkcija
+    nema smisla."""
     err = _admin_only()
     if err: return err
-
-    try:
-        from data_layer import upsert as db_upsert
-    except Exception as e:
-        return jsonify({'error': f'data_layer_import_failed: {e}'}), 500
-
-    report = {}
-    for table in SUPPORTED_TABLES.keys():
-        conn = _open_local_for(table)
-        if not conn:
-            report[table] = {'status': 'skipped_no_local'}
-            continue
-        try:
-            cursor = conn.execute(f'SELECT * FROM "{table}" LIMIT 10000')
-            rows = [dict(r) for r in cursor.fetchall()]
-        finally:
-            conn.close()
-
-        if not rows:
-            report[table] = {'status': 'empty', 'ok': 0, 'errors': 0}
-            continue
-
-        ok = 0
-        err_count = 0
-        first_error = None
-        for raw in rows:
-            try:
-                coerced = _coerce_row(raw, SUPPORTED_TABLES[table])
-                if coerced.get('id') is None:
-                    err_count += 1
-                    continue
-                db_upsert(table, coerced, on_conflict='id')
-                ok += 1
-            except Exception as e:
-                err_count += 1
-                if first_error is None:
-                    first_error = f'{type(e).__name__}: {str(e)[:200]}'
-                if err_count >= 20:
-                    break
-        report[table] = {
-            'status': 'ok' if err_count == 0 else 'partial',
-            'ok': ok, 'errors': err_count,
-            'first_error': first_error,
-        }
-
-    log_audit('EDIT', 'supabase_merge', f'Push-all completed: {json.dumps(report)[:500]}',
-              is_suspicious=False)
-    return jsonify({'report': report})
+    return jsonify({
+        'error': 'deprecated',
+        'message': ('SQLite→Supabase push-all is no longer available. '
+                    'Faza 3-c: 100% Supabase-only; svi podaci su već u Supabase.'),
+    }), 410

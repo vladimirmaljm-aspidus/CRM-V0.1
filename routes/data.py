@@ -1,50 +1,16 @@
 import json
 import logging
-import sqlite3
 import uuid
 from flask import Blueprint, request, jsonify, session
-from config import DB_FILE
 from utils import log_audit, login_required, encrypt_data, decrypt_data
 
 logger = logging.getLogger(__name__)
 
 data_bp = Blueprint('data', __name__)
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_FILE, timeout=60.0)
-    conn.execute('PRAGMA busy_timeout=30000;')
-    conn.execute('PRAGMA synchronous=NORMAL;')
-    conn.execute('PRAGMA busy_timeout=60000;')
-    return conn
-
-
-def _retry_on_lock(fn, *args, max_attempts=6, **kwargs):
-    """Wraps a callable so that transient 'database is locked' errors trigger
-    retry with exponential backoff instead of bubbling up as 500.
-
-    Root cause of the production symptoms 20/07/2026:
-      - PythonAnywhere shared filesystem → SQLite locks propagate slowly
-      - Background backup thread holds DB briefly during snapshot
-      - Two concurrent uWSGI workers writing to same table race for lock
-
-    Retry pattern: 100ms, 200ms, 400ms, 800ms, 1600ms, 3200ms — total up to
-    6.3s before giving up. In practice locks resolve inside 500ms.
-    """
-    import time as _t
-    import sqlite3 as _sq3
-    for attempt in range(max_attempts):
-        try:
-            return fn(*args, **kwargs)
-        except _sq3.OperationalError as e:
-            msg = str(e).lower()
-            if 'database is locked' not in msg and 'database is busy' not in msg:
-                raise
-            if attempt == max_attempts - 1:
-                logger.error(f'DB lock persisted after {max_attempts} retries — giving up: {e}')
-                raise
-            wait = 0.1 * (2 ** attempt)
-            logger.warning(f'DB locked (attempt {attempt+1}/{max_attempts}) — retrying in {wait:.2f}s')
-            _t.sleep(wait)
+# V25 SUPABASE-ONLY: `get_db_connection()` i `_retry_on_lock()` helper-i (legacy
+# SQLite) su uklonjeni jer nema više nijednog SQLite poziva u ovom modulu. Sve
+# DB operacije idu preko `data_layer` facade ili `supabase_store` helper-a.
 
 # Moduli koji podrzavaju ownerId/sharedWith model vlasnistva.
 # NAPOMENA: ranije je ownership filtriranje bilo hardkodirano samo za 'partners' i
@@ -198,19 +164,17 @@ def save_single_item(key):
                     if key == 'products' and not perms.get('products_view_prices', False):
                         item['supplyOffers'] = existing.get('supplyOffers', [])
 
-            # OFFER VERSIONING best-effort — snapshot_if_changed jos uvek koristi SQLite conn;
-            # zovi ga samo ako je conn dostupan (legacy) — nikad ne rusi save.
+            # OFFER VERSIONING best-effort — V25: snapshot_if_changed internally
+            # koristi data_layer (Supabase). `conn` arg se ignoriše (legacy).
+            # Nikad ne sme da obori save — wrap u try/except.
             if key == 'offers' and _old_offer_for_ver:
                 try:
                     from offer_versions import snapshot_if_changed as _snap
-                    import sqlite3 as _sq3
-                    from config import DB_FILE as _DBF
                     _reason = (request.headers.get('X-Change-Reason') or item.get('_changeReason') or '').strip()
-                    with _sq3.connect(_DBF, timeout=5.0) as _c:
-                        _snap(_c, item_id, _old_offer_for_ver, item,
-                              changed_by=session.get('user_id', 'SYSTEM'),
-                              changed_by_role=role or 'employee',
-                              origin='crm', change_reason=_reason)
+                    _snap(None, item_id, _old_offer_for_ver, item,
+                          changed_by=session.get('user_id', 'SYSTEM'),
+                          changed_by_role=role or 'employee',
+                          origin='crm', change_reason=_reason)
                     if '_changeReason' in item:
                         item.pop('_changeReason', None)
                 except Exception:
@@ -340,22 +304,25 @@ def create_deal_from_offer(offer_id):
     2. Klijent nema portal ili admin želi da bypass-uje (payload.force=true) → samo
        admin ili korisnik sa 'offers_to_deal_force' permisijom sme (jer preskače
        klijentovu potvrdu).
-    Bez ovih permisija radnik NE vidi dugme (kontroliše se frontend hasPerm)."""
+    Bez ovih permisija radnik NE vidi dugme (kontroliše se frontend hasPerm).
+
+    V25 SUPABASE-ONLY: bez SQLite. Podaci idu preko `supabase_store` + `data_layer`.
+    """
+    import supabase_store as store
     role = session.get('role')
     payload = request.get_json(silent=True) or {}
     force = bool(payload.get('force', False))
 
-    # Provera permisija
+    # Provera permisija — čita iz Supabase users tabelu (permissions JSONB).
     perms = {}
     if role != 'admin':
-        conn_p = get_db_connection()
-        try:
-            cp = conn_p.cursor()
-            cp.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
-            prow = cp.fetchone()
-        finally:
-            conn_p.close()
-        perms = decrypt_data(prow[0]) if prow and prow[0] else {}
+        user_row = store.get_user_by_id(session.get('user_id', '')) or {}
+        perms = user_row.get('permissions') or {}
+        if isinstance(perms, str):
+            try: perms = json.loads(perms)
+            except Exception: perms = {}
+        if not isinstance(perms, dict):
+            perms = {}
         if not perms.get('offers_to_deal', False):
             log_audit('SECURITY', 'offers', f'Prevented unauthorized offer→deal conversion (offer {offer_id})', is_suspicious=True)
             return jsonify({"error": "UNAUTHORIZED"}), 403
@@ -363,177 +330,161 @@ def create_deal_from_offer(offer_id):
             log_audit('SECURITY', 'offers', f'Prevented forced offer→deal without client approval (offer {offer_id})', is_suspicious=True)
             return jsonify({"error": "FORCE_NOT_ALLOWED"}), 403
 
-    conn = get_db_connection()
+    # 1) Učitaj ponudu — get_entity rehidrira JSONB `data` blob u flat dict.
+    offer = store.get_entity('offers', offer_id) or {}
+    if not offer:
+        return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+
+    # Ako klijent nije prihvatio i nije force, blokiraj
+    client_accepted = offer.get('clientStatus') == 'accepted'
+    if not client_accepted and not force:
+        return jsonify({"error": "CLIENT_HAS_NOT_ACCEPTED", "message": "Klijent nije potvrdio ponudu preko portala. Koristite 'force' za override."}), 409
+
+    # Ako je ponuda vec konvertovana, sprecavamo duplu konverziju
+    if offer.get('convertedDealId'):
+        existing_deal_id = offer['convertedDealId']
+        return jsonify({"error": "ALREADY_CONVERTED", "dealId": existing_deal_id}), 409
+
+    # Kreiraj dil iz ponude
+    deal_id = str(uuid.uuid4())
+    now_iso = None
     try:
-        c = conn.cursor()
-        c.execute('BEGIN TRANSACTION;')
-        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
-        row = c.fetchone()
-        if not row:
-            conn.rollback()
-            return jsonify({"error": "OFFER_NOT_FOUND"}), 404
-        offer = decrypt_data(row[0])
-        if not isinstance(offer, dict): offer = json.loads(row[0]) if isinstance(row[0], str) else {}
+        from datetime import datetime as _dt, timezone as _tz
+        now_iso = _dt.now(_tz.utc).isoformat().replace('+00:00', 'Z')
+    except Exception:
+        pass
 
-        # Ako klijent nije prihvatio i nije force, blokiraj
-        client_accepted = offer.get('clientStatus') == 'accepted'
-        if not client_accepted and not force:
-            conn.rollback()
-            return jsonify({"error": "CLIENT_HAS_NOT_ACCEPTED", "message": "Klijent nije potvrdio ponudu preko portala. Koristite 'force' za override."}), 409
+    first_item = (offer.get('items') or [{}])[0] if isinstance(offer.get('items'), list) else {}
 
-        # Ako je ponuda vec konvertovana, sprecavamo duplu konverziju
-        if offer.get('convertedDealId'):
-            existing_deal_id = offer['convertedDealId']
-            conn.rollback()
-            return jsonify({"error": "ALREADY_CONVERTED", "dealId": existing_deal_id}), 409
+    # KRITIČNO: dil MORA biti VERNA kopija svega što je klijent prihvatio.
+    # Svako polje koje ne prenesemo → admin bi ga morao ručno prepisati, sa
+    # rizikom greške koja odstupa od onoga što je klijent potpisao.
+    # Zato prenosimo apsolutno sve komercijalne/logističke/finansijske podatke.
+    deal = {
+        'id': deal_id,
+        'contractId': f"D-{offer.get('offerNo', '')}",
+        'sourceOfferId': offer_id,
+        'sourceOfferNo': offer.get('offerNo', ''),
+        'sourceOfferDate': offer.get('date') or offer.get('createdAt'),
+        'sourceOfferAcceptedAt': offer.get('clientAcceptedAt'),
+        'clientAcceptanceNote': offer.get('clientNote', ''),
+        'status': 'negotiation',
+        'createdAt': now_iso,
+        'ownerId': session.get('user_id', 'SYSTEM'),
+        'sharedWith': [],
+        # === KUPAC ===
+        'buyerId': offer.get('customerId'),
+        'buyerName': '',
+        'buyerContactEmail': '',
+        'buyerContactPhone': '',
+        'buyerAddress': '',
+        # === PROIZVOD (glavni) — za backward-compat sa CRM prikazom ===
+        'productId': offer.get('productId') or first_item.get('productId'),
+        'productName': offer.get('productName') or first_item.get('productName') or '',
+        'hsCode': offer.get('hsCode') or first_item.get('hsCode') or '',
+        'origin': offer.get('origin') or first_item.get('origin') or offer.get('productOrigin') or '',
+        'detailedSpec': offer.get('detailedSpec') or offer.get('productSpec') or first_item.get('detailedSpec') or '',
+        'quantity': offer.get('quantity') or first_item.get('quantity'),
+        'unit': offer.get('unit') or first_item.get('unit') or '',
+        # === CENA I VALUTA (glavna stavka) ===
+        'sellingPrice': offer.get('sellingPrice') or offer.get('price') or first_item.get('price'),
+        'sellingCurrency': offer.get('currency') or 'USD',
+        # === KOMPLETNA LISTA STAVKI (multi-line offer) ===
+        'items': offer.get('items') or [],
+        'services': offer.get('services') or [],
+        # === LOGISTIKA (POL/POD/vessel/container/lead) ===
+        'incoterm': offer.get('incoterm') or first_item.get('incoterm') or '',
+        'logistics': {
+            'pol': offer.get('pol', ''),
+            'pod': offer.get('pod', ''),
+            'vessel': offer.get('vessel', ''),
+            'containerNo': offer.get('containerNo', ''),
+            'packaging': offer.get('packaging') or first_item.get('packaging') or '',
+            'leadTime': offer.get('leadTime') or first_item.get('leadTime') or '',
+            'shipmentDate': '',   # Popuni admin kad se ugovori tačan datum
+            'blNumber': ''         # Popuni tek pri utovaru
+        },
+        # === TEŽINE / VOLUMEN — bitno za space u kontejneru ===
+        'weights': offer.get('weights') or {},
+        # === FINANSIJE ===
+        'paymentTerms': offer.get('paymentTerms', ''),
+        'discount': offer.get('discount') or 0,
+        'customVatRate': offer.get('customVatRate') or 0,
+        'advance': offer.get('advance') or 0,
+        'taxClause': offer.get('taxClause', ''),
+        # === BANKARSKE INSTRUKCIJE — kritično, admin ne sme da ih ručno prepisuje ===
+        'bankDetails': offer.get('bankDetails', ''),
+        # === NAPOMENE I DODATNO ===
+        'notes': offer.get('notes', ''),
+        'certificates': (first_item.get('certificates') if isinstance(first_item, dict) else '') or '',
+        # === PDF REFERENCE — dokument koji je klijent video/potpisao ===
+        'sourceOfferDocumentId': offer.get('documentId'),
+        'sourceOfferPdfFileUrl': offer.get('pdfFileUrl'),
+    }
 
-        # Kreiraj dil iz ponude
-        deal_id = str(uuid.uuid4())
-        now_iso = None
+    # Uzmi kupca iz partners tabele — puni podaci umesto samo ime.
+    # NAPOMENA: legacy record-i imaju `address` kao STRING (jedan textarea),
+    # dok noviji zapisi koriste dict {street, city, country}. Kod mora
+    # da podržava obe forme — inače ovde bio 500 pri konverziji.
+    customer_id = offer.get('customerId')
+    if customer_id:
+        p_data = store.get_entity('partners', customer_id) or {}
+        if isinstance(p_data, dict) and p_data:
+            deal['buyerName'] = p_data.get('companyName') or p_data.get('company_name') or p_data.get('name', '')
+            contact = p_data.get('contact')
+            contact = contact if isinstance(contact, dict) else {}
+            deal['buyerContactEmail'] = contact.get('email') or p_data.get('email', '')
+            deal['buyerContactPhone'] = contact.get('phone') or p_data.get('phone', '')
+            addr = p_data.get('address')
+            if isinstance(addr, dict):
+                deal['buyerAddress'] = ', '.join(filter(None, [
+                    addr.get('street', ''), addr.get('city', ''), addr.get('country', '')
+                ]))
+            elif isinstance(addr, str):
+                deal['buyerAddress'] = ', '.join(filter(None, [
+                    addr, p_data.get('city', ''), p_data.get('country', '')
+                ]))
+            else:
+                deal['buyerAddress'] = ''
+            deal['buyerTaxId'] = p_data.get('taxId', '')
+            deal['buyerRegNumber'] = p_data.get('regNumber', '')
+
+    # Ako ponuda ima productId, obogati proizvod-specifikaciju iz kataloga
+    if deal.get('productId'):
+        pr = store.get_entity('products', deal['productId']) or {}
+        if isinstance(pr, dict) and pr:
+            if not deal.get('productName'): deal['productName'] = pr.get('name', '')
+            if not deal.get('hsCode'): deal['hsCode'] = pr.get('hsCode', '')
+            if not deal.get('detailedSpec'): deal['detailedSpec'] = pr.get('detailedSpec', '')
+            # Ako je jedan supply offer selektovan preko supplyOfferIndex, prenesi origin i cenu nabavke
+            supply_offers = pr.get('supplyOffers') or []
+            idx = first_item.get('supplyOfferIndex') if isinstance(first_item, dict) else None
+            supply = None
+            if isinstance(idx, int) and 0 <= idx < len(supply_offers):
+                supply = supply_offers[idx]
+            elif first_item.get('supplierId') if isinstance(first_item, dict) else None:
+                for so in supply_offers:
+                    if so.get('supplierId') == first_item.get('supplierId'):
+                        supply = so; break
+            if supply:
+                if not deal.get('origin'): deal['origin'] = supply.get('country', '')
+                deal['purchasePrice'] = supply.get('price', 0)
+                deal['purchaseCurrency'] = supply.get('currency', '')
+                deal['supplierId'] = supply.get('supplierId')
+                deal['purchaseIncoterm'] = supply.get('incoterm', '')
+                if not deal.get('certificates'): deal['certificates'] = supply.get('certificates', '')
+                # Popuni ime dobavljača
+                if deal.get('supplierId'):
+                    sup_data = store.get_entity('partners', deal['supplierId']) or {}
+                    if isinstance(sup_data, dict) and sup_data:
+                        deal['supplierName'] = sup_data.get('companyName') or sup_data.get('company_name', '')
+
+    # Ako fali bankDetails na dilu, uzmi ih iz podataka firme (settings.company)
+    if not deal.get('bankDetails'):
         try:
-            from datetime import datetime as _dt, timezone as _tz
-            now_iso = _dt.now(_tz.utc).isoformat().replace('+00:00', 'Z')
-        except Exception:
-            pass
-
-        first_item = (offer.get('items') or [{}])[0] if isinstance(offer.get('items'), list) else {}
-
-        # KRITIČNO: dil MORA biti VERNA kopija svega što je klijent prihvatio.
-        # Svako polje koje ne prenesemo → admin bi ga morao ručno prepisati, sa
-        # rizikom greške koja odstupa od onoga što je klijent potpisao.
-        # Zato prenosimo apsolutno sve komercijalne/logističke/finansijske podatke.
-        deal = {
-            'id': deal_id,
-            'contractId': f"D-{offer.get('offerNo', '')}",
-            'sourceOfferId': offer_id,
-            'sourceOfferNo': offer.get('offerNo', ''),
-            'sourceOfferDate': offer.get('date') or offer.get('createdAt'),
-            'sourceOfferAcceptedAt': offer.get('clientAcceptedAt'),
-            'clientAcceptanceNote': offer.get('clientNote', ''),
-            'status': 'negotiation',
-            'createdAt': now_iso,
-            'ownerId': session.get('user_id', 'SYSTEM'),
-            'sharedWith': [],
-            # === KUPAC ===
-            'buyerId': offer.get('customerId'),
-            'buyerName': '',
-            'buyerContactEmail': '',
-            'buyerContactPhone': '',
-            'buyerAddress': '',
-            # === PROIZVOD (glavni) — za backward-compat sa CRM prikazom ===
-            'productId': offer.get('productId') or first_item.get('productId'),
-            'productName': offer.get('productName') or first_item.get('productName') or '',
-            'hsCode': offer.get('hsCode') or first_item.get('hsCode') or '',
-            'origin': offer.get('origin') or first_item.get('origin') or offer.get('productOrigin') or '',
-            'detailedSpec': offer.get('detailedSpec') or offer.get('productSpec') or first_item.get('detailedSpec') or '',
-            'quantity': offer.get('quantity') or first_item.get('quantity'),
-            'unit': offer.get('unit') or first_item.get('unit') or '',
-            # === CENA I VALUTA (glavna stavka) ===
-            'sellingPrice': offer.get('sellingPrice') or offer.get('price') or first_item.get('price'),
-            'sellingCurrency': offer.get('currency') or 'USD',
-            # === KOMPLETNA LISTA STAVKI (multi-line offer) ===
-            'items': offer.get('items') or [],
-            'services': offer.get('services') or [],
-            # === LOGISTIKA (POL/POD/vessel/container/lead) ===
-            'incoterm': offer.get('incoterm') or first_item.get('incoterm') or '',
-            'logistics': {
-                'pol': offer.get('pol', ''),
-                'pod': offer.get('pod', ''),
-                'vessel': offer.get('vessel', ''),
-                'containerNo': offer.get('containerNo', ''),
-                'packaging': offer.get('packaging') or first_item.get('packaging') or '',
-                'leadTime': offer.get('leadTime') or first_item.get('leadTime') or '',
-                'shipmentDate': '',   # Popuni admin kad se ugovori tačan datum
-                'blNumber': ''         # Popuni tek pri utovaru
-            },
-            # === TEŽINE / VOLUMEN — bitno za space u kontejneru ===
-            'weights': offer.get('weights') or {},
-            # === FINANSIJE ===
-            'paymentTerms': offer.get('paymentTerms', ''),
-            'discount': offer.get('discount') or 0,
-            'customVatRate': offer.get('customVatRate') or 0,
-            'advance': offer.get('advance') or 0,
-            'taxClause': offer.get('taxClause', ''),
-            # === BANKARSKE INSTRUKCIJE — kritično, admin ne sme da ih ručno prepisuje ===
-            'bankDetails': offer.get('bankDetails', ''),
-            # === NAPOMENE I DODATNO ===
-            'notes': offer.get('notes', ''),
-            'certificates': (first_item.get('certificates') if isinstance(first_item, dict) else '') or '',
-            # === PDF REFERENCE — dokument koji je klijent video/potpisao ===
-            'sourceOfferDocumentId': offer.get('documentId'),
-            'sourceOfferPdfFileUrl': offer.get('pdfFileUrl'),
-        }
-
-        # Uzmi kupca iz partners tabele — puni podaci umesto samo ime.
-        # NAPOMENA: legacy record-i imaju `address` kao STRING (jedan textarea),
-        # dok noviji zapisi koriste dict {street, city, country}. Kod mora
-        # da podržava obe forme — inače ovde bio 500 pri konverziji.
-        c.execute("SELECT data FROM partners WHERE id=?", (offer.get('customerId'),))
-        p_row = c.fetchone()
-        if p_row:
-            p_data = decrypt_data(p_row[0])
-            if isinstance(p_data, dict):
-                deal['buyerName'] = p_data.get('companyName') or p_data.get('name', '')
-                contact = p_data.get('contact')
-                contact = contact if isinstance(contact, dict) else {}
-                deal['buyerContactEmail'] = contact.get('email') or p_data.get('email', '')
-                deal['buyerContactPhone'] = contact.get('phone') or p_data.get('phone', '')
-                addr = p_data.get('address')
-                if isinstance(addr, dict):
-                    deal['buyerAddress'] = ', '.join(filter(None, [
-                        addr.get('street', ''), addr.get('city', ''), addr.get('country', '')
-                    ]))
-                elif isinstance(addr, str):
-                    deal['buyerAddress'] = ', '.join(filter(None, [
-                        addr, p_data.get('city', ''), p_data.get('country', '')
-                    ]))
-                else:
-                    deal['buyerAddress'] = ''
-                deal['buyerTaxId'] = p_data.get('taxId', '')
-                deal['buyerRegNumber'] = p_data.get('regNumber', '')
-
-        # Ako ponuda ima productId, obogati proizvod-specifikaciju iz kataloga
-        if deal.get('productId'):
-            c.execute("SELECT data FROM products WHERE id=?", (deal['productId'],))
-            pr_row = c.fetchone()
-            if pr_row:
-                pr = decrypt_data(pr_row[0])
-                if isinstance(pr, dict):
-                    if not deal.get('productName'): deal['productName'] = pr.get('name', '')
-                    if not deal.get('hsCode'): deal['hsCode'] = pr.get('hsCode', '')
-                    if not deal.get('detailedSpec'): deal['detailedSpec'] = pr.get('detailedSpec', '')
-                    # Ako je jedan supply offer selektovan preko supplyOfferIndex, prenesi origin i cenu nabavke
-                    supply_offers = pr.get('supplyOffers') or []
-                    idx = first_item.get('supplyOfferIndex') if isinstance(first_item, dict) else None
-                    supply = None
-                    if isinstance(idx, int) and 0 <= idx < len(supply_offers):
-                        supply = supply_offers[idx]
-                    elif first_item.get('supplierId') if isinstance(first_item, dict) else None:
-                        for so in supply_offers:
-                            if so.get('supplierId') == first_item.get('supplierId'):
-                                supply = so; break
-                    if supply:
-                        if not deal.get('origin'): deal['origin'] = supply.get('country', '')
-                        deal['purchasePrice'] = supply.get('price', 0)
-                        deal['purchaseCurrency'] = supply.get('currency', '')
-                        deal['supplierId'] = supply.get('supplierId')
-                        deal['purchaseIncoterm'] = supply.get('incoterm', '')
-                        if not deal['certificates']: deal['certificates'] = supply.get('certificates', '')
-                        # Popuni ime dobavljača
-                        if deal.get('supplierId'):
-                            c.execute("SELECT data FROM partners WHERE id=?", (deal['supplierId'],))
-                            sup_row = c.fetchone()
-                            if sup_row:
-                                sup_data = decrypt_data(sup_row[0])
-                                if isinstance(sup_data, dict):
-                                    deal['supplierName'] = sup_data.get('companyName', '')
-
-        # Ako fali bankDetails na dilu, uzmi ih iz podataka firme (settings.company)
-        if not deal.get('bankDetails'):
-            c.execute("SELECT value FROM settings WHERE key='company'")
-            comp_row = c.fetchone()
-            if comp_row:
-                comp = decrypt_data(comp_row[0])
+            comp_blob = store.get_setting('company')
+            if comp_blob:
+                comp = decrypt_data(comp_blob)
                 if isinstance(comp, dict):
                     parts = []
                     if comp.get('bankName'):    parts.append(f"Bank: {comp['bankName']}")
@@ -542,25 +493,30 @@ def create_deal_from_offer(offer_id):
                     if comp.get('swift'):       parts.append(f"SWIFT: {comp['swift']}")
                     if comp.get('corrBank'):    parts.append(f"Correspondent: {comp['corrBank']}")
                     if parts: deal['bankDetails'] = '\n'.join(parts)
+        except Exception:
+            logger.info('create_deal_from_offer: company settings read skipped', exc_info=True)
 
-        _retry_on_lock(c.execute, "INSERT INTO deals (id, data) VALUES (?, ?)", (deal_id, json.dumps(deal)))
-
-        # Označi ponudu kao konvertovanu
-        offer['convertedDealId'] = deal_id
-        offer['convertedAt'] = now_iso
-        c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(offer), offer_id))
-        conn.commit()
-
-        forced_msg = " (FORCED — client had not accepted via portal)" if (force and not client_accepted) else ""
-        log_audit('CREATE', 'deals', f"Created deal {deal_id} from offer {offer.get('offerNo', offer_id)}{forced_msg}", is_suspicious=False)
-        return jsonify({"status": "success", "dealId": deal_id, "deal": deal})
-    except Exception as e:
-        if conn: conn.rollback()
-        logger.error(f"create_deal_from_offer({offer_id}) failed", exc_info=True)
-        log_audit('ERROR', 'offers', 'offer→deal conversion failed', is_suspicious=True)
+    # INSERT deal — upsert_entity interno radi _entity_split (top-level + JSONB `data`)
+    try:
+        store.upsert_entity('deals', deal)
+    except Exception:
+        logger.error(f'create_deal_from_offer: deals upsert failed', exc_info=True)
+        log_audit('ERROR', 'offers', 'offer→deal conversion failed (deals upsert)', is_suspicious=True)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
-    finally:
-        if conn: conn.close()
+
+    # Označi ponudu kao konvertovanu
+    offer['convertedDealId'] = deal_id
+    offer['convertedAt'] = now_iso
+    try:
+        store.upsert_entity('offers', offer)
+    except Exception:
+        logger.error(f'create_deal_from_offer: offers update failed (deal {deal_id} was inserted)', exc_info=True)
+        log_audit('ERROR', 'offers',
+                  f'Offer {offer_id} converted to deal {deal_id} but failed to mark offer.convertedDealId', is_suspicious=True)
+
+    forced_msg = " (FORCED — client had not accepted via portal)" if (force and not client_accepted) else ""
+    log_audit('CREATE', 'deals', f"Created deal {deal_id} from offer {offer.get('offerNo', offer_id)}{forced_msg}", is_suspicious=False)
+    return jsonify({"status": "success", "dealId": deal_id, "deal": deal})
 
 
 # ==========================================================
@@ -574,60 +530,64 @@ def create_deal_from_offer(offer_id):
 @data_bp.route('/api/offers/<offer_id>/versions', methods=['GET'])
 @login_required
 def list_offer_versions(offer_id):
-    """Lista svih verzija (samo meta — nije velika)."""
-    # Autorizacija: svako sa offers_view može da čita istoriju "svog" offer-a.
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        # Ownership check — worker sme samo ako je vlasnik ILI ima permisiju
-        role = session.get('role')
-        if role != 'admin':
-            c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
-            prow = c.fetchone()
-            perms = decrypt_data(prow[0]) if prow and prow[0] else {}
-            if not perms.get('offers_view', False):
-                return jsonify({"error": "UNAUTHORIZED"}), 403
-            c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
-            orow = c.fetchone()
-            if not orow:
-                return jsonify({"error": "OFFER_NOT_FOUND"}), 404
-            od = decrypt_data(orow[0])
-            if isinstance(od, dict) and od.get('ownerId') and od['ownerId'] != session['user_id']:
-                if session['user_id'] not in (od.get('sharedWith') or []) and not perms.get('offers_view_all', False):
-                    return jsonify({"error": "UNAUTHORIZED"}), 403
+    """Lista svih verzija (samo meta — nije velika).
 
-        from offer_versions import list_versions
-        versions = list_versions(conn, offer_id)
-        return jsonify({"offerId": offer_id, "count": len(versions), "versions": versions})
-    finally:
-        if conn: conn.close()
+    V25 SUPABASE-ONLY: bez SQLite. `offer_versions.list_versions` interno
+    koristi `data_layer.select` (Supabase). `conn` arg se ignoriše.
+    """
+    import supabase_store as store
+    # Autorizacija: svako sa offers_view može da čita istoriju "svog" offer-a.
+    # Ownership check — worker sme samo ako je vlasnik ILI ima permisiju
+    role = session.get('role')
+    if role != 'admin':
+        user_row = store.get_user_by_id(session.get('user_id', '')) or {}
+        perms = user_row.get('permissions') or {}
+        if isinstance(perms, str):
+            try: perms = json.loads(perms)
+            except Exception: perms = {}
+        if not isinstance(perms, dict): perms = {}
+        if not perms.get('offers_view', False):
+            return jsonify({"error": "UNAUTHORIZED"}), 403
+        od = store.get_entity('offers', offer_id) or {}
+        if not od:
+            return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+        if isinstance(od, dict) and od.get('ownerId') and od['ownerId'] != session['user_id']:
+            if session['user_id'] not in (od.get('sharedWith') or []) and not perms.get('offers_view_all', False):
+                return jsonify({"error": "UNAUTHORIZED"}), 403
+
+    from offer_versions import list_versions
+    versions = list_versions(None, offer_id)
+    return jsonify({"offerId": offer_id, "count": len(versions), "versions": versions})
 
 
 @data_bp.route('/api/offers/<offer_id>/versions/<version_id>', methods=['GET'])
 @login_required
 def get_offer_version(offer_id, version_id):
-    """Vrati pun snapshot za jednu verziju (za diff/PDF-regen prikaz)."""
-    conn = get_db_connection()
-    try:
-        role = session.get('role')
-        if role != 'admin':
-            c = conn.cursor()
-            c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
-            prow = c.fetchone()
-            perms = decrypt_data(prow[0]) if prow and prow[0] else {}
-            if not perms.get('offers_view', False):
-                return jsonify({"error": "UNAUTHORIZED"}), 403
+    """Vrati pun snapshot za jednu verziju (za diff/PDF-regen prikaz).
 
-        from offer_versions import get_snapshot
-        snap = get_snapshot(conn, version_id)
-        if not snap:
-            return jsonify({"error": "VERSION_NOT_FOUND"}), 404
-        if snap.get('offerId') != offer_id:
-            # Sprečava enumeraciju version_id preko tuđeg offer_id
-            return jsonify({"error": "VERSION_NOT_FOUND"}), 404
-        return jsonify(snap)
-    finally:
-        if conn: conn.close()
+    V25 SUPABASE-ONLY: bez SQLite. `offer_versions.get_snapshot` interno
+    koristi `data_layer.select_one` (Supabase). `conn` arg se ignoriše.
+    """
+    import supabase_store as store
+    role = session.get('role')
+    if role != 'admin':
+        user_row = store.get_user_by_id(session.get('user_id', '')) or {}
+        perms = user_row.get('permissions') or {}
+        if isinstance(perms, str):
+            try: perms = json.loads(perms)
+            except Exception: perms = {}
+        if not isinstance(perms, dict): perms = {}
+        if not perms.get('offers_view', False):
+            return jsonify({"error": "UNAUTHORIZED"}), 403
+
+    from offer_versions import get_snapshot
+    snap = get_snapshot(None, version_id)
+    if not snap:
+        return jsonify({"error": "VERSION_NOT_FOUND"}), 404
+    if snap.get('offerId') != offer_id:
+        # Sprečava enumeraciju version_id preko tuđeg offer_id
+        return jsonify({"error": "VERSION_NOT_FOUND"}), 404
+    return jsonify(snap)
 
 
 @data_bp.route('/api/offers/<offer_id>/versions/<version_id>/restore', methods=['POST'])
@@ -635,72 +595,70 @@ def get_offer_version(offer_id, version_id):
 def restore_offer_version(offer_id, version_id):
     """Vrati staru verziju u aktivnu ponudu. Trenutna verzija se automatski
     snima pre restore-a (kao i svaki edit), tako da je i restore reverzibilan.
-    Samo admin ili korisnik sa 'offers_edit' + 'offers_restore' sme."""
+    Samo admin ili korisnik sa 'offers_edit' + 'offers_restore' sme.
+
+    V25 SUPABASE-ONLY: bez SQLite. `offer_versions.{get_snapshot,snapshot_if_changed}`
+    interno koriste `data_layer` (Supabase). `conn` arg se ignoriše.
+    """
+    import supabase_store as store
     role = session.get('role')
     perms = {}
     if role != 'admin':
-        conn_p = get_db_connection()
-        try:
-            cp = conn_p.cursor()
-            cp.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
-            prow = cp.fetchone()
-        finally:
-            conn_p.close()
-        perms = decrypt_data(prow[0]) if prow and prow[0] else {}
+        user_row = store.get_user_by_id(session.get('user_id', '')) or {}
+        perms = user_row.get('permissions') or {}
+        if isinstance(perms, str):
+            try: perms = json.loads(perms)
+            except Exception: perms = {}
+        if not isinstance(perms, dict): perms = {}
         if not perms.get('offers_edit', False):
             return jsonify({"error": "UNAUTHORIZED"}), 403
 
     from offer_versions import get_snapshot, snapshot_if_changed
-    conn = get_db_connection()
+
+    # 1) Load current offer from Supabase
+    current_offer = store.get_entity('offers', offer_id) or {}
+    if not current_offer:
+        return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+    if not isinstance(current_offer, dict):
+        current_offer = {}
+
+    snap = get_snapshot(None, version_id)
+    if not snap or snap.get('offerId') != offer_id:
+        return jsonify({"error": "VERSION_NOT_FOUND"}), 404
+
+    target_offer = snap.get('snapshot') or {}
+    # PRESERVE non-versionable metapodatke (id ostaje, timestampi neće u istoriju)
+    target_offer['id'] = offer_id
+    # Očuvaj ownerId — restore ne menja vlasništvo
+    target_offer['ownerId'] = current_offer.get('ownerId')
+    target_offer['sharedWith'] = current_offer.get('sharedWith', [])
+
+    # Prvo snimi trenutni state kao verziju (da restore bude reverzibilan)
+    payload = request.get_json(silent=True) or {}
+    reason = str(payload.get('reason') or f'Restored to v{snap.get("version")}').strip()[:500]
     try:
-        c = conn.cursor()
-        c.execute('BEGIN TRANSACTION;')
-        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
-        row = c.fetchone()
-        if not row:
-            conn.rollback()
-            return jsonify({"error": "OFFER_NOT_FOUND"}), 404
-        current_offer = decrypt_data(row[0]) or {}
-        if not isinstance(current_offer, dict):
-            current_offer = {}
-
-        snap = get_snapshot(conn, version_id)
-        if not snap or snap.get('offerId') != offer_id:
-            conn.rollback()
-            return jsonify({"error": "VERSION_NOT_FOUND"}), 404
-
-        target_offer = snap.get('snapshot') or {}
-        # PRESERVE non-versionable metapodatke (id ostaje, timestampi neće u istoriju)
-        target_offer['id'] = offer_id
-        # Očuvaj ownerId — restore ne menja vlasništvo
-        target_offer['ownerId'] = current_offer.get('ownerId')
-        target_offer['sharedWith'] = current_offer.get('sharedWith', [])
-
-        # Prvo snimi trenutni state kao verziju (da restore bude reverzibilan)
-        payload = request.get_json(silent=True) or {}
-        reason = str(payload.get('reason') or f'Restored to v{snap.get("version")}').strip()[:500]
         snapshot_if_changed(
-            conn, offer_id, current_offer, target_offer,
+            None, offer_id, current_offer, target_offer,
             changed_by=session.get('user_id', 'SYSTEM'),
             changed_by_role=role or 'employee',
             origin='crm',
             change_reason=f'RESTORE: {reason}',
         )
-
-        _retry_on_lock(c.execute, "UPDATE offers SET data=? WHERE id=?",
-                       (json.dumps(target_offer), offer_id))
-        conn.commit()
-        log_audit('EDIT', 'offers',
-                  f'Restored offer {offer_id} to version {snap.get("version")}',
-                  is_suspicious=False)
-        return jsonify({"status": "success", "restoredToVersion": snap.get('version'),
-                        "offer": target_offer})
     except Exception:
-        if conn: conn.rollback()
-        logger.exception(f"restore_offer_version({offer_id}, {version_id}) failed")
+        logger.info('restore_offer_version: snapshot_if_changed skipped', exc_info=True)
+
+    # 2) Update offer with the restored snapshot
+    try:
+        store.upsert_entity('offers', target_offer)
+    except Exception:
+        logger.exception(f"restore_offer_version({offer_id}, {version_id}) failed: offers upsert")
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
-    finally:
-        if conn: conn.close()
+
+    log_audit('EDIT', 'offers',
+              f'Restored offer {offer_id} to version {snap.get("version")}',
+              is_suspicious=False)
+    return jsonify({"status": "success", "restoredToVersion": snap.get('version'),
+                    "offer": target_offer})
 
 
 @data_bp.route('/api/offers/verify_hash', methods=['POST'])
@@ -732,36 +690,34 @@ def verify_offer_hash():
 
     from pdf_generator import _make_verification_hash
 
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("SELECT id, data FROM offers")
-        found = None
-        for r in c.fetchall():
-            od = decrypt_data(r[1])
-            if isinstance(od, dict) and od.get('offerNo') == offer_no:
-                found = (r[0], od); break
-        if not found:
-            return jsonify({"valid": False, "reason": "OFFER_NOT_FOUND"})
-        offer_id, offer_data = found
-        expected = _make_verification_hash(offer_id, offer_no)
-        valid = provided_hash == expected
-        log_audit('SECURITY', 'offers',
-                  f"Document hash verification: offer {offer_no} → {'VALID' if valid else 'MISMATCH'}",
-                  is_suspicious=(not valid))
-        return jsonify({
-            "valid": valid,
-            "expected_hash": expected if valid else None,
-            "provided_hash": provided_hash,
-            "offer_no": offer_no,
-            "customer_id": offer_data.get('customerId'),
-            "generated_at": offer_data.get('pdfGeneratedAt') or offer_data.get('date'),
-            "current_total": offer_data.get('sellingPrice'),
-            "current_currency": offer_data.get('currency'),
-            "reason": None if valid else "HASH_MISMATCH"
-        })
-    finally:
-        conn.close()
+    import supabase_store as store
+    # V25 SUPABASE-ONLY: iterate offers from Supabase (small table —
+    # list_entities rehidrira JSONB `data` blob u flat dict).
+    found = None
+    for od in store.list_entities('offers'):
+        if not isinstance(od, dict):
+            continue
+        if od.get('offerNo') == offer_no:
+            found = (od.get('id'), od); break
+    if not found:
+        return jsonify({"valid": False, "reason": "OFFER_NOT_FOUND"})
+    offer_id, offer_data = found
+    expected = _make_verification_hash(offer_id, offer_no)
+    valid = provided_hash == expected
+    log_audit('SECURITY', 'offers',
+              f"Document hash verification: offer {offer_no} → {'VALID' if valid else 'MISMATCH'}",
+              is_suspicious=(not valid))
+    return jsonify({
+        "valid": valid,
+        "expected_hash": expected if valid else None,
+        "provided_hash": provided_hash,
+        "offer_no": offer_no,
+        "customer_id": offer_data.get('customerId'),
+        "generated_at": offer_data.get('pdfGeneratedAt') or offer_data.get('date'),
+        "current_total": offer_data.get('sellingPrice'),
+        "current_currency": offer_data.get('currency'),
+        "reason": None if valid else "HASH_MISMATCH"
+    })
 
 
 @data_bp.route('/api/documents/verify_upload', methods=['POST'])
@@ -797,19 +753,18 @@ def verify_document_upload():
         return jsonify({"error": "NOT_A_PDF"}), 400
 
     import hashlib
+    import supabase_store as store
     computed_hash = hashlib.sha256(data).hexdigest().upper()
 
-    # Traži direct match
-    conn = get_db_connection()
+    # V25 SUPABASE-ONLY: iterate shared_documents from Supabase (small table —
+    # list_entities rehidrira JSONB `data` blob u flat dict sa camelCase poljima).
     match = None
     matched_by_seed = None
     try:
-        c = conn.cursor()
-        c.execute("SELECT id, data FROM shared_documents")
-        rows = c.fetchall()
-        for r in rows:
-            doc = decrypt_data(r[1])
-            if not isinstance(doc, dict): continue
+        all_docs = store.list_entities('shared_documents')
+        for doc in all_docs:
+            if not isinstance(doc, dict):
+                continue
             if doc.get('pdfContentHash') == computed_hash:
                 match = doc; break
         if not match:
@@ -821,22 +776,18 @@ def verify_document_upload():
                 m2 = _re.search(r'Offer\s+([A-Za-z0-9\-/_]+)', title)
                 if m2:
                     seed_offer_no = m2.group(1)
-                    for r in rows:
-                        doc = decrypt_data(r[1])
+                    for doc in all_docs:
                         if isinstance(doc, dict) and doc.get('fileName', '').endswith(f'{seed_offer_no}.pdf'):
                             matched_by_seed = doc; break
-    finally:
-        conn.close()
+    except Exception:
+        logger.info('verify_document_upload: shared_documents read failed', exc_info=True)
 
     if match:
         offer = None
         try:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT data FROM offers WHERE id=?", (match.get('sourceOfferId'),))
-            row = c.fetchone()
-            if row: offer = decrypt_data(row[0])
-            conn.close()
+            source_offer_id = match.get('sourceOfferId')
+            if source_offer_id:
+                offer = store.get_entity('offers', source_offer_id) or None
         except Exception:
             pass
         log_audit('SECURITY', 'documents',
@@ -925,32 +876,29 @@ def generate_offer_pdf_endpoint(offer_id):
     moze da preuzme dokument preko standardnog /api/portal/document/... koji
     audit-loguje download.
 
-    Permisija: admin ili neko sa offers_edit."""
+    Permisija: admin ili neko sa offers_edit.
+
+    V25 SUPABASE-ONLY: bez SQLite. Sve čitanja/pisanja idu preko `supabase_store`.
+    """
+    import supabase_store as store
     role = session.get('role')
     if role != 'admin':
-        conn_p = get_db_connection()
-        try:
-            cp = conn_p.cursor()
-            cp.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
-            prow = cp.fetchone()
-        finally:
-            conn_p.close()
-        perms = decrypt_data(prow[0]) if prow and prow[0] else {}
+        user_row = store.get_user_by_id(session.get('user_id', '')) or {}
+        perms = user_row.get('permissions') or {}
+        if isinstance(perms, str):
+            try: perms = json.loads(perms)
+            except Exception: perms = {}
+        if not isinstance(perms, dict): perms = {}
         if not (perms.get('offers_edit') or perms.get('offers_view_all')):
             log_audit('SECURITY', 'offers', 'Prevented unauthorized PDF generation', is_suspicious=True)
             return jsonify({"error": "UNAUTHORIZED"}), 403
 
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
-        row = c.fetchone()
-        if not row:
-            return jsonify({"error": "OFFER_NOT_FOUND"}), 404
-        offer = decrypt_data(row[0])
-        if not isinstance(offer, dict): offer = json.loads(row[0]) if isinstance(row[0], str) else {}
-    finally:
-        conn.close()
+    # 1) Load offer from Supabase
+    offer = store.get_entity('offers', offer_id) or {}
+    if not offer:
+        return jsonify({"error": "OFFER_NOT_FOUND"}), 404
+    if not isinstance(offer, dict):
+        offer = {}
 
     try:
         from pdf_generator import save_offer_pdf_to_vault
@@ -961,42 +909,35 @@ def generate_offer_pdf_endpoint(offer_id):
     if not doc_id:
         return jsonify({"error": "PDF_GENERATION_FAILED"}), 500
 
-    # Poveži ponudu sa dokumentom kako bi klijent u portalu imao dugme download
+    # 2) Poveži ponudu sa dokumentom — re-load + upsert (single flight, no transaction).
     from datetime import datetime as _dt, timezone as _tz
-    conn = get_db_connection()
     try:
-        c = conn.cursor()
-        c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
-        row = c.fetchone()
-        if row:
-            of = decrypt_data(row[0])
-            if not isinstance(of, dict): of = json.loads(row[0]) if isinstance(row[0], str) else {}
+        of = store.get_entity('offers', offer_id) or {}
+        if not isinstance(of, dict): of = {}
+        if of:
             of['documentId'] = doc_id
             of['pdfFileUrl'] = file_url
             of['pdfGeneratedAt'] = _dt.now(_tz.utc).isoformat().replace('+00:00', 'Z')
-            c.execute("UPDATE offers SET data=? WHERE id=?", (json.dumps(of), offer_id))
-            conn.commit()
-    finally:
-        conn.close()
+            store.upsert_entity('offers', of)
+    except Exception:
+        logger.info('generate_offer_pdf_endpoint: offers upsert (link doc) failed', exc_info=True)
 
     log_audit('CREATE', 'offers', f'Generated PDF for offer {offer_id} → vault doc {doc_id}', is_suspicious=False)
 
-    # Pokušaj email obaveštenje klijentu
+    # 3) Pokušaj email obaveštenje klijentu (best-effort)
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT data FROM partners WHERE id=?", (offer.get('customerId'),))
-        prow = c.fetchone()
-        conn.close()
-        if prow:
-            pdata = decrypt_data(prow[0])
-            if isinstance(pdata, dict):
-                email = pdata.get('contact', {}).get('email') or pdata.get('email')
+        customer_id = offer.get('customerId')
+        if customer_id:
+            pdata = store.get_entity('partners', customer_id) or {}
+            if isinstance(pdata, dict) and pdata:
+                contact = pdata.get('contact') if isinstance(pdata.get('contact'), dict) else {}
+                email = contact.get('email') or pdata.get('email')
                 token = pdata.get('portalToken', '')
                 portal_url = request.url_root.rstrip('/') + f"/portal/{token}" if token else request.url_root
                 if email:
                     from utils_email import send_new_offer
-                    send_new_offer(email, pdata.get('companyName', ''), offer.get('offerNo', ''), portal_url)
+                    send_new_offer(email, pdata.get('companyName') or pdata.get('company_name', ''),
+                                   offer.get('offerNo', ''), portal_url)
     except Exception:
         pass
 
@@ -1019,7 +960,19 @@ def generate_offer_pdf_endpoint(offer_id):
 @data_bp.route('/api/deals/<deal_id>/timeline', methods=['GET'])
 @login_required
 def deal_timeline(deal_id):
-    from config import AUDIT_DB_FILE
+    """V25 SUPABASE-ONLY: deal timeline.
+
+    Vraća objedinjenu hronologiju svega vezanog za jedan posao:
+      1) Sam deal (create + last modified)
+      2) Sve transakcije (dealId=X ili invoiceNumber=contractId)
+      3) Sve izdate dokumente iz document_register (entityId=X ili
+         docNumber contains contractId)
+      4) Sve revizije dokumenata (document_revisions)
+      5) Audit log stavke koje pominju contractId ili dealId
+    Sortirano od najstarijeg ka najnovijem, ili obrnuto ako je ?desc=1.
+    """
+    import supabase_store as store
+    from data_layer import select as _dl_select
     desc = str(request.args.get('desc', '')).lower() in ('1', 'true', 'yes')
 
     events = []
@@ -1035,31 +988,25 @@ def deal_timeline(deal_id):
         })
 
     contract_id = None
-    conn = None
+    # 1) Deal sam — single read via supabase_store
+    deal = store.get_entity('deals', deal_id) or {}
+    if not deal:
+        return jsonify({'error': 'deal_not_found'}), 404
+    contract_id = deal.get('contractId', '') or ''
+
+    created = deal.get('createdAt') or deal.get('created_at') or ''
+    modified = deal.get('lastModified') or deal.get('updatedAt') or ''
+    _add(created, 'deal', f'Deal created — {contract_id}',
+         f"Buyer: {deal.get('buyerName', '')}  ·  Product: {deal.get('productName', '')}",
+         meta={'dealId': deal_id}, icon='📝')
+    if modified and modified != created:
+        _add(modified, 'deal', f'Deal updated — {contract_id}',
+             f"Status: {deal.get('status', 'unknown')}", meta={'dealId': deal_id}, icon='✏️')
+
+    # 2) Transactions — fetch all (small table, scoped to deal in-memory)
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        # 1) Deal sam
-        row = c.execute('SELECT data FROM deals WHERE id=?', (deal_id,)).fetchone()
-        if not row:
-            return jsonify({'error': 'deal_not_found'}), 404
-        deal = decrypt_data(row[0]) if row[0] else {}
-        contract_id = deal.get('contractId', '')
-
-        created = deal.get('createdAt') or deal.get('created_at') or ''
-        modified = deal.get('lastModified') or deal.get('updatedAt') or ''
-        _add(created, 'deal', f'Deal created — {contract_id}',
-             f"Buyer: {deal.get('buyerName', '')}  ·  Product: {deal.get('productName', '')}",
-             meta={'dealId': deal_id}, icon='📝')
-        if modified and modified != created:
-            _add(modified, 'deal', f'Deal updated — {contract_id}',
-                 f"Status: {deal.get('status', 'unknown')}", meta={'dealId': deal_id}, icon='✏️')
-
-        # 2) Transactions
-        for tx_row in c.execute("SELECT id, data FROM transactions"):
-            try:
-                tx = decrypt_data(tx_row[1]) if tx_row[1] else {}
-            except Exception:
+        for tx in store.list_entities('transactions'):
+            if not isinstance(tx, dict):
                 continue
             if tx.get('dealId') != deal_id and tx.get('invoiceNumber') != contract_id:
                 continue
@@ -1070,69 +1017,115 @@ def deal_timeline(deal_id):
             title = f"{'💰 Income' if typ == 'income' else '💸 Expense'}: {amt} {cur}"
             _add(ts, 'transaction', title,
                  f"{tx.get('category', '')} — {tx.get('source', '')}",
-                 meta={'transactionId': tx.get('id', tx_row[0])},
+                 meta={'transactionId': tx.get('id')},
                  icon='💰' if typ == 'income' else '💸')
+    except Exception:
+        logger.info('deal_timeline: transactions read failed', exc_info=True)
 
-        # 3) Documents from register — entityId match OR docNumber contains contractId
-        try:
-            for doc_row in c.execute(
-                'SELECT docType, docNumber, revision, status, issuedAt, issuedBy '
-                'FROM document_register WHERE entityId=? OR docNumber LIKE ? '
-                'ORDER BY issuedAt ASC',
-                (deal_id, f'%{contract_id}%' if contract_id else '__nope__')
-            ):
-                doc_type, doc_num, rev, status, issued_at, issued_by = doc_row
-                title = f"📄 {doc_type.upper()} issued: {doc_num}"
-                sub = f"Revision {rev}  ·  Status: {status}  ·  By: {issued_by or 'system'}"
-                _add(issued_at, 'document', title, sub,
-                     meta={'docNumber': doc_num, 'docType': doc_type, 'revision': rev},
-                     icon='📄')
-        except sqlite3.OperationalError:
-            pass  # tabela nije još kreirana
-
-        # 4) Document revisions with reason
-        try:
-            for rev_row in c.execute(
-                'SELECT docNumber, revision, changeReason, changedBy, changedAt '
-                'FROM document_revisions WHERE entityId=? '
-                'ORDER BY changedAt ASC',
-                (deal_id,)
-            ):
-                _add(rev_row[4], 'revision',
-                     f"🔁 Revision R{rev_row[1]} of {rev_row[0]}",
-                     f"Reason: {rev_row[2]}  ·  By: {rev_row[3]}",
-                     meta={'docNumber': rev_row[0], 'revision': rev_row[1]},
-                     icon='🔁')
-        except sqlite3.OperationalError:
-            pass
-    finally:
-        if conn:
-            conn.close()
-
-    # 5) Audit log — mentions
+    # 3) Documents from register — entityId match OR docNumber contains contractId
     try:
-        aconn = sqlite3.connect(AUDIT_DB_FILE, timeout=15.0)
-        aconn.execute('PRAGMA busy_timeout=15000')
+        # filter by entity_id (PostgREST eq), then in-memory match docNumber LIKE contractId
+        docs_by_entity = _dl_select('document_register',
+                                    filters={'entity_id': deal_id},
+                                    order='issued_at', limit=500) or []
+        docs_by_num = []
+        if contract_id:
+            # PostgREST ilike na doc_number — dohvatamo sve koji sadrže contract_id
+            try:
+                docs_by_num = _dl_select('document_register',
+                                         filters={'doc_number': ('ilike', f'%{contract_id}%')},
+                                         order='issued_at', limit=500) or []
+            except Exception:
+                docs_by_num = []
+        # Dedup po id-u (iste redove mogao vratiti oba filtera)
+        seen_ids = set()
+        merged = []
+        for d in list(docs_by_entity) + list(docs_by_num):
+            if not isinstance(d, dict):
+                continue
+            _id = d.get('id')
+            if _id and _id in seen_ids:
+                continue
+            if _id:
+                seen_ids.add(_id)
+            merged.append(d)
+        # Sortiraj issued_at ASC
+        merged.sort(key=lambda r: r.get('issued_at') or '')
+        for d in merged:
+            doc_type = d.get('doc_type') or d.get('docType') or ''
+            doc_num = d.get('doc_number') or d.get('docNumber') or ''
+            rev = d.get('revision') or 0
+            status = d.get('status') or ''
+            issued_at = d.get('issued_at') or ''
+            issued_by = d.get('issued_by') or d.get('issuedBy') or ''
+            title = f"📄 {str(doc_type).upper()} issued: {doc_num}"
+            sub = f"Revision {rev}  ·  Status: {status}  ·  By: {issued_by or 'system'}"
+            _add(issued_at, 'document', title, sub,
+                 meta={'docNumber': doc_num, 'docType': doc_type, 'revision': rev},
+                 icon='📄')
+    except Exception:
+        logger.info('deal_timeline: document_register read skipped', exc_info=True)
+
+    # 4) Document revisions with reason
+    try:
+        rev_rows = _dl_select('document_revisions',
+                              filters={'entity_id': deal_id},
+                              order='changed_at', limit=500) or []
+        for r in rev_rows:
+            if not isinstance(r, dict):
+                continue
+            doc_num = r.get('doc_number') or r.get('docNumber') or ''
+            rev = r.get('revision') or 0
+            change_reason = r.get('change_reason') or r.get('changeReason') or ''
+            changed_by = r.get('changed_by') or r.get('changedBy') or ''
+            changed_at = r.get('changed_at') or r.get('changedAt') or ''
+            _add(changed_at, 'revision',
+                 f"🔁 Revision R{rev} of {doc_num}",
+                 f"Reason: {change_reason}  ·  By: {changed_by}",
+                 meta={'docNumber': doc_num, 'revision': rev},
+                 icon='🔁')
+    except Exception:
+        logger.info('deal_timeline: document_revisions read skipped', exc_info=True)
+
+    # 5) Audit log — mentions contract_id OR deal_id (ilike na details)
+    try:
         needle = (contract_id or deal_id).strip()
         if needle:
-            cur_a = aconn.cursor()
-            try:
-                rows = cur_a.execute(
-                    "SELECT action, module, details, username, timestamp FROM audit_log "
-                    "WHERE details LIKE ? OR details LIKE ? "
-                    "ORDER BY timestamp ASC LIMIT 100",
-                    (f'%{needle}%', f'%{deal_id}%')
-                ).fetchall()
-                for a_action, a_module, a_details, a_user, a_ts in rows:
-                    _add(a_ts, 'audit', f"🛡️ {a_action}",
-                         f"{a_module}: {(a_details or '')[:180]}  ·  By: {a_user or 'system'}",
-                         meta={'action': a_action, 'module': a_module},
-                         icon='🛡️')
-            except sqlite3.OperationalError:
-                pass
-        aconn.close()
+            rows_a = _dl_select('audit_logs',
+                                filters={'details': ('ilike', f'%{needle}%')},
+                                order='-timestamp', limit=100) or []
+            # Drugi uslov — deal_id u details (može se razlikovati od contract_id)
+            if deal_id and deal_id != needle:
+                try:
+                    rows_a2 = _dl_select('audit_logs',
+                                         filters={'details': ('ilike', f'%{deal_id}%')},
+                                         order='-timestamp', limit=100) or []
+                    rows_a.extend(rows_a2)
+                except Exception:
+                    pass
+            # Dedup po id-u (BIGSERIAL u Supabase) ili po (timestamp, details)
+            seen_a = set()
+            uniq_a = []
+            for r in rows_a:
+                if not isinstance(r, dict):
+                    continue
+                key = r.get('id') or (r.get('timestamp'), r.get('details'))
+                if key in seen_a:
+                    continue
+                seen_a.add(key)
+                uniq_a.append(r)
+            for r in uniq_a:
+                a_action = r.get('action') or ''
+                a_module = r.get('module') or ''
+                a_details = r.get('details') or ''
+                a_user = r.get('username') or r.get('actor') or 'system'
+                a_ts = r.get('timestamp') or r.get('ts') or ''
+                _add(a_ts, 'audit', f"🛡️ {a_action}",
+                     f"{a_module}: {(a_details or '')[:180]}  ·  By: {a_user}",
+                     meta={'action': a_action, 'module': a_module},
+                     icon='🛡️')
     except Exception:
-        pass
+        logger.info('deal_timeline: audit_logs read skipped', exc_info=True)
 
     # Sortiraj hronoloski
     events.sort(key=lambda e: e.get('timestamp') or '', reverse=desc)
@@ -1302,36 +1295,43 @@ def dashboard_insights():
 @data_bp.route('/api/saved-searches', methods=['GET'])
 @login_required
 def saved_searches_list():
-    import sqlite3
-    from config import DB_FILE
+    """V25 SUPABASE-ONLY: čita iz `saved_searches` tabele (Supabase)."""
+    from data_layer import select as _dl_select
     uid = session.get('user_id')
-    conn = sqlite3.connect(DB_FILE, timeout=10.0)
     try:
-        conn.execute('PRAGMA busy_timeout=10000')
-        # idempotent tabela — dodaj ako ne postoji (nema formalnu migraciju)
-        conn.execute('''CREATE TABLE IF NOT EXISTS saved_searches (
-            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
-            module TEXT NOT NULL, query_json TEXT, created_at TEXT NOT NULL
-        )''')
-        rows = conn.execute(
-            "SELECT id, name, module, query_json, created_at FROM saved_searches "
-            "WHERE user_id=? ORDER BY created_at DESC LIMIT 100",
-            (uid,)
-        ).fetchall()
-    finally:
-        conn.close()
-    return jsonify({
-        'searches': [{'id': r[0], 'name': r[1], 'module': r[2],
-                      'query': json.loads(r[3]) if r[3] else {},
-                      'created_at': r[4]} for r in rows]
-    })
+        rows = _dl_select('saved_searches',
+                          filters={'user_id': uid},
+                          order='-created_at', limit=100) or []
+    except Exception:
+        logger.info('saved_searches_list failed', exc_info=True)
+        rows = []
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        q = r.get('query_json')
+        if isinstance(q, str):
+            try: q = json.loads(q)
+            except Exception: q = {}
+        if not isinstance(q, dict):
+            q = {}
+        out.append({
+            'id': r.get('id'),
+            'name': r.get('name'),
+            'module': r.get('module'),
+            'query': q,
+            'created_at': r.get('created_at'),
+        })
+    return jsonify({'searches': out})
 
 
 @data_bp.route('/api/saved-searches', methods=['POST'])
 @login_required
 def saved_searches_create():
-    import sqlite3, uuid as _u
-    from config import DB_FILE
+    """V25 SUPABASE-ONLY: insert u `saved_searches` tabelu (Supabase)."""
+    import uuid as _u
+    from data_layer import insert as _dl_insert
+    from datetime import datetime as _dt, timezone as _tz
     body = request.get_json(silent=True) or {}
     name = str(body.get('name') or '').strip()[:100]
     module = str(body.get('module') or '').strip()[:40]
@@ -1342,23 +1342,18 @@ def saved_searches_create():
         return jsonify({'error': 'query_must_be_object'}), 400
     uid = session.get('user_id')
     sid = str(_u.uuid4())
-    conn = sqlite3.connect(DB_FILE, timeout=10.0)
     try:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute('''CREATE TABLE IF NOT EXISTS saved_searches (
-            id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL,
-            module TEXT NOT NULL, query_json TEXT, created_at TEXT NOT NULL
-        )''')
-        import time as _t
-        conn.execute(
-            "INSERT INTO saved_searches (id, user_id, name, module, query_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (sid, uid, name, module, json.dumps(q),
-             _t.strftime('%Y-%m-%dT%H:%M:%SZ', _t.gmtime()))
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        _dl_insert('saved_searches', {
+            'id': sid,
+            'user_id': uid,
+            'name': name,
+            'module': module,
+            'query_json': q,   # JSONB — prosledi dict direktno
+            'created_at': _dt.now(_tz.utc).isoformat().replace('+00:00', 'Z'),
+        })
+    except Exception:
+        logger.info('saved_searches_create failed', exc_info=True)
+        return jsonify({'error': 'INTERNAL_SERVER_ERROR'}), 500
     log_audit('CREATE', 'saved_searches',
               f'Saved search "{name}" for module "{module}"')
     return jsonify({'id': sid, 'name': name, 'module': module})
@@ -1367,17 +1362,12 @@ def saved_searches_create():
 @data_bp.route('/api/saved-searches/<sid>', methods=['DELETE'])
 @login_required
 def saved_searches_delete(sid):
-    import sqlite3
-    from config import DB_FILE
+    """V25 SUPABASE-ONLY: delete iz `saved_searches` tabele (Supabase)."""
+    from data_layer import delete as _dl_delete
     uid = session.get('user_id')
-    conn = sqlite3.connect(DB_FILE, timeout=10.0)
     try:
-        conn.execute('PRAGMA busy_timeout=10000')
-        n = conn.execute(
-            "DELETE FROM saved_searches WHERE id=? AND user_id=?",
-            (sid, uid)
-        ).rowcount
-        conn.commit()
-    finally:
-        conn.close()
-    return jsonify({'deleted': n})
+        n = _dl_delete('saved_searches', {'id': sid, 'user_id': uid}) or 0
+    except Exception:
+        logger.info('saved_searches_delete failed', exc_info=True)
+        n = 0
+    return jsonify({'deleted': int(n)})

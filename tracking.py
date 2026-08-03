@@ -16,27 +16,24 @@ free-tier limits.
 import json
 import logging
 import os
-import sqlite3
 import time
 import urllib.parse
 import urllib.request
-
-from config import DB_FILE
 
 logger = logging.getLogger(__name__)
 _HTTP_TIMEOUT = 8
 
 
 def _get_key(env_name, settings_name):
-    """Ključ prvo iz env-a (za dev), pa iz settings tabele (za prod)."""
+    """Ključ prvo iz env-a (za dev), pa iz settings tabele (Supabase)."""
     v = (os.environ.get(env_name) or '').strip()
     if v: return v
     try:
         from utils import decrypt_data
-        with sqlite3.connect(DB_FILE, timeout=5) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key=?", (settings_name,)).fetchone()
-        if row and row[0]:
-            try: return str(decrypt_data(row[0]) or '')
+        import supabase_store as store
+        raw = store.get_setting(settings_name)
+        if raw:
+            try: return str(decrypt_data(raw) or '')
             except Exception: return ''
     except Exception:
         pass

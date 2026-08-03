@@ -12,7 +12,6 @@ import io
 import json
 import logging
 import os
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 
@@ -27,7 +26,6 @@ from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 from reportlab.graphics.barcode.qr import QrCodeWidget
 from reportlab.graphics.shapes import Drawing
 
-from config import DB_FILE, UPLOAD_FOLDER
 from utils import decrypt_data
 
 logger = logging.getLogger(__name__)
@@ -200,39 +198,61 @@ def _fmt_money(amount, currency=""):
 
 
 def _fetch_company_and_settings():
-    """Ucitava podatke firme i settings (last invoice num, VAT itd)."""
-    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-        c = conn.cursor()
-        c.execute("SELECT value FROM settings WHERE key='company'")
-        comp_row = c.fetchone()
-        c.execute("SELECT value FROM settings WHERE key='settings'")
-        gen_row = c.fetchone()
-    company = decrypt_data(comp_row[0]) if comp_row and comp_row[0] else {}
-    settings = decrypt_data(gen_row[0]) if gen_row and gen_row[0] else {}
+    """Ucitava podatke firme i settings (last invoice num, VAT itd).
+
+    V24.1 SUPABASE-ONLY: čita iz `settings` tabele preko
+    `supabase_store.get_setting`. Vrednosti su Fernet-šifrovani TEXT,
+    pa ih propuštamo kroz `decrypt_data` da dobijemo dict.
+    """
+    try:
+        import supabase_store as _store
+        comp_raw = _store.get_setting('company')
+        gen_raw = _store.get_setting('settings')
+    except Exception as e:
+        logger.warning(f'_fetch_company_and_settings: store read failed: {e}')
+        return {}, {}
+    company = decrypt_data(comp_raw) if comp_raw else {}
+    settings = decrypt_data(gen_raw) if gen_raw else {}
     return (company if isinstance(company, dict) else {},
             settings if isinstance(settings, dict) else {})
 
 
 def _fetch_partner(partner_id):
+    """V24.1 SUPABASE-ONLY: čita partnera preko `supabase_store.get_entity`.
+
+    Vraća rehidriran dict (top-level Supabase kolone + JSONB `data` spojeni).
+    Ako je iz nekog razloga vraćen string (legacy), propušta se kroz decrypt_data.
+    """
     if not partner_id: return {}
-    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-        c = conn.cursor()
-        c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
-        row = c.fetchone()
-    if not row: return {}
-    p = decrypt_data(row[0])
-    return p if isinstance(p, dict) else {}
+    try:
+        import supabase_store as _store
+        p = _store.get_entity('partners', partner_id)
+        if p is None: return {}
+        if isinstance(p, dict): return p
+        if isinstance(p, str):
+            d = decrypt_data(p)
+            return d if isinstance(d, dict) else {}
+        return {}
+    except Exception as e:
+        logger.warning(f'_fetch_partner({partner_id}) failed: {e}')
+        return {}
 
 
 def _fetch_product(product_id):
+    """V24.1 SUPABASE-ONLY: čita proizvod preko `supabase_store.get_entity`."""
     if not product_id: return {}
-    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-        c = conn.cursor()
-        c.execute("SELECT data FROM products WHERE id=?", (product_id,))
-        row = c.fetchone()
-    if not row: return {}
-    p = decrypt_data(row[0])
-    return p if isinstance(p, dict) else {}
+    try:
+        import supabase_store as _store
+        p = _store.get_entity('products', product_id)
+        if p is None: return {}
+        if isinstance(p, dict): return p
+        if isinstance(p, str):
+            d = decrypt_data(p)
+            return d if isinstance(d, dict) else {}
+        return {}
+    except Exception as e:
+        logger.warning(f'_fetch_product({product_id}) failed: {e}')
+        return {}
 
 
 def _brand_color(company):
@@ -973,42 +993,78 @@ def save_offer_pdf_to_vault(offer):
     binding_seed = json.dumps(canonical, sort_keys=True, separators=(',', ':')).encode('utf-8')
     binding_hash = _sha256_bytes(binding_seed)
 
-    # Rezerviši ili preuzmi postojeći broj iz document_register-a. Ovo garantuje
+    # Rezerviši ili preuzimi postojeći broj iz document_register-a. Ovo garantuje
     # da nijedan dokument ne zaobiđe sekvencijalnu numeraciju, čak i ako je
     # offer.offerNo bio postavljen ranije iz drugog izvora.
+    #
+    # V24.1 SUPABASE-ONLY: sav pristup ide preko `data_layer` sa snake_case
+    # kolonama (doc_type, year, seq, doc_number, entity_id, revision, …).
+    # UNIQUE(doc_type, year, seq) constraint (definisan u supabase_schema.sql)
+    # hvata race condition — ako dva procesa istovremeno pokušaju da rezervišu
+    # isti seq, drugi dobija Postgres unique_violation (23505) i fallback-uje
+    # na lookup po entity_id.
     doc_register_number = None
     doc_register_revision = 0
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn_r:
-            cur = conn_r.cursor()
-            cur.execute('SELECT docNumber, revision FROM document_register '
-                        'WHERE docType=? AND entityId=? AND revision=0',
-                        ('offer', offer.get('id')))
-            row = cur.fetchone()
-            if row:
-                doc_register_number = row[0]
-                doc_register_revision = row[1]
-            else:
-                # Rezerviši novi broj atomično
-                from datetime import datetime as _dt
-                year = _dt.now(timezone.utc).year
-                seq = (cur.execute('SELECT COALESCE(MAX(seq), 0) FROM document_register '
-                                    'WHERE docType=? AND year=?',
-                                    ('offer', year)).fetchone()[0] or 0) + 1
-                doc_register_number = f"OFF-{seq:03d}/{year}"
-                try:
-                    cur.execute('INSERT INTO document_register (docType, year, seq, '
-                                'docNumber, entityId, revision, status, issuedAt, issuedBy) '
-                                'VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)',
-                                ('offer', year, seq, doc_register_number,
-                                 offer.get('id'), 'active', now, 'system'))
-                    conn_r.commit()
-                except sqlite3.IntegrityError:
-                    # Ako je race → seq je zauzet, izvuci koji je zaista dodeljen
-                    row2 = cur.execute('SELECT docNumber FROM document_register '
-                                       'WHERE docType=? AND entityId=?',
-                                       ('offer', offer.get('id'))).fetchone()
-                    if row2: doc_register_number = row2[0]
+        from data_layer import select_one as _dl_select_one, select as _dl_select, insert as _dl_insert
+        # 1) Postojeća rezervacija (revision=0) za ovu ponudu?
+        existing = _dl_select_one(
+            'document_register',
+            {'doc_type': ('eq', 'offer'),
+             'entity_id': ('eq', offer.get('id')),
+             'revision': ('eq', 0)},
+            columns='doc_number,revision',
+        )
+        if existing:
+            doc_register_number = existing.get('doc_number')
+            doc_register_revision = int(existing.get('revision') or 0)
+        else:
+            # 2) Atomski rezerviši novi seq — `SELECT MAX(seq)` pa INSERT.
+            # Postoje mala race: ako između SELECT-a i INSERT-a drugi proces
+            # uzme isti seq, INSERT pukne na UNIQUE(doc_type, year, seq) i
+            # fallbackujemo na lookup po entity_id (koji je sigurno kreiran).
+            year = datetime.now(timezone.utc).year
+            seq = 1
+            try:
+                max_rows = _dl_select(
+                    'document_register',
+                    filters={'doc_type': ('eq', 'offer'),
+                             'year': ('eq', year)},
+                    order='-seq', limit=1,
+                ) or []
+                if max_rows:
+                    seq = int(max_rows[0].get('seq') or 0) + 1
+            except Exception:
+                pass
+            doc_register_number = f"OFF-{seq:03d}/{year}"
+            new_doc_id = f"dreg_{uuid.uuid4().hex[:12]}"
+            try:
+                _dl_insert('document_register', {
+                    'id': new_doc_id,
+                    'doc_type': 'offer',
+                    'year': year,
+                    'seq': seq,
+                    'doc_number': doc_register_number,
+                    'entity_id': offer.get('id'),
+                    'revision': 0,
+                    'issued_at': now,
+                    'issued_by': 'system',
+                })
+            except Exception as ie:
+                # 23505 = postgres unique_violation na (doc_type, year, seq).
+                # Drugi proces je rezervisao taj seq — vraćamo se na lookup.
+                msg = str(ie).lower()
+                if '23505' in msg or 'duplicate' in msg or 'unique' in msg:
+                    fb = _dl_select_one(
+                        'document_register',
+                        {'doc_type': ('eq', 'offer'),
+                         'entity_id': ('eq', offer.get('id'))},
+                        columns='doc_number',
+                    )
+                    if fb:
+                        doc_register_number = fb.get('doc_number')
+                else:
+                    raise
     except Exception as e:
         logger.warning(f'document_register reserve failed: {e}')
 
@@ -1031,10 +1087,15 @@ def save_offer_pdf_to_vault(offer):
         'hashAlgorithm': 'SHA-256',
     }
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            conn.execute("INSERT INTO shared_documents (id, data) VALUES (?, ?)",
-                         (doc_id, json.dumps(doc)))
-            conn.commit()
+        # V24.1 SUPABASE-ONLY: shared_documents čuvamo preko `data_layer.insert`.
+        # `partner_id` je top-level kolona (vidi SUPPORTED_TABLES u supabase_merge.py);
+        # sve ostale JSON polje (docType, fileName, productId, …) idu u JSONB `data`.
+        from data_layer import insert as _dl_insert
+        _dl_insert('shared_documents', {
+            'id': doc_id,
+            'partner_id': offer.get('customerId'),
+            'data': doc,
+        })
     except Exception as e:
         logger.error(f"Failed to save PDF vault entry: {e}")
         return None, None
@@ -1044,17 +1105,24 @@ def save_offer_pdf_to_vault(offer):
 
 def regenerate_offer_pdf_by_id(offer_id):
     """Ponovo pravi PDF ponude iz aktuelnih podataka u bazi. Vraća bytes ili
-    None ako ponuda ne postoji."""
+    None ako ponuda ne postoji.
+
+    V24.1 SUPABASE-ONLY: čita ponudu preko `supabase_store.get_entity('offers', id)`
+    što vraća rehidriran dict (top-level kolone + JSONB `data` spojeni).
+    Defanzivno propušta string kroz `decrypt_data` za legacy redove koji su
+    možda ostali iz pre-Supabase ere (Fernet ciphertext sačuvan kao JSON string).
+    """
     if not offer_id:
         return None
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            c = conn.cursor()
-            c.execute("SELECT data FROM offers WHERE id=?", (offer_id,))
-            row = c.fetchone()
-        if not row:
+        import supabase_store as _store
+        offer_data = _store.get_entity('offers', offer_id)
+        if offer_data is None:
             return None
-        offer_data = decrypt_data(row[0])
+        if isinstance(offer_data, str):
+            # Legacy fallback — ne treba u novom toku, ali ne skida se da
+            # nikad ne pukne na importu starih redova iz v23.0 migracije.
+            offer_data = decrypt_data(offer_data)
         if not isinstance(offer_data, dict):
             return None
         return build_offer_pdf(offer_data)

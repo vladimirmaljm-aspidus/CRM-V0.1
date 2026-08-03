@@ -1,37 +1,62 @@
-import json
+"""ASPIDUS portal — auth routes (V24.2 SUPABASE-ONLY).
+
+Sve rute koje ovaj modul izlaže su netaknute po pitanju putanje/metoda/JSON shape-a:
+  POST /api/portal/generate/<partner_id>          — admin: generiše portalToken za partnera
+  POST /api/portal/access/<partner_id>           — admin: Kill Switch (uklj/isklj pristup)
+  POST /api/portal/auth/send_otp/<token>         — klijent: traži OTP na mejl
+  POST /api/portal/auth/verify_otp/<token>       — klijent: proveri OTP
+  GET  /api/portal/public_config                 — javni config za frontend (hCaptcha sitekey, magic-link status, Supabase switch)
+  POST /api/portal/auth/consume_magic/<token>    — klijent: magic-link sign-in
+  POST /api/portal/auth/login                    — klijent: email-based login (bez URL tokena)
+  POST /api/portal/auth/login/verify             — klijent: verifikuj email-login OTP
+  GET  /api/portal/testonly/last_otp/<token>     — TEST_MODE=1 only: istrgni OTP
+  GET  /api/portal/testonly/last_email_session_otp — TEST_MODE=1 only: istrgni email-session OTP
+
+V24.2 promene:
+  - Sve sqlite3.connect uklonjene (6 poziva).
+  - find_partner_by_token se sada zove bez cursor-a: find_partner_by_token(token, enforce_active=…)
+  - Partner read/write ide preko supabase_store.get_entity / upsert_entity.
+  - User permissions check ide preko supabase_store.get_user_by_id.
+"""
 import secrets
 import time
-import sqlite3
 from datetime import datetime, timezone
+
 from flask import request, jsonify, abort
-from config import DB_FILE
-from utils import log_audit, login_required, decrypt_data
-from . import (portal_bp, safe_parse, check_portal_rate_limit,
+
+from utils import log_audit, login_required
+from . import (portal_bp, check_portal_rate_limit,
                create_portal_otp, verify_portal_otp, find_partner_by_token,
                find_partner_by_email, pending_email_sessions, log_portal_activity)
 
+
+# ==========================================================
+#  GENERATE PORTAL LINK (admin)
+# ==========================================================
 @portal_bp.route('/api/portal/generate/<partner_id>', methods=['POST'])
 @login_required
 def generate_portal_link(partner_id):
-    conn = None
+    """Admin generiše novi portal token za partnera. Ako token već postoji,
+    samo ga vraća (idempotentno). Ako je novi, šalje welcome mejl klijentu."""
+    import supabase_store as store
     action_log = None
     try:
-        conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA busy_timeout=30000;')
-        c = conn.cursor()
+        partner = store.get_entity('partners', partner_id)
+        if not partner:
+            return jsonify({"error": "Partner not found"}), 404
 
-        c.execute('SELECT data FROM partners WHERE id=?', (partner_id,))
-        row = c.fetchone()
-        if not row: return jsonify({"error": "Partner not found"}), 404
-
-        partner = safe_parse(row[0])
         is_new_token = False
-        if 'portalToken' not in partner or not partner['portalToken']:
-            partner['portalToken'] = secrets.token_urlsafe(32)
+        existing_token = partner.get('portalToken') or partner.get('portal_token')
+        if not existing_token:
+            new_token = secrets.token_urlsafe(32)
+            # Držimo i camelCase (JSONB, frontend) i snake_case (top-level kolona)
+            # u sync-u kako bi i stari i novi tokovi videli isti token.
+            partner['portalToken'] = new_token
+            partner['portal_token'] = new_token
             partner['isPortalActive'] = True
+            partner['is_portal_active'] = True
             is_new_token = True
-            c.execute('UPDATE partners SET data=? WHERE id=?', (json.dumps(partner), partner_id))
-            conn.commit()
+            store.upsert_entity('partners', partner)
             action_log = ('EDIT', 'partners', f'Generated secure B2B portal token for partner ID: {partner_id}', False)
 
         token = partner['portalToken']
@@ -49,7 +74,6 @@ def generate_portal_link(partner_id):
 
         return jsonify({"status": "success", "token": token, "isPortalActive": partner.get('isPortalActive', True)})
     finally:
-        if conn: conn.close()
         if action_log:
             log_audit(action_log[0], action_log[1], action_log[2], is_suspicious=action_log[3])
 
@@ -63,17 +87,17 @@ def set_portal_access(partner_id):
     """Admin/ovlašćeni korisnik uključuje ili isključuje pristup partnera portalu.
     Kada je isključen, svi postojeći tokeni/sesije prestaju da rade (Kill Switch)."""
     from flask import session
+    import supabase_store as store
+
     role = session.get('role')
     if role != 'admin':
         # Provera 'partners_edit' permisije za ne-admin korisnike
-        conn_p = sqlite3.connect(DB_FILE, timeout=30.0)
-        try:
-            cp = conn_p.cursor()
-            cp.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
-            prow = cp.fetchone()
-        finally:
-            conn_p.close()
-        perms = decrypt_data(prow[0]) if prow and prow[0] else {}
+        user_row = store.get_user_by_id(session.get('user_id') or '')
+        perms = user_row.get('permissions') or {} if user_row else {}
+        if isinstance(perms, str):
+            import json as _json
+            try: perms = _json.loads(perms)
+            except Exception: perms = {}
         if not perms.get('partners_edit', False):
             log_audit('SECURITY', 'portal', 'Prevented unauthorized portal access toggle', is_suspicious=True)
             return jsonify({"error": "Unauthorized"}), 403
@@ -81,29 +105,22 @@ def set_portal_access(partner_id):
     data = request.get_json(silent=True) or {}
     active = bool(data.get('active', False))
 
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA busy_timeout=30000;')
-        c = conn.cursor()
-        c.execute('SELECT data FROM partners WHERE id=?', (partner_id,))
-        row = c.fetchone()
-        if not row:
-            return jsonify({"error": "Partner not found"}), 404
-        partner = safe_parse(row[0])
-        partner['isPortalActive'] = active
+    partner = store.get_entity('partners', partner_id)
+    if not partner:
+        return jsonify({"error": "Partner not found"}), 404
 
-        # Ako opozivamo pristup, odmah gasimo aktivne memorijske sesije/OTP za taj token.
-        token = partner.get('portalToken')
-        if not active and token:
-            from . import portal_auth_sessions, portal_otps
-            portal_auth_sessions.pop(token, None)
-            portal_otps.pop(token, None)
+    # Ažuriramo i camelCase (JSONB, frontend) i snake_case (top-level kolona)
+    partner['isPortalActive'] = active
+    partner['is_portal_active'] = active
 
-        c.execute('UPDATE partners SET data=? WHERE id=?', (json.dumps(partner), partner_id))
-        conn.commit()
-    finally:
-        if conn: conn.close()
+    # Ako opozivamo pristup, odmah gasimo aktivne memorijske sesije/OTP za taj token.
+    token = partner.get('portalToken') or partner.get('portal_token')
+    if not active and token:
+        from . import portal_auth_sessions, portal_otps
+        portal_auth_sessions.pop(token, None)
+        portal_otps.pop(token, None)
+
+    store.upsert_entity('partners', partner)
 
     log_audit('SECURITY', 'portal',
               f"Portal access {'ENABLED' if active else 'REVOKED'} for partner ID: {partner_id}",
@@ -128,69 +145,62 @@ def send_otp(token):
             return jsonify({"error": "CAPTCHA_REQUIRED",
                             "message": "Please complete the human verification and try again."}), 400
 
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA busy_timeout=30000;')
-        c = conn.cursor()
+    # V24.2: find_partner_by_token više ne prima cursor — direktan Supabase read.
+    partner_id, partner = find_partner_by_token(token, enforce_active=False)
+    if not partner:
+        return jsonify({"error": "Invalid token"}), 403
 
-        # Nađi partnera bez kill-switch filtera da bismo mogli da logujemo opoziv.
-        partner_id, partner = find_partner_by_token(c, token, enforce_active=False)
-        if not partner:
-            return jsonify({"error": "Invalid token"}), 403
+    # Kill Switch provera
+    if partner.get('isPortalActive', True) is False:
+        log_audit('SECURITY', 'portal', f'Blocked OTP request for revoked portal access. Partner ID: {partner_id}', is_suspicious=True)
+        return jsonify({"error": "Access Revoked. Please contact administrator."}), 403
 
-        # Kill Switch provera
-        if partner.get('isPortalActive', True) is False:
-            log_audit('SECURITY', 'portal', f'Blocked OTP request for revoked portal access. Partner ID: {partner_id}', is_suspicious=True)
-            return jsonify({"error": "Access Revoked. Please contact administrator."}), 403
+    client_email = partner.get('contact', {}).get('email') or partner.get('email')
+    otp = create_portal_otp(token)
 
-        client_email = partner.get('contact', {}).get('email') or partner.get('email')
-        otp = create_portal_otp(token)
+    # Profesionalan mejl. Provider: Resend / SendGrid / Postmark ako je admin
+    # konfigurisao u Settings > OTP Delivery; inače legacy SMTP.
+    # Ako je magic-link uključen, i on ide u istom mejlu kao alternativa OTP-u.
+    email_sent = False
+    if client_email:
+        try:
+            portal_url = request.url_root.rstrip('/') + f"/portal/{token}"
 
-        # Profesionalan mejl. Provider: Resend / SendGrid / Postmark ako je admin
-        # konfigurisao u Settings > OTP Delivery; inače legacy SMTP.
-        # Ako je magic-link uključen, i on ide u istom mejlu kao alternativa OTP-u.
-        email_sent = False
-        if client_email:
-            try:
-                portal_url = request.url_root.rstrip('/') + f"/portal/{token}"
+            # Magic-link (opciono, konfigurabilno)
+            from mail_providers import magic_link_config
+            ml_cfg = magic_link_config()
+            magic_url = None
+            if ml_cfg['enabled']:
+                from magic_link import mint
+                ml = mint(token, ttl_minutes=ml_cfg['ttl_min'])
+                magic_url = f"{portal_url}?ml={ml}"
 
-                # Magic-link (opciono, konfigurabilno)
-                from mail_providers import magic_link_config
-                ml_cfg = magic_link_config()
-                magic_url = None
-                if ml_cfg['enabled']:
-                    from magic_link import mint
-                    ml = mint(token, ttl_minutes=ml_cfg['ttl_min'])
-                    magic_url = f"{portal_url}?ml={ml}"
+            from utils_email import send_portal_otp
+            ok, err = send_portal_otp(
+                client_email, partner.get('companyName', ''), otp, portal_url,
+                magic_url=magic_url,
+                magic_ttl_min=ml_cfg['ttl_min'] if ml_cfg['enabled'] else 0,
+            )
+            if ok:
+                email_sent = True
+                log_audit('COMMUNICATION', 'portal', f'OTP sent to {client_email}' +
+                          (' (with magic-link)' if magic_url else ''), is_suspicious=False)
+            else:
+                log_audit('ERROR', 'portal', f'OTP email send failed to {client_email}: {err}', is_suspicious=False)
+        except Exception as e:
+            log_audit('ERROR', 'portal', f'OTP email send exception: {e}', is_suspicious=False)
 
-                from utils_email import send_portal_otp
-                ok, err = send_portal_otp(
-                    client_email, partner.get('companyName', ''), otp, portal_url,
-                    magic_url=magic_url,
-                    magic_ttl_min=ml_cfg['ttl_min'] if ml_cfg['enabled'] else 0,
-                )
-                if ok:
-                    email_sent = True
-                    log_audit('COMMUNICATION', 'portal', f'OTP sent to {client_email}' +
-                              (' (with magic-link)' if magic_url else ''), is_suspicious=False)
-                else:
-                    log_audit('ERROR', 'portal', f'OTP email send failed to {client_email}: {err}', is_suspicious=False)
-            except Exception as e:
-                log_audit('ERROR', 'portal', f'OTP email send exception: {e}', is_suspicious=False)
+    print(f"\n========================================================")
+    print(f"🔒 B2B PORTAL LOGIN OTP CODE: {otp} (For: {partner.get('companyName')})")
+    print(f"========================================================\n")
 
-        print(f"\n========================================================")
-        print(f"🔒 B2B PORTAL LOGIN OTP CODE: {otp} (For: {partner.get('companyName')})")
-        print(f"========================================================\n")
+    if email_sent:
+        return jsonify({"status": "success", "message": f"OTP sent to client email / OTP poslat na klijentov email ({client_email})."})
+    elif client_email:
+        return jsonify({"status": "success", "message": "SMTP Greška: Pročitajte OTP iz konzole."})
+    else:
+        return jsonify({"status": "success", "message": "Klijent nema email! Pročitajte kod iz konzole."})
 
-        if email_sent:
-            return jsonify({"status": "success", "message": f"OTP sent to client email / OTP poslat na klijentov email ({client_email})."})
-        elif client_email:
-            return jsonify({"status": "success", "message": "SMTP Greška: Pročitajte OTP iz konzole."})
-        else:
-            return jsonify({"status": "success", "message": "Klijent nema email! Pročitajte kod iz konzole."})
-    finally:
-        if conn: conn.close()
 
 @portal_bp.route('/api/portal/auth/verify_otp/<token>', methods=['POST'])
 def verify_otp(token):
@@ -206,11 +216,8 @@ def verify_otp(token):
     # obavezan kao anti-bot mera. Partner podatak se vadi PRE OTP verify jer
     # ako je bez GPS-a i nije premium, blokiramo pre nego što potrošimo OTP attempt.
     from . import is_partner_premium
-    conn_check = sqlite3.connect(DB_FILE, timeout=15.0)
-    try:
-        _pid, _pdata = find_partner_by_token(conn_check.cursor(), token, enforce_active=False)
-    finally:
-        conn_check.close()
+    # V24.2: find_partner_by_token više ne prima cursor.
+    _pid, _pdata = find_partner_by_token(token, enforce_active=False)
     is_premium = is_partner_premium(_pdata)
 
     if not is_premium and (not location or ',' not in location):
@@ -275,17 +282,13 @@ def consume_magic_link(token):
     location = str(payload.get('location', '')).strip()
 
     # Osnovna partner + kill-switch provera pre magic-link verifikacije
-    conn = sqlite3.connect(DB_FILE, timeout=15)
-    try:
-        c = conn.cursor()
-        partner_id, partner = find_partner_by_token(c, token, enforce_active=False)
-        if not partner:
-            return jsonify({"error": "Invalid token"}), 403
-        if partner.get('isPortalActive', True) is False:
-            log_audit('SECURITY', 'portal', f'Blocked magic-link login for revoked portal. Partner ID: {partner_id}', is_suspicious=True)
-            return jsonify({"error": "Access Revoked. Contact administrator."}), 403
-    finally:
-        conn.close()
+    # V24.2: find_partner_by_token više ne prima cursor — direktan Supabase read.
+    partner_id, partner = find_partner_by_token(token, enforce_active=False)
+    if not partner:
+        return jsonify({"error": "Invalid token"}), 403
+    if partner.get('isPortalActive', True) is False:
+        log_audit('SECURITY', 'portal', f'Blocked magic-link login for revoked portal. Partner ID: {partner_id}', is_suspicious=True)
+        return jsonify({"error": "Access Revoked. Contact administrator."}), 403
 
     # PREMIUM izuzetak od GPS obaveze (isti mehanizam kao OTP verify)
     from . import is_partner_premium
@@ -354,7 +357,7 @@ def portal_login_request():
         log_audit('SECURITY', 'portal', f'Login attempt on revoked portal for {email}', is_suspicious=True)
         return jsonify({"status": "success", "session_id": session_id, "message": generic_msg})
 
-    token = partner.get('portalToken')
+    token = partner.get('portalToken') or partner.get('portal_token')
     if not token:
         log_audit('SECURITY', 'portal', f'Portal login for {email} but no token configured', is_suspicious=True)
         return jsonify({"status": "success", "session_id": session_id, "message": generic_msg})

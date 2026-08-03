@@ -118,21 +118,18 @@ def supabase_auth_exchange():
     #     ranije generisao token URL). Bez tokena downstream API-ji neće raditi.
     token = partner.get('portalToken')
     if not token:
-        import json as _json
-        import sqlite3 as _sql
         import secrets as _sec
-        from config import DB_FILE as _DBF
+        import supabase_store as _store
         token = _sec.token_urlsafe(32)
         partner['portalToken'] = token
         partner.setdefault('isPortalActive', True)
-        conn = _sql.connect(_DBF, timeout=30.0)
+        # V24.0 SUPABASE-ONLY: upsert preko supabase_store rehidrira top-level + JSONB
         try:
-            conn.execute('PRAGMA busy_timeout=30000;')
-            conn.execute('UPDATE partners SET data=? WHERE id=?',
-                         (_json.dumps(partner), partner_id))
-            conn.commit()
-        finally:
-            conn.close()
+            _store.upsert_entity('partners', partner)
+        except Exception as _e:
+            log_audit('ERROR', 'portal',
+                      f'Auto portalToken upsert failed for {partner_id}: {type(_e).__name__}: {_e}',
+                      is_suspicious=False)
         log_audit('EDIT', 'portal',
                   f'Auto-generated portalToken during Supabase exchange for partner {partner_id}',
                   is_suspicious=False)
@@ -235,21 +232,17 @@ def supabase_set_password():
     # Uveri se da postoji portalToken (kao u exchange-u)
     token = partner.get('portalToken')
     if not token:
-        import json as _json
-        import sqlite3 as _sql
         import secrets as _sec
-        from config import DB_FILE as _DBF
+        import supabase_store as _store
         token = _sec.token_urlsafe(32)
         partner['portalToken'] = token
         partner.setdefault('isPortalActive', True)
-        conn = _sql.connect(_DBF, timeout=30.0)
         try:
-            conn.execute('PRAGMA busy_timeout=30000;')
-            conn.execute('UPDATE partners SET data=? WHERE id=?',
-                         (_json.dumps(partner), partner_id))
-            conn.commit()
-        finally:
-            conn.close()
+            _store.upsert_entity('partners', partner)
+        except Exception as _e:
+            log_audit('ERROR', 'portal',
+                      f'Auto portalToken upsert (recovery) failed for {partner_id}: {type(_e).__name__}: {_e}',
+                      is_suspicious=False)
 
     from . import create_portal_session
     auth_key = create_portal_session(token, partner_id=partner_id)
@@ -317,21 +310,17 @@ def supabase_signin_password():
 
     token = partner.get('portalToken')
     if not token:
-        import json as _json
-        import sqlite3 as _sql
         import secrets as _sec
-        from config import DB_FILE as _DBF
+        import supabase_store as _store
         token = _sec.token_urlsafe(32)
         partner['portalToken'] = token
         partner.setdefault('isPortalActive', True)
-        conn = _sql.connect(_DBF, timeout=30.0)
         try:
-            conn.execute('PRAGMA busy_timeout=30000;')
-            conn.execute('UPDATE partners SET data=? WHERE id=?',
-                         (_json.dumps(partner), partner_id))
-            conn.commit()
-        finally:
-            conn.close()
+            _store.upsert_entity('partners', partner)
+        except Exception as _e:
+            log_audit('ERROR', 'portal',
+                      f'Auto portalToken upsert (signin) failed for {partner_id}: {type(_e).__name__}: {_e}',
+                      is_suspicious=False)
 
     from . import create_portal_session
     auth_key = create_portal_session(token, partner_id=partner_id)
@@ -498,23 +487,12 @@ def portal_user_change_password():
         if not partner_id:
             return jsonify({"error": "Portal session has no partner link. Sign out and sign in again."}), 400
 
-        import sqlite3, json as _json
-        from config import DB_FILE
-        conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        try:
-            c = conn.cursor()
-            c.execute("SELECT data FROM partners WHERE id=?", (partner_id,))
-            row = c.fetchone()
-        finally:
-            conn.close()
-        if not row:
+        # V24.0 SUPABASE-ONLY: read partner via supabase_store (rehidrirani dict)
+        import supabase_store as store
+        partner = store.get_entity('partners', partner_id) or {}
+        if not partner:
             return jsonify({"error": "Partner record not found."}), 404
-        try:
-            partner = _json.loads(row[0]) if row[0] else {}
-        except (ValueError, TypeError):
-            from utils import decrypt_data
-            partner = decrypt_data(row[0]) or {}
-        email = (partner.get('contact', {}) or {}).get('email') or partner.get('email') or ''
+        email = (partner.get('contact') or {}).get('email') or partner.get('email') or ''
         email = str(email).strip().lower()
         if not email:
             return jsonify({"error": "This account has no email — cannot change password."}), 400

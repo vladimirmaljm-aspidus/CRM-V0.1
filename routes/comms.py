@@ -1,32 +1,24 @@
 import smtplib
 import socket
-import sqlite3
 import base64
 from flask import Blueprint, request, jsonify, session
-from config import DB_FILE
 from utils import log_audit, login_required, decrypt_data
 from utils_email import send_branded_admin_message
+import supabase_store as store
 
 comms_bp = Blueprint('comms', __name__)
 
 def get_smtp_settings():
-    """Bezbedno dohvata i dešifruje SMTP lozinke iz baze."""
-    conn = None
-    row = None
+    """Bezbedno dohvata i dešifruje SMTP lozinke iz settings tabele (Supabase)."""
     try:
-        conn = sqlite3.connect(DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA busy_timeout=30000;')
-        c = conn.cursor()
-        c.execute("SELECT value FROM settings WHERE key='comms_settings'")
-        row = c.fetchone()
-    finally:
-        if conn: conn.close()
-
-    if not row or not row[0]:
+        raw = store.get_setting('comms_settings')
+    except Exception as e:
+        print("Upozorenje: Greška pri čitanju comms_settings iz Supabase:", e)
         return None
-        
+    if not raw:
+        return None
     try:
-        settings = decrypt_data(row[0])
+        settings = decrypt_data(raw)
         if not isinstance(settings, dict):
             return None
         return settings
@@ -129,29 +121,21 @@ def email_queue_view():
     """Admin pregled pending/failed mejlova sa mogucnoscu manuelnog retry-ja."""
     if session.get('role') != 'admin':
         return jsonify({"error": "UNAUTHORIZED"}), 403
-    import sqlite3
-    from config import DB_FILE
+    # V24.0 SUPABASE-ONLY: čita email_queue preko data_layer.select.
+    # Tabela već postoji na Supabase (definisana u schemas/supabase_v23_1.sql).
     try:
-        conn = sqlite3.connect(DB_FILE, timeout=10)
-        conn.row_factory = sqlite3.Row
-        # Kreiraj tabelu ako još ne postoji (prvi start)
-        conn.execute('''CREATE TABLE IF NOT EXISTS email_queue (
-            id TEXT PRIMARY KEY, recipient TEXT NOT NULL, subject TEXT,
-            plain_body TEXT, html_body TEXT, attachments_ref TEXT,
-            attempts INTEGER DEFAULT 0, last_error TEXT,
-            queued_at TEXT NOT NULL, next_retry_at TEXT, status TEXT DEFAULT 'pending'
-        )''')
-        rows = conn.execute(
-            'SELECT id, recipient, subject, attempts, last_error, queued_at, '
-            'next_retry_at, status FROM email_queue ORDER BY queued_at DESC LIMIT 200'
-        ).fetchall()
-        conn.close()
+        from data_layer import select as _dl_select
+        rows = _dl_select('email_queue', order='-queued_at', limit=200) or []
         return jsonify({
             'items': [{
-                'id': r['id'], 'recipient': r['recipient'], 'subject': r['subject'],
-                'attempts': r['attempts'], 'lastError': r['last_error'],
-                'queuedAt': r['queued_at'], 'nextRetryAt': r['next_retry_at'],
-                'status': r['status'],
+                'id': r.get('id'),
+                'recipient': r.get('recipient'),
+                'subject': r.get('subject'),
+                'attempts': r.get('attempts'),
+                'lastError': r.get('last_error'),
+                'queuedAt': r.get('queued_at'),
+                'nextRetryAt': r.get('next_retry_at'),
+                'status': r.get('status'),
             } for r in rows]
         })
     except Exception as e:

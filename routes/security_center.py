@@ -25,13 +25,11 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-import sqlite3
 import uuid
 from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, jsonify, request, session, render_template
 
-from config import DB_FILE
 from utils import login_required, log_audit, get_client_ip
 
 security_bp = Blueprint('security_bp', __name__)

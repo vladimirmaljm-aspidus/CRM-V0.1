@@ -9,32 +9,32 @@ import base64
 import json
 import logging
 import smtplib
-import sqlite3
 import threading
 import urllib.request
+from datetime import datetime, timezone, timedelta
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from config import DB_FILE
 from utils import decrypt_data, log_audit
 
 logger = logging.getLogger(__name__)
 
 
 def _get_smtp_settings():
-    """Učitava SMTP kredencijale iz baze (comms_settings) i podatke firme."""
+    """Učitava SMTP kredencijale iz baze (comms_settings) i podatke firme.
+
+    V24.1 SUPABASE-ONLY: čita iz settings tabele preko `supabase_store.get_setting`.
+    Vrednosti su Fernet-šifrovani TEXT pa ih propuštamo kroz `decrypt_data`.
+    """
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            c = conn.cursor()
-            c.execute("SELECT value FROM settings WHERE key='comms_settings'")
-            smtp_row = c.fetchone()
-            c.execute("SELECT value FROM settings WHERE key='company'")
-            comp_row = c.fetchone()
+        import supabase_store as store
+        smtp_raw = store.get_setting('comms_settings')
+        comp_raw = store.get_setting('company')
     except Exception:
         return None, None
-    smtp = decrypt_data(smtp_row[0]) if smtp_row and smtp_row[0] else None
-    company = decrypt_data(comp_row[0]) if comp_row and comp_row[0] else None
+    smtp = decrypt_data(smtp_raw) if smtp_raw else None
+    company = decrypt_data(comp_raw) if comp_raw else None
     return (smtp if isinstance(smtp, dict) else None), (company if isinstance(company, dict) else None)
 
 
@@ -358,42 +358,30 @@ _STUCK_SENDING_THRESHOLD_S = 300   # 5 min
 _MAX_ATTEMPTS = 8
 
 
-def _ensure_queue_schema(conn):
-    """Kreira tabelu ako ne postoji + dodaje kolone iz kasnijih migracija.
-    Idempotent — bezbedno je zvati svaki put."""
-    conn.execute('''CREATE TABLE IF NOT EXISTS email_queue (
-        id TEXT PRIMARY KEY,
-        recipient TEXT NOT NULL,
-        subject TEXT,
-        plain_body TEXT,
-        html_body TEXT,
-        attachments_ref TEXT,
-        attempts INTEGER DEFAULT 0,
-        last_error TEXT,
-        queued_at TEXT NOT NULL,
-        next_retry_at TEXT,
-        status TEXT DEFAULT 'pending'
-    )''')
-    # v22 migration — dodajemo lock kolone za row-level exclusion i idempotency
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(email_queue)").fetchall()}
-    if 'sending_started_at' not in cols:
-        conn.execute("ALTER TABLE email_queue ADD COLUMN sending_started_at TEXT")
-    if 'worker_id' not in cols:
-        conn.execute("ALTER TABLE email_queue ADD COLUMN worker_id TEXT")
-    if 'sent_at' not in cols:
-        conn.execute("ALTER TABLE email_queue ADD COLUMN sent_at TEXT")
+def _ensure_queue_schema(_conn=None):
+    """No-op u V24.1 SUPABASE-ONLY modu.
+
+    Tabela `email_queue` i sve njene kolone (id, recipient, subject, plain_body,
+    html_body, attachments_ref, attempts, last_error, queued_at, next_retry_at,
+    status, sending_started_at, worker_id, sent_at TIMESTAMPTZ) već postoje na
+    Supabase-u — kreirane tokom Faze 1 (supabase_fix_v25.sql je pretvorio
+    sent_at u TIMESTAMPTZ). Nema potrebe za idempotentnom `CREATE TABLE IF NOT
+    EXISTS` logikom koja je ranije bila tu za SQLite.
+
+    Zadržava se u potpisu radi kompatibilnosti sa mogućim spoljnim pozivaocima.
+    """
+    return None
 
 
 def _park_in_queue(recipient, subject, plain_body, html_body, attachments, error):
     """Snima neuspeli mejl u email_queue tabelu tako da ga cron worker
-    kasnije može retry-ovati. Cron radi svakih 60s dok queue ne bude prazna."""
-    import sqlite3, json, uuid
-    from datetime import datetime, timezone
-    from config import DB_FILE
+    kasnije može retry-ovati. Cron radi svakih 60s dok queue ne bude prazna.
+
+    V24.1 SUPABASE-ONLY: insert ide preko `data_layer.insert('email_queue', ...)`.
+    """
+    import uuid
     try:
-        conn = sqlite3.connect(DB_FILE, timeout=15)
-        conn.execute('PRAGMA journal_mode=WAL')
-        _ensure_queue_schema(conn)
+        from data_layer import insert as _dl_insert
         now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
         # Attachmente ne pakujemo (mogu biti veliki) — zapisujemo samo metadata;
         # sistem tehnički ne pokušava re-send attachmenata iz queue-a, jer je klijent
@@ -403,88 +391,132 @@ def _park_in_queue(recipient, subject, plain_body, html_body, attachments, error
                                 for a in (attachments or [])])
         # attempts kreće od 3 jer je _send_email već potrošio 3 pokušaja pre park-a.
         # needs_admin status se ne obrađuje automatski — traži intervenciju.
-        conn.execute(
-            'INSERT INTO email_queue (id, recipient, subject, plain_body, '
-            'html_body, attachments_ref, attempts, last_error, queued_at, '
-            'next_retry_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            (str(uuid.uuid4()), recipient, subject, plain_body, html_body,
-             atts_meta, 3, error, now, now, 'pending' if not attachments else 'needs_admin')
-        )
-        conn.commit()
-        conn.close()
+        _dl_insert('email_queue', {
+            'id': str(uuid.uuid4()),
+            'recipient': recipient,
+            'subject': subject,
+            'plain_body': plain_body,
+            'html_body': html_body,
+            'attachments_ref': atts_meta,
+            'attempts': 3,
+            'last_error': (error or '')[:1000],
+            'queued_at': now,
+            'next_retry_at': now,
+            'status': 'pending' if not attachments else 'needs_admin',
+        })
         logger.info(f'Parked mail to {recipient} in queue for retry')
     except Exception as e:
         logger.error(f'_park_in_queue failed: {e}')
 
 
-def _recover_stuck_sending(conn, worker_id):
+def _recover_stuck_sending(worker_id):
     """Vraća 'sending' redove starije od threshold-a nazad u 'pending'.
-    Ovo se zove na početku svake process_email_queue iteracije da se ne
-    desi da crash mid-send zauvek zaključa red."""
-    from datetime import datetime, timezone, timedelta
+
+    V24.1 SUPABASE-ONLY: atomican UPDATE preko data_layer-a sa filterom
+    `status='sending' AND sending_started_at < cutoff`. Vraća broj recoverovanih.
+    """
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=_STUCK_SENDING_THRESHOLD_S))
     cutoff_iso = cutoff.isoformat().replace('+00:00', 'Z')
-    res = conn.execute(
-        "UPDATE email_queue SET status='pending', sending_started_at=NULL, worker_id=NULL "
-        "WHERE status='sending' AND sending_started_at < ?",
-        (cutoff_iso,)
-    )
-    if res.rowcount:
-        logger.warning(f'[{worker_id}] recovered {res.rowcount} stuck sending row(s) → pending')
+    try:
+        from data_layer import update as _dl_update
+        updated = _dl_update(
+            'email_queue',
+            {'status': ('eq', 'sending'),
+             'sending_started_at': ('lt', cutoff_iso)},
+            {'status': 'pending',
+             'sending_started_at': None,
+             'worker_id': None},
+        )
+        n = len(updated) if isinstance(updated, list) else 0
+        if n:
+            logger.warning(f'[{worker_id}] recovered {n} stuck sending row(s) → pending')
+        return n
+    except Exception as e:
+        logger.warning(f'[{worker_id}] _recover_stuck_sending failed: {e}')
+        return 0
 
 
-def _claim_next(conn, worker_id, now_iso):
+def _claim_next(worker_id, now_iso):
     """Atomično uzima sledeći pending red i markira ga sa status='sending'.
 
-    Race-safe pattern: UPDATE ... WHERE status='pending' AND next_retry_at <= now
-    LIMIT 1 RETURNING *. Ovim se garantuje da čak i ako dva worker-a paralelno
-    zovu queue processor u istom trenutku, samo jedan pobedi na svakom redu
-    (SQLite serialize-uje UPDATE-e). Bez ovog pattern-a select+update sekvenca
-    imala je window za double-pickup pod concurrency-jem.
+    V24.1 SUPABASE-ONLY: dvokorak preko data_layer-a:
+      1) SELECT naredni pending (redosled: NULL next_retry_at prvo, zatim <= now_iso)
+      2) UPDATE sa filterom `id=X AND status='pending'` — drugi worker koji stigne
+         istovremeno dobija 0 redova jer status više nije 'pending'.
 
-    Vraća sqlite3.Row ili None.
+    PostgREST ne podržava `OR` u filteru u jednom pozivu, pa radimo dva select-a
+    i mergujemo u Python-u po `queued_at` redosledu.
+
+    Vraća dict sa poljima (id, recipient, subject, plain_body, html_body,
+    attempts) ili None.
     """
-    # SQLite < 3.35 nema RETURNING; pouzdano radimo dvokorak pod istom transakcijom.
-    # Isolation level je 'DEFERRED' default što znači BEGIN se otvara pri prvom
-    # write-u; forsiramo IMMEDIATE da bi lock-ovali write pre selecta.
-    conn.execute('BEGIN IMMEDIATE')
-    row = conn.execute(
-        "SELECT id, recipient, subject, plain_body, html_body, attempts "
-        "FROM email_queue "
-        "WHERE status='pending' AND (next_retry_at IS NULL OR next_retry_at <= ?) "
-        "ORDER BY queued_at ASC LIMIT 1",
-        (now_iso,)
-    ).fetchone()
-    if not row:
-        conn.commit()
+    from data_layer import select as _dl_select, update as _dl_update
+    # 1) Kandidati: pending sa NULL next_retry_at (prvi pokušaj) ILI <= now_iso (retry due)
+    candidates = []
+    try:
+        rows_first = _dl_select(
+            'email_queue',
+            filters={'status': ('eq', 'pending'), 'next_retry_at': ('is', None)},
+            order='queued_at', limit=1,
+        ) or []
+        candidates.extend(rows_first)
+    except Exception:
+        pass
+    try:
+        rows_retry = _dl_select(
+            'email_queue',
+            filters={'status': ('eq', 'pending'), 'next_retry_at': ('lte', now_iso)},
+            order='queued_at', limit=1,
+        ) or []
+        candidates.extend(rows_retry)
+    except Exception:
+        pass
+    if not candidates:
         return None
-    conn.execute(
-        "UPDATE email_queue SET status='sending', sending_started_at=?, worker_id=? "
-        "WHERE id=? AND status='pending'",
-        (now_iso, worker_id, row['id'])
-    )
-    conn.commit()  # persist claim odmah — nikad ne držimo lock preko network I/O
-    return row
+    # Sort po queued_at i uzmi najstariji
+    candidates.sort(key=lambda r: (r.get('queued_at') or '', r.get('id') or ''))
+    row = candidates[0]
+
+    # 2) Atomican claim: update WHERE id=? AND status='pending' — vraća listu
+    # ažuriranih redova; ako je prazna, neko drugi je uzeo.
+    try:
+        updated = _dl_update(
+            'email_queue',
+            {'id': ('eq', row.get('id')), 'status': ('eq', 'pending')},
+            {'status': 'sending',
+             'sending_started_at': now_iso,
+             'worker_id': worker_id},
+        )
+    except Exception as e:
+        logger.warning(f'[{worker_id}] _claim_next update failed: {e}')
+        return None
+    if not updated:
+        return None   # neko drugi je claim-ovao
+    # Vrati samo polja koja process_email_queue čita
+    return {
+        'id': row.get('id'),
+        'recipient': row.get('recipient'),
+        'subject': row.get('subject'),
+        'plain_body': row.get('plain_body'),
+        'html_body': row.get('html_body'),
+        'attempts': int(row.get('attempts') or 0),
+    }
 
 
 def process_email_queue(max_batch=10):
     """Cron worker — pokušava retry svih pending mejlova.
 
-    KLJUČNI INVARIANTI protiv duplikata:
+    V24.1 SUPABASE-ONLY: sav DB pristup ide kroz `data_layer` (select/update).
+    Nema `sqlite3.connect`, nema `conn.row_factory`, nema lock retry-ja (REST
+    backend je stateless i atomican po redu). Ostaju isti invarijanti protiv
+    duplikata:
       1. Samo jedan worker u procesu istovremeno (threading.Lock).
-      2. Svaki red se claim-uje kao 'sending' PRE mrežnog send-a (commit odmah).
-      3. Uspešan send → status='sent' + commit ODMAH (per-row, ne batch).
-      4. Neuspešan send → status vraćen na 'pending' sa uvećanim attempts.
-         Ako attempts >= MAX → 'dead'.
-      5. Ako claim commit uspe ali send/status commit padne (npr. DB zaključana),
-         stuck 'sending' red se pri sledećem prolazu automatski recover-uje na
-         'pending' posle 5 min timeout-a. NE šalje se ponovo pre nego što se
-         recover-uje — što daje SMTP-u vreme da procesuira prethodni send.
+      2. Svaki red se claim-uje kao 'sending' PRE mrežnog send-a.
+      3. Uspešan send → status='sent' (commit odmah).
+      4. Neuspešan send → status='pending' sa uvećanim attempts; ako attempts
+         >= _MAX_ATTEMPTS → 'dead'.
+      5. Stuck 'sending' stariji od 5 min se recover-uje nazad na 'pending'.
     """
-    import sqlite3, uuid
-    from datetime import datetime, timezone, timedelta
-    from config import DB_FILE
-
     stats = {'processed': 0, 'ok': 0, 'failed': 0, 'skipped': 0, 'recovered': 0, 'dead': 0}
 
     # Guard: dva paralelna poziva se ne mogu preklopiti u istom procesu.
@@ -493,67 +525,43 @@ def process_email_queue(max_batch=10):
         logger.info('email queue worker already running — skipping this tick')
         return stats
 
+    import uuid
+    from data_layer import update as _dl_update
     worker_id = f'w-{uuid.uuid4().hex[:8]}'
     try:
-        # 1) startup / crash recovery
+        # 1) startup / crash recovery (stuck 'sending' → 'pending')
         try:
-            conn = sqlite3.connect(DB_FILE, timeout=15)
-            conn.row_factory = sqlite3.Row
-            _ensure_queue_schema(conn)
-            _recover_stuck_sending(conn, worker_id)
-            conn.commit()
-            conn.close()
-        except sqlite3.DatabaseError as db_err:
-            # "database disk image is malformed" — ne spamuj log svakih 30s.
-            # Loguj JEDNOM po worker-ID-u pa ućuti; admin mora ručno pokrenuti
-            # scripts/db_recover.py da vrati bazu.
-            msg = str(db_err).lower()
-            if 'malformed' in msg or 'corrupt' in msg:
-                if not getattr(process_email_queue, '_reported_corruption', False):
-                    logger.critical(
-                        f'[{worker_id}] DATABASE CORRUPTION detected: {db_err}. '
-                        f'Email queue disabled until admin runs scripts/db_recover.py. '
-                        f'Ovaj log neće se ponavljati dok se aplikacija ne restartuje.'
-                    )
-                    process_email_queue._reported_corruption = True
-            else:
-                logger.error(f'[{worker_id}] recovery pass failed: {db_err}')
-            return stats
+            stats['recovered'] = _recover_stuck_sending(worker_id) or 0
         except Exception as e:
             logger.error(f'[{worker_id}] recovery pass failed: {e}')
-            return stats
+            # Nema potrebe za prekidom — nastavi sa claim-ovanjem novih redova.
 
-        # 2) obradi do max_batch redova, jedan po jedan, sa commit-ima između
+        # 2) obradi do max_batch redova, jedan po jedan
         for _ in range(max_batch):
             try:
-                conn = sqlite3.connect(DB_FILE, timeout=15)
-                conn.row_factory = sqlite3.Row
-                now = datetime.now(timezone.utc)
-                now_iso = now.isoformat().replace('+00:00', 'Z')
-                row = _claim_next(conn, worker_id, now_iso)
+                now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                row = _claim_next(worker_id, now_iso)
                 if row is None:
-                    conn.close()
                     break   # nema više pending redova
 
                 stats['processed'] += 1
-                attempts = row['attempts']
+                attempts = int(row.get('attempts') or 0)
 
                 # Cap check
                 if attempts >= _MAX_ATTEMPTS:
-                    conn.execute(
-                        "UPDATE email_queue SET status='dead', worker_id=NULL, "
-                        "sending_started_at=NULL WHERE id=?",
-                        (row['id'],)
-                    )
-                    conn.commit()
-                    conn.close()
+                    try:
+                        _dl_update(
+                            'email_queue',
+                            {'id': ('eq', row['id'])},
+                            {'status': 'dead',
+                             'worker_id': None,
+                             'sending_started_at': None},
+                        )
+                    except Exception as db_e:
+                        logger.warning(f'[{worker_id}] dead-status commit failed for {row["id"]}: {db_e}')
                     stats['dead'] += 1
                     logger.error(f'[{worker_id}] mail {row["id"]} DEAD (>={_MAX_ATTEMPTS} attempts)')
                     continue
-
-                # Zatvaramo konekciju za vreme mrežnog send-a — SMTP može trajati.
-                # Row je već upisan kao 'sending' pa se drugi worker neće mešati.
-                conn.close()
             except Exception as e:
                 logger.error(f'[{worker_id}] claim phase failed: {e}')
                 break
@@ -571,40 +579,47 @@ def process_email_queue(max_batch=10):
                 ok, err = False, f'exception: {send_e}'
 
             # 4) TERMINALNI STATUS — commit odmah, per-row, sa aggressive retry
-            # ako je baza kratko zaključana. Bez ovoga smo pre imali problem:
-            # send je uspeo, ali update na 'sent' je pao pod zaključanom bazom,
-            # pa je red vraćen na 'pending' i sledeći tick opet slao.
+            # ako REST backend vrati prolaznu grešku. Bez ovoga: send je uspeo,
+            # ali update na 'sent' je pao → red vraćen na 'pending' → sledeći
+            # tick ga šalje PONOVO (duplikat).
             terminal_ok = False
             for attempt_no in range(5):
                 try:
-                    conn = sqlite3.connect(DB_FILE, timeout=30)
                     if ok:
-                        conn.execute(
-                            "UPDATE email_queue SET status='sent', sent_at=?, "
-                            "worker_id=NULL, sending_started_at=NULL WHERE id=?",
-                            (datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'), row['id'])
+                        _dl_update(
+                            'email_queue',
+                            {'id': ('eq', row['id'])},
+                            {'status': 'sent',
+                             'sent_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                             'worker_id': None,
+                             'sending_started_at': None},
                         )
                     else:
                         # backoff: 2, 4, 8, 16, 32, 64, 64, 64 minuta
-                        wait = 2 ** min(attempts + 1, 6)
-                        next_r = (datetime.now(timezone.utc) + timedelta(minutes=wait))
-                        conn.execute(
-                            "UPDATE email_queue SET status='pending', attempts=?, "
-                            "last_error=?, next_retry_at=?, worker_id=NULL, "
-                            "sending_started_at=NULL WHERE id=?",
-                            (attempts + 1, str(err)[:1000],
-                             next_r.isoformat().replace('+00:00', 'Z'), row['id'])
+                        wait_min = 2 ** min(attempts + 1, 6)
+                        next_r = (datetime.now(timezone.utc) + timedelta(minutes=wait_min))
+                        _dl_update(
+                            'email_queue',
+                            {'id': ('eq', row['id'])},
+                            {'status': 'pending',
+                             'attempts': attempts + 1,
+                             'last_error': str(err)[:1000],
+                             'next_retry_at': next_r.isoformat().replace('+00:00', 'Z'),
+                             'worker_id': None,
+                             'sending_started_at': None},
                         )
-                    conn.commit()
-                    conn.close()
                     terminal_ok = True
                     break
-                except sqlite3.OperationalError as db_e:
-                    logger.warning(f'[{worker_id}] terminal commit attempt {attempt_no+1} '
-                                   f'for {row["id"]} failed ({db_e}) — retrying in 0.5s')
-                    import time as _t
-                    _t.sleep(0.5)
                 except Exception as db_e:
+                    msg = str(db_e).lower()
+                    # PGRST prolazne greške (rate-limit, 502/504 gateway) → retry
+                    if any(s in msg for s in ('rate', 'timeout', '502', '503', '504', 'temporarily')):
+                        logger.warning(f'[{worker_id}] terminal commit attempt {attempt_no+1} '
+                                       f'for {row["id"]} failed ({db_e}) — retrying in 0.5s')
+                        import time as _t
+                        _t.sleep(0.5)
+                        continue
+                    # Nije prolazna — nema šta da se uradi; loguj i izađi.
                     logger.error(f'[{worker_id}] terminal commit fatal for {row["id"]}: {db_e}')
                     break
 

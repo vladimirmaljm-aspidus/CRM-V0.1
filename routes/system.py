@@ -1,49 +1,42 @@
 """System/health endpointi za admin monitoring.
 
-Cilj: dati adminu instant pregled zdravlja instance (baze, disk, backup-i,
-housekeeping thread) bez SSH-a na server. Ništa što otkriva čita se bez admin role.
+V25 SUPABASE-ONLY — svi DB pozivi idu kroz `data_layer` facade ili
+`supabase_store` helper. Nema vise `sqlite3.connect(...)` poziva; sve
+postojke (otp delivery, chat webhooks, hcaptcha, api keys) zive u Supabase
+`settings` tabeli (encrypted preko utils.encrypt_data/decrypt_data).
+
+Cilj: dati adminu instant pregled zdravlja instance (Supabase konekcija,
+disk usage uploads foldera, firewall cache) bez SSH-a na server. Nista
+sto otkriva se ne cita bez admin role.
 """
+import json
+import logging
 import os
-import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, jsonify, session, request
 
-from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE, DATA_DIR, UPLOAD_FOLDER, PORTAL_UPLOAD_FOLDER
-from utils import login_required, log_audit, FirewallCache, encrypt_data
+from config import DATA_DIR, UPLOAD_FOLDER, PORTAL_UPLOAD_FOLDER
+from utils import login_required, log_audit, FirewallCache, encrypt_data, decrypt_data
+import supabase_store as store
+import data_layer as _dl
+
+logger = logging.getLogger(__name__)
 
 system_bp = Blueprint('system', __name__, url_prefix='/api/system')
+
+# Supabase Studio backup URL ( projekat gceaznutofvqbuyypjlh / eu-west-1 ).
+# Backup-i sada radi Supabase automatski (PITR + daily snapshot).
+SUPABASE_BACKUP_URL = 'https://app.supabase.com/project/gceaznutofvqbuyypjlh/database/backups'
 
 
 def _is_admin():
     return session.get('role') == 'admin'
 
 
-def _db_stats(path):
-    if not os.path.exists(path):
-        return {'exists': False}
-    try:
-        st = os.stat(path)
-        row_counts = {}
-        with sqlite3.connect(path, timeout=10.0) as conn:
-            c = conn.cursor()
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-            tables = [r[0] for r in c.fetchall()]
-            for t in tables:
-                try:
-                    row_counts[t] = c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                except Exception:
-                    row_counts[t] = None
-        return {
-            'exists': True,
-            'size_bytes': st.st_size,
-            'size_mb': round(st.st_size / 1024 / 1024, 2),
-            'modified_at': datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat().replace('+00:00', 'Z'),
-            'tables': row_counts,
-        }
-    except Exception as e:
-        return {'exists': True, 'error': str(e)}
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
 def _dir_size(path):
@@ -62,34 +55,61 @@ def _dir_size(path):
     return total
 
 
+def _read_encrypted_setting(key, default=None):
+    """Vraca decrypted dict/string iz settings tabele, ili default."""
+    try:
+        v = store.get_setting(key)
+        if not v:
+            return default
+        d = decrypt_data(v)
+        return d if d is not None else default
+    except Exception as _e:
+        logger.info(f'_read_encrypted_setting({key}) failed: {_e}')
+        return default
+
+
+def _write_encrypted_setting(key, value):
+    """Enkriptuje i upisuje vrednost u settings tabelu."""
+    encrypted = encrypt_data(value)
+    store.set_setting(key, encrypted)
+
+
 @system_bp.route('/health', methods=['GET'])
 @login_required
 def health():
-    """Admin-only. Vraća JSON o stanju sistema — koristi se za dashboard indikator
-    i za brzu dijagnostiku problema u produkciji."""
+    """Admin-only. V25 SUPABASE-ONLY: prikazuje status Supabase konekcije,
+    broj zapisa u kljucnim tabelama, lokalni disk usage uploads foldera, i
+    firewall cache snapshot. Nema vise SQLite DB stats / pragmas."""
     if not _is_admin():
         return jsonify({"error": "ACCESS_DENIED"}), 403
 
-    backups_dir = os.path.join(DATA_DIR, 'backups')
-    backups = []
-    if os.path.isdir(backups_dir):
-        try:
-            for name in sorted(os.listdir(backups_dir), reverse=True)[:20]:
-                if not name.endswith('.fernet'):
-                    continue
-                p = os.path.join(backups_dir, name)
-                try:
-                    st = os.stat(p)
-                    backups.append({
-                        'name': name,
-                        'size_kb': round(st.st_size / 1024, 1),
-                        'created_at': datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat().replace('+00:00', 'Z'),
-                    })
-                except Exception:
-                    pass
-        except Exception:
-            pass
+    # ---- 1) Supabase backend health probe ---------------------------------
+    try:
+        supabase_health = _dl.health()
+    except Exception as _e:
+        supabase_health = {'backend': '?', 'ok': False, 'error': str(_e)}
 
+    # ---- 2) Row counts in key tables (best-effort) ------------------------
+    counts = {}
+    for table in ('partners', 'users', 'offers', 'invoices', 'proformas',
+                  'document_register', 'document_revisions', 'email_queue',
+                  'audit_logs', 'kyc_submissions', 'portal_products'):
+        try:
+            counts[table] = _dl.count(table)
+        except Exception as _e:
+            logger.info(f'health count({table}) failed: {_e}')
+            counts[table] = None
+
+    # Recent audit log entries (last 24h) — best-effort
+    recent_audit_24h = None
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace('+00:00', 'Z')
+        recent_audit_24h = _dl.count('audit_logs', filters={'timestamp': ('gte', cutoff)})
+    except Exception as _e:
+        logger.info(f'health recent_audit_24h failed: {_e}')
+
+    # ---- 3) Disk usage (uploads folders only — filesystem, ne SQLite) ------
+    backups_dir = os.path.join(DATA_DIR, 'backups')
     try:
         vfs = os.statvfs(DATA_DIR)
         disk = {
@@ -100,6 +120,15 @@ def health():
     except Exception:
         disk = {'error': 'statvfs unavailable'}
 
+    storage = {
+        'data_dir': DATA_DIR,
+        'uploads_size_mb': round(_dir_size(UPLOAD_FOLDER) / 1024 / 1024, 2),
+        'portal_uploads_size_mb': round(_dir_size(PORTAL_UPLOAD_FOLDER) / 1024 / 1024, 2),
+        'backups_total_mb': round(_dir_size(backups_dir) / 1024 / 1024, 2) if os.path.isdir(backups_dir) else 0,
+        'disk': disk,
+    }
+
+    # ---- 4) Firewall cache snapshot (in-memory, best-effort) -------------
     firewall_snapshot = {
         'blacklist_size': len(FirewallCache.blacklist),
         'whitelist_size': len(FirewallCache.whitelist),
@@ -107,135 +136,58 @@ def health():
         'settings': dict(FirewallCache.settings),
     }
 
-    # Bulletproof-DB pragme (WAL, busy_timeout, integrity_check) —
-    # pokazuje da li je hardening iz db.py stvarno primenjen.
-    db_pragmas = {}
-    try:
-        import db as _db
-        for _name, _p in (('crm', DB_FILE), ('portal', PORTAL_DB_FILE), ('audit', AUDIT_DB_FILE)):
-            db_pragmas[_name] = _db.health_check(_p)
-    except Exception as _e:
-        db_pragmas = {'error': str(_e)}
-
     payload = {
-        'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-        'databases': {
-            'crm': _db_stats(DB_FILE),
-            'portal': _db_stats(PORTAL_DB_FILE),
-            'audit': _db_stats(AUDIT_DB_FILE),
-        },
-        'db_pragmas': db_pragmas,
-        'storage': {
-            'data_dir': DATA_DIR,
-            'uploads_size_mb': round(_dir_size(UPLOAD_FOLDER) / 1024 / 1024, 2),
-            'portal_uploads_size_mb': round(_dir_size(PORTAL_UPLOAD_FOLDER) / 1024 / 1024, 2),
-            'backups_total_mb': round(_dir_size(backups_dir) / 1024 / 1024, 2) if os.path.isdir(backups_dir) else 0,
-            'disk': disk,
-        },
-        'backups': {
-            'directory': backups_dir,
-            'count_recent': len(backups),
-            'latest': backups[0] if backups else None,
-            'recent': backups,
-        },
+        'timestamp': _now_iso(),
+        'supabase': supabase_health,
+        'counts': counts,
+        'recent_audit_24h': recent_audit_24h,
+        'storage': storage,
         'firewall': firewall_snapshot,
+        'note': ('Backups managed by Supabase Studio (PITR + daily). '
+                 f'Visit {SUPABASE_BACKUP_URL} for restore operations.'),
     }
     return jsonify(payload)
 
 
+# ==========================================================
+#  BACKUP — Supabase-managed (PITR + daily snapshot)
+# ==========================================================
+# Supabase ima sopstveni backup sistem. SQLite `.fernet` snapshoti i
+# kompletni `tar.gz` arhivi su zastareli — sve je sada u Supabase Studio-u
+# → Database → Backups. Ovi endpoint-i ostaju radi backward-compat sa
+# frontendom (Operations Center UI), ali vracaju info poruku.
+
 @system_bp.route('/backup/now', methods=['POST'])
 @login_required
 def backup_now():
-    """Ručno pokreni backup ciklus (osim automatskog dnevnog).
-    Radi u pozadinskom threadu — endpoint se odmah vraća."""
+    """V25: backup radi Supabase automatski. Vraca info poruku."""
     if not _is_admin():
         return jsonify({"error": "ACCESS_DENIED"}), 403
-    import threading
-    from utils import _backup_loop
-    # Ne pokrećemo ceo loop — samo jedan pass. Kopiramo logiku:
-    from cryptography.fernet import Fernet
-    from utils import cipher_suite
+    log_audit('INFO', 'system',
+              f'Admin requested manual backup (now managed by Supabase) by {session.get("username","?")}',
+              is_suspicious=False)
+    return jsonify({
+        "status": "managed_by_supabase",
+        "message": "Backups are now managed by Supabase. Use Supabase Studio → Database → Backups for restore.",
+        "url": SUPABASE_BACKUP_URL,
+    })
 
-    def _one_shot():
-        try:
-            backups_dir = os.path.join(DATA_DIR, 'backups')
-            os.makedirs(backups_dir, exist_ok=True)
-            ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-            for db_path in (DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE):
-                if not os.path.exists(db_path):
-                    continue
-                tmp = os.path.join(backups_dir, f'.tmp_{os.path.basename(db_path)}')
-                src = sqlite3.connect(db_path, timeout=30.0)
-                dst = sqlite3.connect(tmp, timeout=30.0)
-                with dst:
-                    src.backup(dst)
-                dst.close(); src.close()
-                with open(tmp, 'rb') as f: raw = f.read()
-                out = os.path.join(backups_dir, f'{os.path.basename(db_path)}.{ts}.MANUAL.fernet')
-                with open(out, 'wb') as f: f.write(cipher_suite.encrypt(raw))
-                os.remove(tmp)
-                try: os.chmod(out, 0o600)
-                except Exception: pass
-        except Exception:
-            pass
-
-    threading.Thread(target=_one_shot, daemon=True).start()
-    log_audit('CREATE', 'system', 'Admin-triggered manual backup started', is_suspicious=False)
-    return jsonify({"status": "success", "message": "Backup started in background."})
-
-
-# ==========================================================
-#  FULL BACKUP — sve baze + uploads + ključevi u jedan tar.gz
-# ==========================================================
-# Za razliku od /backup/now koji pravi šifrovane pojedinačne .fernet snapshote,
-# ovaj endpoint pravi KOMPLETAN prenosivi arhiv (tar.gz):
-#   • sve 3 baze (VACUUM-ovane, integrity-checked)
-#   • uploads/ i portal_uploads/
-#   • vault.key i secret.key (bez njih se šifrovane vrednosti ne mogu dešifrovati)
-#   • meta.json (row count po tabeli, SHA256, verzija)
-#   • RESTORE.md (uputstvo za oporavak — u samom arhivu)
-# Streamuje se direktno klijentu — ništa se ne piše na disk servera.
 
 @system_bp.route('/backup/full', methods=['GET'])
 @login_required
 def backup_full_download():
-    """Admin-only. Streamuje kompletan .tar.gz backup — baze + fajlovi + ključevi."""
+    """V25: backup radi Supabase. Endpoint vise ne stream-uje .tar.gz —
+    vraca info poruku sa linkom na Supabase Studio."""
     if not _is_admin():
         return jsonify({"error": "ACCESS_DENIED"}), 403
-    import io as _io
-    import sys as _sys
-    from flask import Response
-    # Ubaci scripts/ u sys.path i pozovi build_backup u streaming režimu.
-    _scripts = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts')
-    if _scripts not in _sys.path:
-        _sys.path.insert(0, _scripts)
-    try:
-        from db_export_full import build_backup
-    except Exception as e:
-        return jsonify({"error": "BACKUP_MODULE_MISSING", "detail": str(e)}), 500
-
-    buf = _io.BytesIO()
-    try:
-        build_backup(out_path=None, out_stream=buf, quiet=True)
-    except Exception as e:
-        log_audit('CREATE', 'system', f'Full backup failed: {e}', is_suspicious=False)
-        return jsonify({"error": "BACKUP_FAILED", "detail": str(e)}), 500
-
-    payload = buf.getvalue()
-    ts = datetime.now(timezone.utc).strftime('%Y-%m-%d_%H-%M-%S')
-    filename = f'ASPIDUS_FULL_BACKUP_{ts}.tar.gz'
-    log_audit('CREATE', 'system',
-              f'Admin downloaded full backup ({len(payload)/1024/1024:.2f} MB)',
+    log_audit('INFO', 'system',
+              f'Admin requested full backup download (now managed by Supabase) by {session.get("username","?")}',
               is_suspicious=False)
-    return Response(
-        payload,
-        mimetype='application/gzip',
-        headers={
-            'Content-Disposition': f'attachment; filename="{filename}"',
-            'Content-Length': str(len(payload)),
-            'X-Backup-Format-Version': '1',
-        },
-    )
+    return jsonify({
+        "status": "managed_by_supabase",
+        "message": "Full backup download is deprecated — Supabase manages backups automatically.",
+        "url": SUPABASE_BACKUP_URL,
+    }), 200
 
 
 # ==========================================================
@@ -260,8 +212,6 @@ def set_otp_delivery():
     'change_api_key: true' i novi 'api_key' — u suprotnom čuvamo postojeći ključ."""
     if not _is_admin():
         return jsonify({"error": "UNAUTHORIZED"}), 403
-    import sqlite3, json
-    from utils import decrypt_data
     from mail_providers import clear_config_cache
 
     payload = request.get_json(silent=True) or {}
@@ -270,15 +220,9 @@ def set_otp_delivery():
         return jsonify({"error": "INVALID_PROVIDER"}), 400
 
     # Učitaj postojeći config da sačuvamo API ključ ako korisnik ne menja
-    existing = {}
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='otpMailProvider'").fetchone()
-            if row and row[0]:
-                try: existing = decrypt_data(row[0]) or {}
-                except Exception: existing = {}
-    except Exception:
-        pass
+    existing = _read_encrypted_setting('otpMailProvider', {}) or {}
+    if not isinstance(existing, dict):
+        existing = {}
 
     new_cfg = {
         'provider': provider,
@@ -306,10 +250,7 @@ def set_otp_delivery():
                         "message": "SendGrid API key must start with 'SG.'"}), 400
 
     try:
-        with sqlite3.connect(DB_FILE, timeout=30) as conn:
-            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('otpMailProvider', ?)",
-                         (encrypt_data(new_cfg),))
-            conn.commit()
+        _write_encrypted_setting('otpMailProvider', new_cfg)
     except Exception as e:
         return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
 
@@ -326,22 +267,15 @@ def get_chat_webhooks():
     """Redigovan pregled — API tokeni se ne otkrivaju."""
     if not _is_admin():
         return jsonify({"error": "UNAUTHORIZED"}), 403
-    import sqlite3
-    from utils import decrypt_data
-    cfg = {}
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='chatWebhooks'").fetchone()
-            if row and row[0]:
-                try: cfg = decrypt_data(row[0]) or {}
-                except Exception: cfg = {}
-    except Exception:
-        pass
+    cfg = _read_encrypted_setting('chatWebhooks', {}) or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+
     def _mask(s):
         s = str(s or '')
         return (s[:8] + '…' + s[-4:]) if len(s) > 15 else ('•' * len(s))
     return jsonify({
-        'slack': cfg.get('slack', ''),   # URL nije tajna, samo znak da je konfigurisano
+        'slack': cfg.get('slack', ''),
         'teams': cfg.get('teams', ''),
         'telegram_bot_token': _mask(cfg.get('telegram_bot_token', '')) if cfg.get('telegram_bot_token') else '',
         'telegram_chat_id': cfg.get('telegram_chat_id', ''),
@@ -349,8 +283,8 @@ def get_chat_webhooks():
         'whatsapp_phone_id': cfg.get('whatsapp_phone_id', ''),
         'whatsapp_token': _mask(cfg.get('whatsapp_token', '')) if cfg.get('whatsapp_token') else '',
         'whatsapp_to': cfg.get('whatsapp_to', ''),
-        'events': cfg.get('events', ['offer_accepted','offer_declined','kyc_submitted',
-                                     'sanctions_flag','deal_created','document_signed']),
+        'events': cfg.get('events', ['offer_accepted', 'offer_declined', 'kyc_submitted',
+                                     'sanctions_flag', 'deal_created', 'document_signed']),
         'has_slack': bool(cfg.get('slack')),
         'has_teams': bool(cfg.get('teams')),
         'has_telegram': bool(cfg.get('telegram_bot_token') and cfg.get('telegram_chat_id')),
@@ -365,20 +299,12 @@ def set_chat_webhooks():
     """Snima chat notifikacijsku konfiguraciju. Sve tajne se enkriptuju."""
     if not _is_admin():
         return jsonify({"error": "UNAUTHORIZED"}), 403
-    import sqlite3
-    from utils import decrypt_data
     from webhooks import clear_cache
 
     payload = request.get_json(silent=True) or {}
-    existing = {}
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='chatWebhooks'").fetchone()
-            if row and row[0]:
-                try: existing = decrypt_data(row[0]) or {}
-                except Exception: existing = {}
-    except Exception:
-        pass
+    existing = _read_encrypted_setting('chatWebhooks', {}) or {}
+    if not isinstance(existing, dict):
+        existing = {}
 
     # Za tajne (bot_token, whatsapp_token): sačuvaj postojeći ako je nova
     # vrednost prazna ili maskirana (sadrži '…' ili samo '•')
@@ -392,17 +318,14 @@ def set_chat_webhooks():
         'teams': str(payload.get('teams', '')).strip(),
         'telegram_bot_token': _preserve(payload.get('telegram_bot_token'), existing.get('telegram_bot_token')),
         'telegram_chat_id':   str(payload.get('telegram_chat_id', '')).strip(),
-        'ntfy_url':           str(payload.get('ntfy_url', '')).strip(),
+        'ntfy_url':            str(payload.get('ntfy_url', '')).strip(),
         'whatsapp_phone_id':  str(payload.get('whatsapp_phone_id', '')).strip(),
         'whatsapp_token':     _preserve(payload.get('whatsapp_token'), existing.get('whatsapp_token')),
-        'whatsapp_to':        str(payload.get('whatsapp_to', '')).strip(),
-        'events':             list(payload.get('events') or []),
+        'whatsapp_to':         str(payload.get('whatsapp_to', '')).strip(),
+        'events':              list(payload.get('events') or []),
     }
     try:
-        with sqlite3.connect(DB_FILE, timeout=30) as conn:
-            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('chatWebhooks', ?)",
-                         (encrypt_data(new_cfg),))
-            conn.commit()
+        _write_encrypted_setting('chatWebhooks', new_cfg)
     except Exception as e:
         return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
 
@@ -423,7 +346,7 @@ def test_chat_webhooks():
     notify('offer_accepted', {  # koristimo poznat event tip za test
         'Test': 'This is a test notification from Aspidus CRM',
         'Triggered by': session.get('username', '?'),
-        'When': datetime.now(timezone.utc).isoformat().replace('+00:00','Z')[:19],
+        'When': _now_iso()[:19],
     })
     return jsonify({"status": "success", "message": "Test dispatched to all configured channels."})
 
@@ -434,17 +357,9 @@ def get_hcaptcha_config():
     """Redigovan pregled hCaptcha config-a."""
     if not _is_admin():
         return jsonify({"error": "UNAUTHORIZED"}), 403
-    import sqlite3
-    from utils import decrypt_data
-    cfg = {}
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='hcaptchaConfig'").fetchone()
-            if row and row[0]:
-                try: cfg = decrypt_data(row[0]) or {}
-                except Exception: cfg = {}
-    except Exception:
-        pass
+    cfg = _read_encrypted_setting('hcaptchaConfig', {}) or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
     secret = str(cfg.get('secret', ''))
     return jsonify({
         'sitekey': cfg.get('sitekey', ''),  # sitekey je public, otkriva se
@@ -458,20 +373,12 @@ def get_hcaptcha_config():
 def set_hcaptcha_config():
     if not _is_admin():
         return jsonify({"error": "UNAUTHORIZED"}), 403
-    import sqlite3
-    from utils import decrypt_data
     from security_ext import clear_hcaptcha_cache
 
     payload = request.get_json(silent=True) or {}
-    existing = {}
-    try:
-        with sqlite3.connect(DB_FILE, timeout=10) as conn:
-            row = conn.execute("SELECT value FROM settings WHERE key='hcaptchaConfig'").fetchone()
-            if row and row[0]:
-                try: existing = decrypt_data(row[0]) or {}
-                except Exception: existing = {}
-    except Exception:
-        pass
+    existing = _read_encrypted_setting('hcaptchaConfig', {}) or {}
+    if not isinstance(existing, dict):
+        existing = {}
 
     new_secret = str(payload.get('secret', '')).strip()
     if not new_secret or '…' in new_secret:
@@ -482,10 +389,7 @@ def set_hcaptcha_config():
         'secret': new_secret,
     }
     try:
-        with sqlite3.connect(DB_FILE, timeout=30) as conn:
-            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('hcaptchaConfig', ?)",
-                         (encrypt_data(cfg),))
-            conn.commit()
+        _write_encrypted_setting('hcaptchaConfig', cfg)
     except Exception as e:
         return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
 
@@ -522,23 +426,23 @@ def get_api_keys():
     """Redigovan pregled svih integracijskih ključeva — vraća samo maske."""
     if not _is_admin():
         return jsonify({"error": "UNAUTHORIZED"}), 403
-    import sqlite3
-    from utils import decrypt_data
     out = {}
     try:
-        with sqlite3.connect(DB_FILE, timeout=10) as conn:
-            for key, meta in _API_KEYS.items():
-                row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-                val = ''
-                if row and row[0]:
-                    try: val = str(decrypt_data(row[0]) or '')
-                    except Exception: val = ''
-                out[key] = {
-                    'label': meta['label'],
-                    'group': meta['group'],
-                    'has_value': bool(val),
-                    'masked': _mask_key(val),
-                }
+        for key, meta in _API_KEYS.items():
+            val = ''
+            raw = store.get_setting(key)
+            if raw:
+                try:
+                    decrypted = decrypt_data(raw)
+                    val = str(decrypted) if decrypted is not None else ''
+                except Exception:
+                    val = ''
+            out[key] = {
+                'label': meta['label'],
+                'group': meta['group'],
+                'has_value': bool(val),
+                'masked': _mask_key(val),
+            }
     except Exception as e:
         return jsonify({"error": "READ_FAILED", "message": str(e)}), 500
     return jsonify(out)
@@ -551,24 +455,17 @@ def set_api_keys():
     znači 'ne menjaj postojeći'. Sve se enkriptuje pre snimanja."""
     if not _is_admin():
         return jsonify({"error": "UNAUTHORIZED"}), 403
-    import sqlite3
-    from utils import decrypt_data
     payload = request.get_json(silent=True) or {}
     updated = []
     try:
-        with sqlite3.connect(DB_FILE, timeout=30) as conn:
-            for key in _API_KEYS.keys():
-                if key not in payload:
-                    continue
-                incoming = str(payload.get(key, '') or '').strip()
-                if not incoming or '…' in incoming or set(incoming) <= {'•'}:
-                    continue
-                conn.execute(
-                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                    (key, encrypt_data(incoming))
-                )
-                updated.append(key)
-            conn.commit()
+        for key in _API_KEYS.keys():
+            if key not in payload:
+                continue
+            incoming = str(payload.get(key, '') or '').strip()
+            if not incoming or '…' in incoming or set(incoming) <= {'•'}:
+                continue
+            _write_encrypted_setting(key, incoming)
+            updated.append(key)
     except Exception as e:
         return jsonify({"error": "SAVE_FAILED", "message": str(e)}), 500
 

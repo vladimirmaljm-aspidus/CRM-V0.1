@@ -9,15 +9,16 @@ import io
 import json
 import os
 import re
-import sqlite3
 import zipfile
 from datetime import datetime, timezone
 
 from flask import Blueprint, current_app, jsonify, request, send_file, session
 from werkzeug.utils import secure_filename
 
-from config import DB_FILE, PORTAL_DB_FILE, UPLOAD_FOLDER, PORTAL_UPLOAD_FOLDER
+from config import UPLOAD_FOLDER, PORTAL_UPLOAD_FOLDER
 from utils import login_required, log_audit, decrypt_data
+import supabase_store as store
+from data_layer import select as _dl_select, select_one as _dl_select_one
 
 documents_bp = Blueprint('documents', __name__, url_prefix='/api/admin/documents')
 
@@ -49,23 +50,51 @@ def _sanitize_folder_name(name):
     return safe[:120] or 'Unknown'
 
 
+def _decode_partner_data(raw):
+    """Defanzivno dekoduje partner.data: dict (Supabase JSONB) se vraća direktno,
+    string (stari Fernet ciphertext) se dekriptuje preko decrypt_data()."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            decoded = decrypt_data(raw)
+            if isinstance(decoded, dict):
+                return decoded
+        except Exception:
+            pass
+        try:
+            return json.loads(raw) if raw.startswith('{') else {}
+        except Exception:
+            return {}
+    return {}
+
+
 def _all_partners_map():
-    """Vraća {partner_id: {companyName, contact_email}}."""
+    """Vraća {partner_id: {companyName, contact_email}} — Supabase read."""
     out = {}
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            c = conn.cursor()
-            c.execute("SELECT id, data FROM partners")
-            for row in c.fetchall():
-                pd = decrypt_data(row[1])
-                if isinstance(pd, dict):
-                    out[row[0]] = {
-                        'companyName': pd.get('companyName') or 'Unknown',
-                        'email': (pd.get('contact') or {}).get('email') or pd.get('email') or ''
-                    }
+        rows = store.list_entities('partners') or []
+        for p in rows:
+            if not isinstance(p, dict): continue
+            pid = p.get('id')
+            if not pid: continue
+            # supabase_store rehidrira top-level kolone + JSONB data → flat dict
+            out[pid] = {
+                'companyName': p.get('companyName') or p.get('company_name') or 'Unknown',
+                'email': (p.get('contact') or {}).get('email') or p.get('email') or '',
+            }
     except Exception:
         pass
     return out
+
+
+def _all_partners_list():
+    """Vraća listu rehidriranih partner dict-ova sa svim podacima (kyc, documents).
+    Koristi se za pretragu fajlova po sadržaju partner polja."""
+    try:
+        return store.list_entities('partners') or []
+    except Exception:
+        return []
 
 
 def _find_partner_by_file_url(file_url, partners_map, kyc_url_index):
@@ -81,61 +110,55 @@ def _find_partner_by_file_url(file_url, partners_map, kyc_url_index):
         if info:
             return pid, info
     # Prođi kroz partnere i vidi šta se nalazi u njihovom .kyc.files ili .documents
-    try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            c = conn.cursor()
-            c.execute("SELECT id, data FROM partners")
-            for row in c.fetchall():
-                pd = decrypt_data(row[1])
-                if not isinstance(pd, dict):
-                    continue
-                kyc = pd.get('kyc') or {}
-                # Files direktno na kyc.files
-                for key, val in (kyc.get('files') or {}).items():
-                    if isinstance(val, list) and file_url in val:
-                        return row[0], partners_map.get(row[0], {'companyName': 'Unknown', 'email': ''})
-                    if isinstance(val, str) and val == file_url:
-                        return row[0], partners_map.get(row[0], {'companyName': 'Unknown', 'email': ''})
-                # Files na directors/ubos (po osobi)
-                for person in (kyc.get('directors') or []) + (kyc.get('ubos') or []):
-                    if isinstance(person, dict):
-                        for f in (person.get('files') or []):
-                            if f == file_url:
-                                return row[0], partners_map.get(row[0], {'companyName': 'Unknown', 'email': ''})
-                # documents niz
-                for d in (pd.get('documents') or []):
-                    if isinstance(d, dict) and d.get('fileUrl') == file_url:
-                        return row[0], partners_map.get(row[0], {'companyName': 'Unknown', 'email': ''})
-                    if isinstance(d, str) and d == file_url:
-                        return row[0], partners_map.get(row[0], {'companyName': 'Unknown', 'email': ''})
-    except Exception:
-        pass
+    for p in _all_partners_list():
+        if not isinstance(p, dict): continue
+        pid = p.get('id')
+        if not pid: continue
+        kyc = p.get('kyc') or {}
+        # Files direktno na kyc.files
+        for key, val in (kyc.get('files') or {}).items():
+            if isinstance(val, list) and file_url in val:
+                return pid, partners_map.get(pid, {'companyName': 'Unknown', 'email': ''})
+            if isinstance(val, str) and val == file_url:
+                return pid, partners_map.get(pid, {'companyName': 'Unknown', 'email': ''})
+        # Files na directors/ubos (po osobi)
+        for person in (kyc.get('directors') or []) + (kyc.get('ubos') or []):
+            if isinstance(person, dict):
+                for f in (person.get('files') or []):
+                    if f == file_url:
+                        return pid, partners_map.get(pid, {'companyName': 'Unknown', 'email': ''})
+        # documents niz
+        for d in (p.get('documents') or []):
+            if isinstance(d, dict) and d.get('fileUrl') == file_url:
+                return pid, partners_map.get(pid, {'companyName': 'Unknown', 'email': ''})
+            if isinstance(d, str) and d == file_url:
+                return pid, partners_map.get(pid, {'companyName': 'Unknown', 'email': ''})
     return None
 
 
 def _build_kyc_url_index():
-    """Pre-scan kyc_submissions i vrati mapu url→partner_id kako bi lookup bio brz."""
+    """Pre-scan kyc_submissions i vrati mapu url→partner_id kako bi lookup bio brz.
+    Supabase read — `data` kolona je JSONB i sadrži dekodovani KYC payload."""
     index = {}
     try:
-        with sqlite3.connect(PORTAL_DB_FILE, timeout=15.0) as conn:
-            c = conn.cursor()
-            c.execute("SELECT partner_id, data FROM kyc_submissions")
-            for pid, data in c.fetchall():
-                d = decrypt_data(data)
-                if not isinstance(d, dict):
-                    continue
-                for key, val in (d.get('files') or {}).items():
-                    if isinstance(val, list):
-                        for u in val:
-                            if isinstance(u, str):
-                                index[u] = pid
-                    elif isinstance(val, str):
-                        index[val] = pid
-                for person in (d.get('directors') or []) + (d.get('ubos') or []):
-                    if isinstance(person, dict):
-                        for f in (person.get('files') or []):
-                            if isinstance(f, str):
-                                index[f] = pid
+        rows = _dl_select('kyc_submissions') or []
+        for row in rows:
+            if not isinstance(row, dict): continue
+            pid = row.get('partner_id')
+            if not pid: continue
+            d = _decode_partner_data(row.get('data'))
+            for key, val in (d.get('files') or {}).items():
+                if isinstance(val, list):
+                    for u in val:
+                        if isinstance(u, str):
+                            index[u] = pid
+                elif isinstance(val, str):
+                    index[val] = pid
+            for person in (d.get('directors') or []) + (d.get('ubos') or []):
+                if isinstance(person, dict):
+                    for f in (person.get('files') or []):
+                        if isinstance(f, str):
+                            index[f] = pid
     except Exception:
         pass
     return index
@@ -387,24 +410,18 @@ def document_text_preview():
     file_url = (request.args.get('url') or '').strip()
     if not file_url:
         return jsonify({'error': 'url_required'}), 400
-    import sqlite3
-    from config import DB_FILE
     try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000')
-            row = conn.execute(
-                "SELECT text_preview, char_count, extracted_at, partner_id "
-                "FROM file_text WHERE file_url=?",
-                (file_url,)
-            ).fetchone()
-    except sqlite3.OperationalError as e:
+        row = _dl_select_one('file_text', {'file_url': file_url})
+    except Exception as e:
         return jsonify({'error': str(e)[:200]}), 500
     if not row:
         return jsonify({'preview': None, 'available': False,
                         'hint': 'OCR nije jos izvrsen ili tip fajla nije podrzan.'})
     return jsonify({
-        'preview': row[0], 'char_count': row[1] or 0,
-        'extracted_at': row[2], 'partner_id': row[3],
+        'preview': row.get('text_preview'),
+        'char_count': row.get('char_count') or 0,
+        'extracted_at': row.get('extracted_at'),
+        'partner_id': row.get('partner_id'),
         'available': True
     })
 
@@ -419,23 +436,24 @@ def document_search():
     if len(q) < 3:
         return jsonify({'error': 'query_too_short',
                         'hint': 'Minimalna duzina: 3 karaktera.'}), 400
-    import sqlite3
-    from config import DB_FILE
     try:
-        with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-            conn.execute('PRAGMA busy_timeout=10000')
-            rows = conn.execute(
-                "SELECT file_url, partner_id, filename, text_preview, extracted_at "
-                "FROM file_text WHERE full_text LIKE ? COLLATE NOCASE "
-                "ORDER BY extracted_at DESC LIMIT 50",
-                (f'%{q}%',)
-            ).fetchall()
-    except sqlite3.OperationalError as e:
+        # PostgREST `ilike` radi case-insensitive LIKE. Supabase file_text.full_text
+        # je TEXT kolona; ilike filter radi korektno.
+        rows = _dl_select(
+            'file_text',
+            filters={'full_text': ('ilike', f'%{q}%')},
+            order='-extracted_at',
+            limit=50,
+        ) or []
+    except Exception as e:
         return jsonify({'error': str(e)[:200]}), 500
     return jsonify({
         'query': q, 'total': len(rows),
         'results': [{
-            'file_url': r[0], 'partner_id': r[1], 'filename': r[2],
-            'preview': r[3], 'extracted_at': r[4]
+            'file_url': r.get('file_url'),
+            'partner_id': r.get('partner_id'),
+            'filename': r.get('filename'),
+            'preview': r.get('text_preview'),
+            'extracted_at': r.get('extracted_at'),
         } for r in rows]
     })

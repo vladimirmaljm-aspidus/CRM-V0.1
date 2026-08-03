@@ -13,13 +13,17 @@ drugi detalj ponude, prethodna verzija se automatski snima u tabelu
 
 Snapshot se snima SAMO ako se stvarno nešto promenilo (poređenje po JSON-u
 ključnih polja) — trivijalna re-snimanja iste ponude ne pune tabelu.
+
+V25 SUPABASE-ONLY: sve operacije idu kroz `data_layer` facade. `conn`
+parametar je zadržan u signature-u radi backward-compat sa starim call
+sajtovima, ali se ignoriše (isto kao `utils._ensure_queue_schema(_conn=None)`
+u Fazi 3-a).
 """
 from __future__ import annotations
 import json
 import logging
-import sqlite3
-import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -59,15 +63,20 @@ def _diff_fields(old: dict, new: dict) -> list[str]:
     return changed
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
 def snapshot_if_changed(
-    conn: sqlite3.Connection,
-    offer_id: str,
-    old_offer: dict,
-    new_offer: dict,
+    _conn=None,
+    offer_id: str = '',
+    old_offer: dict | None = None,
+    new_offer: dict | None = None,
     changed_by: str = 'SYSTEM',
     changed_by_role: str = 'system',
     origin: str = 'crm',
     change_reason: str = '',
+    **legacy_kwargs,
 ) -> str | None:
     """
     Snima snapshot STARE verzije (old_offer) u offer_versions AKO ima izmena.
@@ -75,8 +84,13 @@ def snapshot_if_changed(
 
     Vraća ID snapshot-a ili None ako nema izmena.
 
+    V25: `conn` parametar se ignoriše (Supabase-only). Sve ide kroz
+    `data_layer` facade. Prvi argument je zadržan kao `_conn` da bi stari
+    pozivi `snapshot_if_changed(conn, offer_id, old, new, ...)` nastavili
+    da rade bez izmena call sajta.
+
     Parametri:
-      conn         — postojeći sqlite konekcija (transakcija je pozivačeva)
+      _conn        — ignorisan (legacy SQLite connection; backward-compat)
       offer_id     — ID ponude koja se menja
       old_offer    — trenutno stanje (pre izmene)
       new_offer    — novo stanje (posle izmene)
@@ -85,39 +99,40 @@ def snapshot_if_changed(
       origin       — 'crm' | 'portal' | 'auto'
       change_reason — opciono, ručno uneto obrazloženje
     """
+    # Backward-compat: ako je prvi argumenat string (offer_id) — stari poziv
+    # je bio `snapshot_if_changed(conn, offer_id, old, new, ...)`. U tom
+    # slučaju je `_conn` zapravo offer_id, pa moramo da rotiramo argumente.
+    if isinstance(_conn, str) and not offer_id:
+        offer_id = _conn
+        _conn = None
+
     if not isinstance(old_offer, dict) or not isinstance(new_offer, dict):
+        return None
+    if not offer_id:
         return None
     changed = _diff_fields(old_offer, new_offer)
     if not changed:
         return None
     try:
-        c = conn.cursor()
-        # Sledeći version broj = max(version) + 1 za ovaj offer_id
-        row = c.execute(
-            "SELECT COALESCE(MAX(version), 0) FROM offer_versions WHERE offerId=?",
-            (offer_id,),
-        ).fetchone()
-        next_version = (row[0] if row else 0) + 1
-
+        from data_layer import select as _dl_select, insert as _dl_insert
+        existing = _dl_select('offer_versions',
+                              filters={'offer_id': offer_id},
+                              columns='version',
+                              order='-version', limit=1) or []
+        next_version = (int((existing[0] or {}).get('version', 0)) + 1) if existing else 1
         ver_id = str(uuid.uuid4())
-        c.execute(
-            """INSERT INTO offer_versions
-               (id, offerId, version, snapshot, changedFields, changeReason,
-                changedBy, changedByRole, changedAt, origin)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                ver_id,
-                offer_id,
-                next_version,
-                json.dumps(old_offer, ensure_ascii=False),
-                ','.join(changed),
-                (change_reason or '').strip()[:500],
-                changed_by,
-                changed_by_role,
-                time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                origin,
-            ),
-        )
+        _dl_insert('offer_versions', {
+            'id': ver_id,
+            'offer_id': offer_id,
+            'version': next_version,
+            'snapshot': old_offer or {},   # JSONB — prosledi dict direktno
+            'changed_fields': ','.join(changed)[:500],
+            'change_reason': (change_reason or '').strip()[:500],
+            'changed_by': changed_by,
+            'changed_by_role': changed_by_role,
+            'changed_at': _now_iso(),
+            'origin': origin or 'crm',
+        })
         return ver_id
     except Exception as e:
         # Verzioniranje ne sme da obori sam save — samo logujemo.
@@ -125,44 +140,66 @@ def snapshot_if_changed(
         return None
 
 
-def list_versions(conn: sqlite3.Connection, offer_id: str) -> list[dict]:
-    """Vraća listu verzija (bez snapshot-a — samo metapodaci za listu)."""
+def list_versions(_conn=None, offer_id: str = '', **legacy) -> list[dict]:
+    """Vraća listu verzija (bez snapshot-a — samo metapodaci za listu).
+
+    V25: `conn` parametar se ignoriše. Sve ide kroz `data_layer`.
+    """
+    if isinstance(_conn, str) and not offer_id:
+        offer_id = _conn
+    if not offer_id:
+        return []
     try:
-        c = conn.cursor()
-        rows = c.execute(
-            """SELECT id, version, changedFields, changeReason, changedBy,
-                      changedByRole, changedAt, origin
-               FROM offer_versions WHERE offerId=?
-               ORDER BY version DESC""",
-            (offer_id,),
-        ).fetchall()
-        return [
-            {
-                'id': r[0], 'version': r[1],
-                'changedFields': (r[2] or '').split(',') if r[2] else [],
-                'changeReason': r[3] or '',
-                'changedBy': r[4] or '', 'changedByRole': r[5] or '',
-                'changedAt': r[6] or '', 'origin': r[7] or 'crm',
-            } for r in rows
-        ]
+        from data_layer import select as _dl_select
+        rows = _dl_select('offer_versions',
+                          filters={'offer_id': offer_id},
+                          columns='id,version,changed_fields,change_reason,changed_by,changed_by_role,changed_at,origin',
+                          order='-version', limit=500) or []
+        out = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            cf = r.get('changed_fields') or r.get('changedFields') or ''
+            out.append({
+                'id': r.get('id'),
+                'version': r.get('version'),
+                'changedFields': cf.split(',') if cf else [],
+                'changeReason': r.get('change_reason') or r.get('changeReason') or '',
+                'changedBy': r.get('changed_by') or r.get('changedBy') or '',
+                'changedByRole': r.get('changed_by_role') or r.get('changedByRole') or '',
+                'changedAt': r.get('changed_at') or r.get('changedAt') or '',
+                'origin': r.get('origin') or 'crm',
+            })
+        return out
     except Exception as e:
         logger.warning(f"offer_versions.list_versions({offer_id}) failed: {e}")
         return []
 
 
-def get_snapshot(conn: sqlite3.Connection, version_id: str) -> dict | None:
-    """Vraća pun JSON snapshot za jednu verziju."""
+def get_snapshot(_conn=None, version_id: str = '', **legacy) -> dict | None:
+    """Vraća pun JSON snapshot za jednu verziju.
+
+    V25: `conn` parametar se ignoriše. Sve ide kroz `data_layer`.
+    """
+    if isinstance(_conn, str) and not version_id:
+        version_id = _conn
+    if not version_id:
+        return None
     try:
-        c = conn.cursor()
-        row = c.execute(
-            "SELECT snapshot, offerId, version, changedAt FROM offer_versions WHERE id=?",
-            (version_id,),
-        ).fetchone()
+        from data_layer import select_one as _dl_select_one
+        row = _dl_select_one('offer_versions', {'id': version_id})
         if not row:
             return None
-        snap = json.loads(row[0]) if row[0] else {}
+        snap = row.get('snapshot')
+        if isinstance(snap, str):
+            try: snap = json.loads(snap)
+            except Exception: snap = {}
+        if not isinstance(snap, dict):
+            snap = {}
         return {
-            'offerId': row[1], 'version': row[2], 'changedAt': row[3],
+            'offerId': row.get('offer_id') or row.get('offerId'),
+            'version': row.get('version'),
+            'changedAt': row.get('changed_at') or row.get('changedAt'),
             'snapshot': snap,
         }
     except Exception as e:

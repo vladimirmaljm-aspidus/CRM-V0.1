@@ -1,25 +1,26 @@
-import sqlite3
 from flask import Blueprint, request, jsonify, session
-from config import AUDIT_DB_FILE, DB_FILE
 from utils import log_audit, login_required, decrypt_data
+import supabase_store as store
 
 audit_bp = Blueprint('audit', __name__)
 
 def user_has_permission(perm_key):
     """Admin uvek; inače proverava eksplicitnu permisiju iz korisničkog naloga.
-    decrypt_data korektno čita i kriptovane i čiste (json) permisije."""
+    V24.0 SUPABASE-ONLY: čita user-a preko supabase_store.get_user_by_id
+    (rehidrira top-level kolone + JSONB data, uključujući `permissions`)."""
     if session.get('role') == 'admin':
         return True
     if 'user_id' not in session:
         return False
-    conn = sqlite3.connect(DB_FILE, timeout=30.0)
-    try:
-        c = conn.cursor()
-        c.execute('SELECT permissions FROM users WHERE id=?', (session['user_id'],))
-        row = c.fetchone()
-    finally:
-        conn.close()
-    perms = decrypt_data(row[0]) if row and row[0] else {}
+    user = store.get_user_by_id(session['user_id']) or {}
+    perms = user.get('permissions') or {}
+    if isinstance(perms, str):
+        # Legacy — permissions sačuvane kao JSON string
+        try:
+            import json as _json
+            perms = _json.loads(perms)
+        except Exception:
+            perms = {}
     return bool(isinstance(perms, dict) and perms.get(perm_key))
 
 @audit_bp.route('/api/audit/event', methods=['POST'])
@@ -36,16 +37,25 @@ def get_audit_logs():
     if not user_has_permission('audit_view'):
         log_audit('SECURITY', 'audit', 'Unauthorized attempt to access audit logs', is_suspicious=True)
         return jsonify({"error": "Unauthorized"}), 403
-    
-    conn = None
-    logs = []
+
+    # V24.0 SUPABASE-ONLY: čita audit_logs preko data_layer.select.
+    # Redosled je po timestamp DESC (Supabase audit_logs.timestamp je TIMESTAMPTZ).
     try:
-        conn = sqlite3.connect(AUDIT_DB_FILE, timeout=30.0)
-        conn.execute('PRAGMA busy_timeout=30000;')
-        c = conn.cursor()
-        c.execute('SELECT id, username, action, module, details, ip_address, user_agent, timestamp, is_suspicious, location FROM audit_logs ORDER BY timestamp DESC')
-        logs = [{"id": r[0], "username": r[1], "action": r[2], "module": r[3], "details": r[4], "ip": r[5], "user_agent": r[6], "timestamp": r[7], "is_suspicious": bool(r[8]), "location": r[9] if r[9] else 'N/A'} for r in c.fetchall()]
-    finally:
-        if conn: conn.close()
-        
+        from data_layer import select as _dl_select
+        rows = _dl_select('audit_logs', order='-timestamp', limit=1000) or []
+        logs = [{
+            "id": r.get('id') or r.get('sync_id'),
+            "username": r.get('username'),
+            "action": r.get('action'),
+            "module": r.get('module'),
+            "details": r.get('details'),
+            "ip": r.get('ip_address'),
+            "user_agent": r.get('user_agent'),
+            "timestamp": r.get('timestamp'),
+            "is_suspicious": bool(r.get('is_suspicious')),
+            "location": r.get('location') or 'N/A',
+        } for r in rows]
+    except Exception:
+        logs = []
+
     return jsonify(logs)

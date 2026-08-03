@@ -2,7 +2,6 @@ import datetime
 import time
 import uuid
 import os
-import sqlite3
 import json
 import secrets
 import logging
@@ -11,7 +10,7 @@ import urllib.request
 import ipaddress
 from functools import wraps
 from flask import request, session, jsonify, redirect, url_for
-from config import DB_FILE, AUDIT_DB_FILE, ALLOWED_EXTENSIONS, ENCRYPTION_KEY
+from config import ALLOWED_EXTENSIONS, ENCRYPTION_KEY
 from cryptography.fernet import Fernet, InvalidToken
 
 _util_logger = logging.getLogger(__name__)
@@ -331,10 +330,9 @@ def login_required(f):
                              '/api/users/change-password', '/api/auth/me', '/api/auth/logout',
                              '/api/csrf/token', '/static/')
             if not any(request.path.startswith(p) for p in allowed_paths):
-                with sqlite3.connect(DB_FILE, timeout=5.0) as _c:
-                    _r = _c.execute("SELECT must_change_password FROM users WHERE id=?",
-                                    (session['user_id'],)).fetchone()
-                if _r and _r[0]:
+                import supabase_store as _store
+                _u = _store.get_user_by_id(session['user_id']) or {}
+                if _u.get('must_change_password'):
                     if is_api:
                         return jsonify({"error": "MUST_CHANGE_PASSWORD",
                                         "redirect": "/profile/security#password"}), 403
@@ -364,9 +362,12 @@ def require_perm(perm_key):
             if not uid:
                 return jsonify({'error': 'UNAUTHORIZED'}), 401
             try:
-                with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-                    r = conn.execute("SELECT permissions FROM users WHERE id=?", (uid,)).fetchone()
-                perms = json.loads(r[0]) if r and r[0] else {}
+                import supabase_store as _store
+                _u = _store.get_user_by_id(uid) or {}
+                perms = _u.get('permissions') or {}
+                if isinstance(perms, str):
+                    try: perms = json.loads(perms)
+                    except Exception: perms = {}
             except Exception:
                 perms = {}
             if not perms.get(perm_key):
@@ -457,15 +458,19 @@ DEFAULT_FIREWALL_SETTINGS = {
 
 def load_firewall_settings():
     """Učitava firewall postavke iz DB (settings.firewall), spaja sa default-ima
-    i primenjuje na FirewallCache. Zove se na startup i posle svakog admin save."""
+    i primenjuje na FirewallCache. Zove se na startup i posle svakog admin save.
+
+    V24.1 SUPABASE-ONLY: čita iz `settings` tabele preko
+    `supabase_store.get_setting('firewall')`, pa dešifruje Fernet-om
+    (`decrypt_data`). Ako ključ ne postoji ili je payload nevalidan, vraća
+    default vrednosti (definisane iznad).
+    """
     merged = dict(DEFAULT_FIREWALL_SETTINGS)
     try:
-        with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-            c = conn.cursor()
-            c.execute("SELECT value FROM settings WHERE key='firewall'")
-            row = c.fetchone()
-        if row and row[0]:
-            stored = decrypt_data(row[0])
+        import supabase_store as _store
+        raw = _store.get_setting('firewall')
+        if raw:
+            stored = decrypt_data(raw)
             if isinstance(stored, dict):
                 # samo poznati ključevi (sprečava injekciju smeća)
                 for k in DEFAULT_FIREWALL_SETTINGS:
@@ -516,23 +521,29 @@ _housekeeping_lock = threading.Lock()
 def _housekeeping_loop():
     """Periodični posao (na svaki sat): rotira stari audit log,
     prazni istekle geoip cache stavke, resetuje login-attempts kešove.
-    Sve u pozadinskom thread-u pa ne blokira request handling."""
+    Sve u pozadinskom thread-u pa ne blokira request handling.
+
+    V24.1 SUPABASE-ONLY: audit retention prune ide preko `data_layer.delete`
+    umesto SQLite DELETE; nema `sqlite3.connect(AUDIT_DB_FILE)`.
+    """
     import gc
     while True:
         try:
-            # 1) audit log retention
+            # 1) audit log retention — briše NE-suspicious slogove starije od N dana.
+            #    Suspicious se zadržavaju trajno (forenzicki trag).
             days = int(FirewallCache.settings.get('audit_retention_days', 180))
             if days > 0:
                 cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat().replace('+00:00', 'Z')
                 try:
-                    with sqlite3.connect(AUDIT_DB_FILE, timeout=30.0) as conn:
-                        conn.execute('PRAGMA busy_timeout=30000;')
-                        c = conn.cursor()
-                        c.execute('DELETE FROM audit_logs WHERE timestamp < ? AND is_suspicious = 0', (cutoff,))
-                        deleted = c.rowcount
-                        conn.commit()
-                    if deleted:
-                        _util_logger.info(f'HOUSEKEEPING: purged {deleted} audit rows older than {days}d')
+                    from data_layer import delete as _dl_delete
+                    n = _dl_delete(
+                        'audit_logs',
+                        {'timestamp': ('lt', cutoff),
+                         'is_suspicious': ('eq', False)},
+                    )
+                    n = int(n or 0)
+                    if n:
+                        _util_logger.info(f'HOUSEKEEPING: purged {n} audit rows older than {days}d')
                 except Exception:
                     _util_logger.warning('HOUSEKEEPING: audit purge failed', exc_info=True)
 
@@ -574,9 +585,11 @@ def start_housekeeping():
         _housekeeping_started = True
     t = threading.Thread(target=_housekeeping_loop, name='crm-housekeeping', daemon=True)
     t.start()
-    # Isto tako pokreni backup thread (zaseban od housekeeping-a; posao je I/O-težak).
-    tb = threading.Thread(target=_backup_loop, name='crm-backup', daemon=True)
-    tb.start()
+    # V24.1 SUPABASE-ONLY: backup loop je UKLONJEN — Supabase ima sopstveni backup
+    # sistem (PITR + daily snapshots + WAL archiving). Nema potrebe za lokalnim
+    # SQLite .db backup-om jer baza više ne postoji na lokalnom FS-u. Ako neko
+    # želi dodatni off-site mirror, konfiguriše Supabase Storage bucket unutar
+    # Supabase Dashboard-a (Project → Storage).
     # Email queue retry loop — svakih 60s. Odvojen thread jer 1h je predugo
     # za retry neuspelih mejlova (klijent ne sme da čeka).
     tq = threading.Thread(target=_email_queue_loop, name='crm-email-queue', daemon=True)
@@ -601,84 +614,28 @@ def _email_queue_loop():
 # ==========================================================
 #  AUTOMATSKI ŠIFROVANI BACKUP BAZE — dnevni snapshot, zadrži poslednjih 14
 # ==========================================================
+# V24.1 SUPABASE-ONLY: ovaj deo je ISKLJUČEN. Supabase ima sopstveni backup
+# sistem (PITR — Point-in-Time Recovery, dnevni snapshot-ovi, WAL archiving,
+# i opcioni Storage mirror). Lokalni Fernet-šifrovani .db backup-ovi su bili
+# potrebni samo dok je aplikacija koristila SQLite fajl koji Render briše pri
+# svakom deploy-u. Sada je baza u Supabase-u i nije na lokalnom FS-u.
+#
+# Funkcija ostaje definisana (sa praznim telom) radi kompatibilnosti — neki
+# pozivaoci je možda još uvek referenciraju (npr. testovi).
 
 def _backup_loop():
-    """Jedanput dnevno pravi Fernet-šifrovan snapshot svih .db fajlova i briše
-    starije od 14 dana. Ako DATA_DIR/backups direktorijum nije upisiv, tiho
-    preskoči — housekeeping se ne sme sabotirati zbog produkcionih FS problema.
-    Backup je šifrovan istim ENCRYPTION_KEY-om koji se koristi za Fernet vault
-    upisa u DB, tako da napadač koji dobije samo snapshot ne može da pročita."""
-    from config import DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE, DATA_DIR
-    backups_dir = os.path.join(DATA_DIR, 'backups')
-    try:
-        os.makedirs(backups_dir, exist_ok=True)
-    except Exception:
-        return
-    # Sačekaj 60s posle starta pa počni (ne blokiraj boot).
-    time.sleep(60)
-    while True:
-        try:
-            ts = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-            for db_path in (DB_FILE, PORTAL_DB_FILE, AUDIT_DB_FILE):
-                if not os.path.exists(db_path):
-                    continue
-                # Bezbedan snapshot — sqlite backup API garantuje konzistentnost
-                # čak i dok drugi procesi pišu u WAL.
-                tmp_copy = os.path.join(backups_dir, f'.tmp_{os.path.basename(db_path)}')
-                try:
-                    src_conn = sqlite3.connect(db_path, timeout=30.0)
-                    dst_conn = sqlite3.connect(tmp_copy, timeout=30.0)
-                    with dst_conn:
-                        src_conn.backup(dst_conn)
-                    dst_conn.close()
-                    src_conn.close()
-                    with open(tmp_copy, 'rb') as f:
-                        raw = f.read()
-                    enc = cipher_suite.encrypt(raw)
-                    out = os.path.join(backups_dir, f'{os.path.basename(db_path)}.{ts}.fernet')
-                    with open(out, 'wb') as f:
-                        f.write(enc)
-                    os.remove(tmp_copy)
-                    try:
-                        os.chmod(out, 0o600)
-                    except Exception:
-                        pass
+    """No-op u V24.1 SUPABASE-ONLY modu.
 
-                    # OFF-SITE MIRROR — ako je USE_SUPABASE_STORAGE=on i BACKUP_OFFSITE=on,
-                    # uploaduj isti Fernet fajl u Supabase Storage bucket 'backups'.
-                    # Best-effort — ne prekida backup ako Storage padne.
-                    if (os.environ.get('BACKUP_OFFSITE', '').strip().lower() in ('1','true','yes','on')):
-                        try:
-                            import utils_storage as _st
-                            if _st.use_supabase_storage():
-                                remote_path = f"daily/{os.path.basename(out)}"
-                                _st.upload_bytes('backups', remote_path, enc,
-                                                 content_type='application/octet-stream')
-                                _util_logger.info(f'BACKUP: mirrored {os.path.basename(out)} → supabase:backups/{remote_path}')
-                        except Exception as _e:
-                            _util_logger.warning(f'BACKUP: off-site mirror failed: {_e}')
-                except Exception:
-                    _util_logger.warning(f'BACKUP: snapshot failed for {db_path}', exc_info=True)
-                    try:
-                        if os.path.exists(tmp_copy): os.remove(tmp_copy)
-                    except Exception:
-                        pass
-
-            # Retention: obriši backup-ove starije od 14 dana
-            cutoff_s = time.time() - 14 * 86400
-            for name in os.listdir(backups_dir):
-                if name.endswith('.fernet'):
-                    p = os.path.join(backups_dir, name)
-                    try:
-                        if os.path.getmtime(p) < cutoff_s:
-                            os.remove(p)
-                    except Exception:
-                        pass
-            _util_logger.info('BACKUP: snapshot complete.')
-        except Exception:
-            _util_logger.warning('BACKUP: iteration failed', exc_info=True)
-        # svakih 24h; malo drema između da uzeti prvi rezultat ne bude odmah dupli
-        time.sleep(24 * 3600)
+    Ranije je pravio dnevni Fernet-šifrovan snapshot svih .db fajlova i bri-
+    sao starije od 14 dana. Supabase sada ima sopstveni backup sistem
+    (Project Settings → Database → Backups):
+      - Automated daily logical snapshots (7-day retention)
+      - Point-in-Time Recovery (PITR) do 7 dana unazad
+      - Manual snapshot-ovi iz Dashboard-a
+    Off-site mirror u Supabase Storage bucket je opciono konfigurisati
+    nezavisno od aplikacije.
+    """
+    pass
 
 
 # ==========================================================
@@ -761,8 +718,13 @@ def get_user_token_version(user_id):
 # Ako je BROJ = 0, mejl se ne šalje (bez spama).
 
 def _notification_digest_loop():
-    import time as _t, datetime as _dt, sqlite3 as _sq, os as _os
-    from config import DB_FILE
+    """V24.1 SUPABASE-ONLY: daily digest za admina (failed/dead mejlovi).
+
+    Broj neuspelih mejlova u `email_queue` se čita preko `data_layer.count`
+    umesto direktnog SQLite SELECT COUNT(*). Ostatak logike (8:00 UTC trigger,
+    env-gate, send_branded_admin_message) je netaknut.
+    """
+    import time as _t, datetime as _dt, os as _os
     # Sacekaj 5 min posle starta pa udji u loop
     _t.sleep(300)
     last_sent_day = None
@@ -776,15 +738,13 @@ def _notification_digest_loop():
             if now.hour != 8 or last_sent_day == now.date():
                 _t.sleep(600)  # cekaj 10 min i pokusaj ponovo
                 continue
-            # Sakupi metrike
+            # Sakupi metrike — broj failed/dead mejlova u email_queue.
+            # V24.1: Supabase preko data_layer.count.
+            failed = 0
             try:
-                conn = _sq.connect(DB_FILE, timeout=10.0)
-                conn.execute('PRAGMA busy_timeout=10000')
-                c = conn.cursor()
-                # Failed emails
-                failed = c.execute("SELECT COUNT(*) FROM email_queue WHERE status IN ('failed','dead')").fetchone()[0]
-                # Approximation: broj portal_products (koji je jednostavan proxy za portal aktivnost)
-                conn.close()
+                from data_layer import count as _dl_count
+                failed = int(_dl_count('email_queue',
+                                       filters={'status': ('in', ['failed', 'dead'])}) or 0)
             except Exception as _e:
                 _util_logger.warning(f'NOTIF_DIGEST: metric fetch failed: {_e}')
                 _t.sleep(3600); continue

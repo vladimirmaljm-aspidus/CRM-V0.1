@@ -12,13 +12,13 @@ no client contact info — only the "public envelope" of the document.
 """
 import hashlib
 import json
-import sqlite3
 from datetime import datetime, timezone
 
 from flask import Blueprint, render_template_string, abort
 
-from config import DB_FILE
 from utils import log_audit
+import supabase_store as store
+from data_layer import select as _dl_select
 
 verify_bp = Blueprint('verify_public', __name__)
 
@@ -31,8 +31,8 @@ def _hash_of(offer_id, offer_no):
 
 
 def _find_document_by_hash(hash_value):
-    """Traži hash među offers, invoices (data JSON blobovi). Vraća (kind, data)
-    ili (None, None) ako nema poklapanja.
+    """Traži hash među offers, deals, document_register (Supabase read).
+    Vraća (kind, data) ili (None, None) ako nema poklapanja.
 
     Ne pretražujemo cele tabele svaki put — čim nađemo, prekidamo. Za 10-100k
     dokumenata ovo je i dalje ms-brzo jer su offer_id + offer_no + docNumber
@@ -40,43 +40,42 @@ def _find_document_by_hash(hash_value):
     if not hash_value or not hash_value.startswith('VER-'):
         return (None, None)
 
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        c = conn.cursor()
-        # 1. Offers
-        try:
-            c.execute("SELECT id, data FROM offers")
-            for row in c.fetchall():
-                try: obj = json.loads(row[1])
-                except Exception: continue
-                if _hash_of(row[0], obj.get('offerNo')) == hash_value:
-                    return ('offer', obj | {'id': row[0]})
-        except Exception:
-            pass
-        # 2. Deals (mogu imati invoice number generisan iz deal-a)
-        try:
-            c.execute("SELECT id, data FROM deals")
-            for row in c.fetchall():
-                try: obj = json.loads(row[1])
-                except Exception: continue
-                # Deal može biti izvor invoice-a; hash generisan iz deal ID + invoiceNo/contractId
-                if _hash_of(row[0], obj.get('invoiceNo')) == hash_value:
-                    return ('invoice', obj | {'id': row[0]})
-                if _hash_of(row[0], obj.get('contractId')) == hash_value:
-                    return ('deal', obj | {'id': row[0]})
-        except Exception:
-            pass
-        # 3. Document register — kanonski broj + entityId
-        try:
-            c.execute("SELECT docType, docNumber, entityId, issuedAt FROM document_register")
-            for row in c.fetchall():
-                if _hash_of(row[2], row[1]) == hash_value:
-                    return (row[0], {
-                        'docNumber': row[1],
-                        'entityId': row[2],
-                        'issuedAt': row[3],
-                    })
-        except Exception:
-            pass
+    # 1. Offers
+    try:
+        rows = store.list_entities('offers') or []
+        for p in rows:
+            if not isinstance(p, dict): continue
+            if _hash_of(p.get('id'), p.get('offerNo')) == hash_value:
+                return ('offer', dict(p))
+    except Exception:
+        pass
+    # 2. Deals (mogu imati invoice number generisan iz deal-a)
+    try:
+        rows = store.list_entities('deals') or []
+        for p in rows:
+            if not isinstance(p, dict): continue
+            # Deal može biti izvor invoice-a; hash generisan iz deal ID + invoiceNo/contractId
+            if _hash_of(p.get('id'), p.get('invoiceNo')) == hash_value:
+                return ('invoice', dict(p))
+            if _hash_of(p.get('id'), p.get('contractId')) == hash_value:
+                return ('deal', dict(p))
+    except Exception:
+        pass
+    # 3. Document register — kanonski broj + entityId
+    try:
+        rows = _dl_select('document_register') or []
+        for r in rows:
+            if not isinstance(r, dict): continue
+            doc_number = r.get('doc_number')
+            entity_id = r.get('entity_id')
+            if _hash_of(entity_id, doc_number) == hash_value:
+                return (r.get('doc_type'), {
+                    'docNumber': doc_number,
+                    'entityId': entity_id,
+                    'issuedAt': r.get('issued_at'),
+                })
+    except Exception:
+        pass
     return (None, None)
 
 

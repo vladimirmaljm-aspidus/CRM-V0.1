@@ -1,11 +1,9 @@
 import datetime
 import json
-import sqlite3
 import re
 import logging
 from flask import Blueprint, request, jsonify, session
 from werkzeug.security import generate_password_hash, check_password_hash
-from config import DB_FILE
 from utils import log_audit, login_required, FirewallCache, bump_user_token_version, get_user_token_version, get_ip_info
 from totp import (generate_secret, totp_verify, provisioning_uri,
                   generate_recovery_codes, verify_recovery_code)
@@ -434,17 +432,18 @@ def totp_setup_start():
     URI-jem za QR skeniranje. Secret se NE UPISUJE u bazu odmah — prvo mora da
     korisnik potvrdi da može da generiše validan kod iz svog Authenticator app-a
     preko /totp/setup_confirm. Time se sprečava da korisnik izgubi pristup jer
-    je skenirao QR pa app pomerio ekran pre nego što je proverio da radi."""
+    je skenirao QR pa app pomerio ekran pre nego što je proverio da radi.
+
+    V25 SUPABASE-ONLY: bez SQLite. User read ide preko `supabase_store.get_user_by_id`.
+    """
+    import supabase_store as store
     uid = session['user_id']
     username = session.get('username', 'user')
     # Ako korisnik već ima uključen TOTP, prvo mora da ga isključi
-    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-        c = conn.cursor()
-        c.execute("SELECT totp_enabled FROM users WHERE id=?", (uid,))
-        row = c.fetchone()
-        if row and int(row[0] or 0) == 1:
-            return jsonify({"error": "ALREADY_ENABLED",
-                            "message": "2FA is already enabled. Disable it first if you want to re-enroll."}), 400
+    user_row = store.get_user_by_id(uid) or {}
+    if user_row and user_row.get('totp_enabled'):
+        return jsonify({"error": "ALREADY_ENABLED",
+                        "message": "2FA is already enabled. Disable it first if you want to re-enroll."}), 400
 
     secret = generate_secret()
     # Issuer name — vidi se u Authenticator app-u pored korisničkog imena
@@ -468,7 +467,10 @@ def totp_setup_confirm():
     """Korak 2: korisnik unese kod iz svog Authenticator app-a + secret koji je
     dobio u prethodnom koraku. Ako se kod poklopi, upisujemo secret u bazu i
     generišemo 8 recovery kodova. Recovery kodovi se vraćaju SAMO OVDE (jednom),
-    plain-text, i korisnik mora da ih sačuva. U bazi se čuvaju samo hasovi."""
+    plain-text, i korisnik mora da ih sačuva. U bazi se čuvaju samo hasovi.
+
+    V25 SUPABASE-ONLY: bez SQLite. User update ide preko `data_layer.update`.
+    """
     data = request.get_json(silent=True) or {}
     secret = str(data.get('secret', '')).strip()
     code = str(data.get('code', '')).strip()
@@ -481,12 +483,14 @@ def totp_setup_confirm():
     plain_codes, hashed_codes = generate_recovery_codes(count=8)
     uid = session['user_id']
     try:
-        with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-            c = conn.cursor()
-            c.execute("UPDATE users SET totp_secret=?, totp_enabled=1, totp_recovery=? WHERE id=?",
-                      (secret, json.dumps(hashed_codes), uid))
-            conn.commit()
+        from data_layer import update as _upd
+        _upd('users', {'id': uid}, {
+            'totp_secret': secret,
+            'totp_enabled': True,
+            'totp_recovery': json.dumps(hashed_codes),
+        })
     except Exception:
+        logger.error('totp_setup_confirm: users update failed', exc_info=True)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
 
     log_audit('SECURITY', 'auth', f'2FA enabled for {session.get("username")}', is_suspicious=False)
@@ -502,7 +506,12 @@ def totp_setup_confirm():
 def totp_disable():
     """Korisnik isključuje 2FA. Zahteva trenutnu lozinku + validan TOTP kod
     (ili recovery kod) kao dvostruku zaštitu — da niko ko slučajno provali
-    sesiju ne može da olabavi bezbednost naloga."""
+    sesiju ne može da olabavi bezbednost naloga.
+
+    V25 SUPABASE-ONLY: bez SQLite. User read/update idu preko `supabase_store`
+    i `data_layer` facade.
+    """
+    import supabase_store as store
     data = request.get_json(silent=True) or {}
     password = data.get('password', '')
     code = str(data.get('code', '')).strip()
@@ -511,18 +520,18 @@ def totp_disable():
                         "message": "Password and current 2FA code required."}), 400
 
     uid = session['user_id']
-    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-        c = conn.cursor()
-        c.execute("SELECT password, totp_secret, totp_recovery FROM users WHERE id=?", (uid,))
-        row = c.fetchone()
-    if not row: return jsonify({"error": "USER_NOT_FOUND"}), 404
-    if not check_password_hash(row[0], password):
+    user_row = store.get_user_by_id(uid) or {}
+    if not user_row:
+        return jsonify({"error": "USER_NOT_FOUND"}), 404
+    if not check_password_hash(user_row.get('password', ''), password):
         return jsonify({"error": "WRONG_PASSWORD"}), 401
     # Prihvatamo i TOTP kod i recovery kod
-    ok = totp_verify(row[1], code) if row[1] else False
-    if not ok and row[2]:
+    secret_db = user_row.get('totp_secret')
+    recovery_db = user_row.get('totp_recovery')
+    ok = totp_verify(secret_db, code) if secret_db else False
+    if not ok and recovery_db:
         try:
-            recovery_list = json.loads(row[2])
+            recovery_list = json.loads(recovery_db)
         except Exception:
             recovery_list = []
         matched, _rest = verify_recovery_code(recovery_list, code)
@@ -531,11 +540,14 @@ def totp_disable():
         return jsonify({"error": "INVALID_CODE"}), 401
 
     try:
-        with sqlite3.connect(DB_FILE, timeout=30.0) as conn:
-            c = conn.cursor()
-            c.execute("UPDATE users SET totp_secret=NULL, totp_enabled=0, totp_recovery=NULL WHERE id=?", (uid,))
-            conn.commit()
+        from data_layer import update as _upd
+        _upd('users', {'id': uid}, {
+            'totp_secret': None,
+            'totp_enabled': False,
+            'totp_recovery': None,
+        })
     except Exception:
+        logger.error('totp_disable: users update failed', exc_info=True)
         return jsonify({"error": "INTERNAL_SERVER_ERROR"}), 500
 
     log_audit('SECURITY', 'auth', f'2FA disabled for {session.get("username")}', is_suspicious=True)
@@ -545,15 +557,19 @@ def totp_disable():
 @auth_bp.route('/api/auth/totp/status', methods=['GET'])
 @login_required
 def totp_status():
-    """Klijent proverava da li je 2FA uključeno na svom nalogu."""
+    """Klijent proverava da li je 2FA uključeno na svom nalogu.
+
+    V25 SUPABASE-ONLY: bez SQLite. User read ide preko `supabase_store.get_user_by_id`.
+    """
+    import supabase_store as store
     uid = session['user_id']
-    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-        c = conn.cursor()
-        c.execute("SELECT totp_enabled, totp_recovery FROM users WHERE id=?", (uid,))
-        row = c.fetchone()
-    if not row: return jsonify({"enabled": False, "recovery_codes_remaining": 0})
+    user_row = store.get_user_by_id(uid) or {}
+    if not user_row:
+        return jsonify({"enabled": False, "recovery_codes_remaining": 0})
+    recovery_db = user_row.get('totp_recovery')
     remaining = 0
-    if row[1]:
-        try: remaining = len(json.loads(row[1]))
+    if recovery_db:
+        try: remaining = len(json.loads(recovery_db))
         except Exception: pass
-    return jsonify({"enabled": bool(int(row[0] or 0)), "recovery_codes_remaining": remaining})
+    return jsonify({"enabled": bool(user_row.get('totp_enabled')),
+                    "recovery_codes_remaining": remaining})

@@ -7,18 +7,29 @@ V23.1 admin blueprints — sve u jednoj datoteci radi lakseg wire-a:
   #7 Conversion Offer→Invoice/Proforma helper endpoint
 
 Sve rute su admin-only osim gde je jasno drukcije oznaceno.
+
+V25 SUPABASE-ONLY — svi DB pozivi idu kroz `data_layer` facade ili
+`supabase_store` helper. Nema vise `sqlite3.connect(...)` poziva — podaci
+prezive PythonAnywhere redeploy jer zive u Supabase Postgres-u.
 """
 from __future__ import annotations
 
+import hashlib
 import json
-import sqlite3
+import logging
 import uuid
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, session, render_template
 
-from config import DB_FILE
 from utils import login_required, log_audit
+import supabase_store as store
+from data_layer import (select as _dl_select, select_one as _dl_select_one,
+                        insert as _dl_insert, update as _dl_update,
+                        upsert as _dl_upsert, delete as _dl_delete,
+                        count as _dl_count)
+
+logger = logging.getLogger(__name__)
 
 v23_admin_bp = Blueprint('v23_admin_bp', __name__)
 
@@ -97,6 +108,21 @@ PERMISSION_CATALOG = {
 }
 
 
+def _normalize_perms(v):
+    """permissions polje je sada JSONB — normalizuje string/dict/None u dict."""
+    if v is None:
+        return {}
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str):
+        try:
+            d = json.loads(v)
+            return d if isinstance(d, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
 @v23_admin_bp.route('/api/admin/permissions/catalog', methods=['GET'])
 @login_required
 def perm_catalog():
@@ -117,21 +143,25 @@ def perm_users_list():
     """Lista svih user-a sa role i njihovim permission mapom."""
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT id, username, role, permissions, full_name, email "
-            "FROM users ORDER BY role='admin' DESC, username ASC"
-        ).fetchall()
+    try:
+        rows = _dl_select('users',
+                         columns='id,username,role,permissions,full_name,email') or []
+    except Exception as _e:
+        logger.warning(f'perm_users_list: select failed: {_e}')
+        rows = []
+    # Sort: admins first, then by username ASC
+    rows_sorted = sorted(rows,
+                         key=lambda r: (str(r.get('role', '')).lower() != 'admin',
+                                        str(r.get('username', '')).lower()))
     out = []
-    for r in rows:
-        try:
-            perms = json.loads(r[3]) if r[3] else {}
-        except Exception:
-            perms = {}
+    for r in rows_sorted:
+        perms = _normalize_perms(r.get('permissions'))
         # Admin ima sve, ne prikazuje se checkbox
         out.append({
-            'id': r[0], 'username': r[1], 'role': r[2],
-            'full_name': r[4] or '', 'email': r[5] or '',
+            'id': r.get('id'), 'username': r.get('username'),
+            'role': r.get('role'),
+            'full_name': r.get('full_name') or '',
+            'email': r.get('email') or '',
             'permissions': perms,
         })
     return jsonify({'users': out})
@@ -153,10 +183,12 @@ def perm_user_update(uid):
     # Filtriraj samo poznate kljuceve
     cleaned = {k: bool(v) for k, v in incoming.items() if k in PERMISSION_CATALOG}
 
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        conn.execute("UPDATE users SET permissions=? WHERE id=?",
-                     (json.dumps(cleaned), uid))
+    try:
+        # users.permissions je JSONB kolona — prosledjujemo dict direktno
+        _dl_update('users', {'id': uid}, {'permissions': cleaned})
+    except Exception as _e:
+        logger.error(f'perm_user_update({uid}) failed: {_e}')
+        return jsonify({'error': 'update_failed', 'message': str(_e)}), 500
 
     # Invalidiraj sve sesije tog user-a (nove permisije stupe na snagu odmah)
     try:
@@ -183,16 +215,12 @@ def has_permission(uid: str, key: str) -> bool:
     """Server-side helper — proveri da li user ima dati kljuc.
     Admin uvek True. Ako je user u users tabeli, gledamo permissions polje."""
     try:
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            r = conn.execute("SELECT role, permissions FROM users WHERE id=?", (uid,)).fetchone()
-        if not r:
+        user = store.get_user_by_id(uid)
+        if not user:
             return False
-        if r[0] == 'admin':
+        if user.get('role') == 'admin':
             return True
-        try:
-            perms = json.loads(r[1]) if r[1] else {}
-        except Exception:
-            perms = {}
+        perms = _normalize_perms(user.get('permissions'))
         return bool(perms.get(key))
     except Exception:
         return False
@@ -233,22 +261,19 @@ def portal_modules_catalog():
 def portal_perm_get(pid):
     if session.get('role') != 'admin':
         return jsonify({'error': 'admin_only'}), 403
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        r = conn.execute("SELECT data FROM partners WHERE id=?", (pid,)).fetchone()
-    if not r:
+    partner = store.get_entity('partners', pid)
+    if not partner:
         return jsonify({'error': 'partner_not_found'}), 404
-    try:
-        data = json.loads(r[0]) if r[0] else {}
-    except Exception:
-        data = {}
-    enabled = data.get('portalPermissions') or list(PORTAL_MODULES.keys())
+    enabled = partner.get('portalPermissions') or list(PORTAL_MODULES.keys())
     return jsonify({
         'partner_id': pid,
-        'partner_name': data.get('name', '?'),
+        'partner_name': partner.get('name') or partner.get('companyName') or '?',
         'enabled_modules': enabled,
-        'is_portal_active': data.get('isPortalActive', True),
-        'is_premium': bool(data.get('isPremium')),
-        'view_only_own_docs': bool(data.get('viewOnlyOwnDocs', True)),
+        'is_portal_active': partner.get('isPortalActive',
+                                        partner.get('is_portal_active', True)),
+        'is_premium': bool(partner.get('isPremium',
+                                       partner.get('is_premium', False))),
+        'view_only_own_docs': bool(partner.get('viewOnlyOwnDocs', True)),
     })
 
 
@@ -260,30 +285,30 @@ def portal_perm_set(pid):
         return jsonify({'error': 'admin_only'}), 403
     body = request.get_json(silent=True) or {}
 
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute('PRAGMA busy_timeout=10000')
-        r = conn.execute("SELECT data FROM partners WHERE id=?", (pid,)).fetchone()
-        if not r:
-            return jsonify({'error': 'partner_not_found'}), 404
-        try:
-            data = json.loads(r[0]) if r[0] else {}
-        except Exception:
-            data = {}
+    partner = store.get_entity('partners', pid)
+    if not partner:
+        return jsonify({'error': 'partner_not_found'}), 404
 
-        # Modules — filtriraj samo poznate
-        if 'enabled_modules' in body and isinstance(body['enabled_modules'], list):
-            valid = [m for m in body['enabled_modules'] if m in PORTAL_MODULES]
-            data['portalPermissions'] = valid
+    # Modules — filtriraj samo poznate
+    if 'enabled_modules' in body and isinstance(body['enabled_modules'], list):
+        valid = [m for m in body['enabled_modules'] if m in PORTAL_MODULES]
+        partner['portalPermissions'] = valid
 
-        if 'is_portal_active' in body:
-            data['isPortalActive'] = bool(body['is_portal_active'])
-        if 'is_premium' in body:
-            data['isPremium'] = bool(body['is_premium'])
-        if 'view_only_own_docs' in body:
-            data['viewOnlyOwnDocs'] = bool(body['view_only_own_docs'])
+    if 'is_portal_active' in body:
+        partner['isPortalActive'] = bool(body['is_portal_active'])
+        # Sinhronizuj i snake_case top-level kolonu
+        partner['is_portal_active'] = bool(body['is_portal_active'])
+    if 'is_premium' in body:
+        partner['isPremium'] = bool(body['is_premium'])
+        partner['is_premium'] = bool(body['is_premium'])
+    if 'view_only_own_docs' in body:
+        partner['viewOnlyOwnDocs'] = bool(body['view_only_own_docs'])
 
-        conn.execute("UPDATE partners SET data=? WHERE id=?",
-                     (json.dumps(data), pid))
+    try:
+        store.upsert_entity('partners', partner)
+    except Exception as _e:
+        logger.error(f'portal_perm_set({pid}) upsert failed: {_e}')
+        return jsonify({'error': 'save_failed', 'message': str(_e)}), 500
 
     log_audit('EDIT', 'portal_perms',
               f'Admin updated portal permissions for partner {pid}: {list(body.keys())}')
@@ -306,6 +331,40 @@ def portal_perm_page():
 #   docNumber, klijent, datum izdavanja, ko je izdao, verzija (revision),
 #   status, quick-link ka samom dokumentu.
 
+def _next_seq(doc_type_upper, year):
+    """Vraca sledeci seq broj za dati doc_type i godinu.
+    PostgREST ne podrzava MAX() direktno, ali sortiramo DESC po seq i uzimamo 1."""
+    try:
+        rows = _dl_select('document_register',
+                          filters={'doc_type': doc_type_upper, 'year': year},
+                          columns='seq', order='-seq', limit=1) or []
+        if rows:
+            return int(rows[0].get('seq', 0)) + 1
+    except Exception as _e:
+        logger.info(f'_next_seq({doc_type_upper},{year}) failed: {_e}')
+    return 1
+
+
+def _latest_revision(doc_number):
+    """Vraca (revision, content_hash) za najnoviju reviziju tog broja, ili (None, None)."""
+    try:
+        rows = _dl_select('document_revisions',
+                          filters={'doc_number': doc_number},
+                          columns='revision,content_hash',
+                          order='-revision', limit=1) or []
+        if rows:
+            return int(rows[0].get('revision', 0) or 0), rows[0].get('content_hash')
+    except Exception as _e:
+        logger.info(f'_latest_revision({doc_number}) failed: {_e}')
+    return None, None
+
+
+def _max_revision(doc_number):
+    """Vraca max(revision) za dati doc_number, ili None ako nema redova."""
+    rev, _ = _latest_revision(doc_number)
+    return rev
+
+
 @v23_admin_bp.route('/api/documents/register', methods=['GET'])
 @login_required
 def doc_register_list():
@@ -313,69 +372,83 @@ def doc_register_list():
     doc_type = request.args.get('type', '').strip().upper()  # OFFER | INVOICE | PROFORMA
     year = request.args.get('year', '').strip()
     partner_id = request.args.get('partner_id', '').strip()
-    q = request.args.get('q', '').strip()
+    q = (request.args.get('q') or '').strip()
 
-    where = []
-    params = []
+    filters = {}
     if doc_type:
-        where.append('docType=?'); params.append(doc_type)
+        filters['doc_type'] = doc_type
     if year:
         try:
-            where.append('year=?'); params.append(int(year))
+            filters['year'] = int(year)
         except ValueError:
             pass
     if partner_id:
-        where.append('entityId=?'); params.append(partner_id)
+        filters['entity_id'] = partner_id
+
+    try:
+        rows = _dl_select('document_register',
+                          filters=filters or None,
+                          order='-issued_at', limit=500) or []
+    except Exception as _e:
+        logger.warning(f'doc_register_list select failed: {_e}')
+        rows = []
+
+    # Napuni imena partnera (samo one koji se pominju)
+    entity_ids = list({r.get('entity_id') for r in rows if r.get('entity_id')})
+    partner_names = {}
+    for eid in entity_ids:
+        try:
+            p = store.get_entity('partners', eid) or {}
+            partner_names[eid] = p.get('name') or p.get('companyName') or '?'
+        except Exception:
+            partner_names[eid] = '?'
+
+    # Free-text search po doc_number (PostgREST ne podrzava LIKE preko tuple-a
+    # na isti nacin kao SQLite — koristimo 'ilike' ako postoji)
     if q:
-        where.append('docNumber LIKE ?'); params.append(f'%{q}%')
-
-    where_sql = ' WHERE ' + ' AND '.join(where) if where else ''
-
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            f"SELECT docNumber, docType, year, seq, revision, status, "
-            f"issuedAt, issuedBy, entityId FROM document_register "
-            f"{where_sql} ORDER BY issuedAt DESC LIMIT 500",
-            params
-        ).fetchall()
-
-        # Napuni imena partnera (samo one koji se pominju)
-        entity_ids = list({r[8] for r in rows if r[8]})
-        partner_names = {}
-        for eid in entity_ids:
-            try:
-                pr = conn.execute("SELECT data FROM partners WHERE id=?", (eid,)).fetchone()
-                if pr:
-                    pd = json.loads(pr[0]) if pr[0] else {}
-                    partner_names[eid] = pd.get('name', '?')
-            except Exception:
-                partner_names[eid] = '?'
+        try:
+            search_rows = _dl_select('document_register',
+                                     filters={'doc_number': ('ilike', f'%{q}%')},
+                                     order='-issued_at', limit=500) or []
+            # Presek sa postojećim filterima (ako su postavljeni)
+            if filters:
+                existing_ids = {(r.get('doc_type'), r.get('year'), r.get('entity_id'),
+                                r.get('doc_number')) for r in rows}
+                rows = [r for r in search_rows
+                        if (r.get('doc_type'), r.get('year'), r.get('entity_id'),
+                            r.get('doc_number')) in existing_ids]
+            else:
+                rows = search_rows
+        except Exception as _e:
+            logger.info(f'doc_register_list search failed: {_e}')
 
     def _link(doc_type, doc_number, entity_id, revision):
         """V23.1: link ide u glavni CRM sa ?goto= query param-om koji ui.js hvata
         i otvara POSTOJECI modul (customer_offers/invoice/proforma), umesto novog
         prozora. Podržavamo lookup po docNumber → id preko byNumber query hint-a."""
-        t = doc_type.lower()
+        t = (doc_type or '').lower()
         if t in ('offer', 'invoice', 'proforma'):
             return f'/?goto={t}:number={doc_number}'
         return f'/?goto=partner:{entity_id or ""}'
 
     out = []
     for r in rows:
-        version_label = f'V{r[4]+1}' if r[4] and r[4] > 0 else 'V1'
+        rev = r.get('revision') or 0
+        version_label = f'V{rev+1}' if rev > 0 else 'V1'
         out.append({
-            'docNumber': r[0],
-            'docType': r[1],
-            'year': r[2],
-            'seq': r[3],
-            'revision': r[4] or 0,
+            'docNumber': r.get('doc_number'),
+            'docType': r.get('doc_type'),
+            'year': r.get('year'),
+            'seq': r.get('seq'),
+            'revision': rev,
             'version_label': version_label,
-            'status': r[5],
-            'issuedAt': r[6],
-            'issuedBy': r[7],
-            'entityId': r[8],
-            'partner_name': partner_names.get(r[8], '—'),
-            'link': _link(r[1], r[0], r[8], r[4]),
+            'status': r.get('status') or 'active',
+            'issuedAt': r.get('issued_at'),
+            'issuedBy': r.get('issued_by'),
+            'entityId': r.get('entity_id'),
+            'partner_name': partner_names.get(r.get('entity_id'), '—'),
+            'link': _link(r.get('doc_type'), r.get('doc_number'),
+                          r.get('entity_id'), rev),
         })
     return jsonify({'items': out, 'count': len(out)})
 
@@ -384,18 +457,22 @@ def doc_register_list():
 @login_required
 def doc_revisions(doc_number):
     """Sve revizije za dati broj dokumenta, sortirano od najnovije."""
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        rows = conn.execute(
-            "SELECT id, revision, entityId, contentHash, bindingHash, "
-            "changeReason, changedBy, changedAt FROM document_revisions "
-            "WHERE docNumber=? ORDER BY revision DESC",
-            (doc_number,)
-        ).fetchall()
+    try:
+        rows = _dl_select('document_revisions',
+                          filters={'doc_number': doc_number},
+                          order='-revision') or []
+    except Exception as _e:
+        logger.warning(f'doc_revisions({doc_number}) select failed: {_e}')
+        rows = []
     return jsonify({
         'revisions': [{
-            'id': r[0], 'revision': r[1], 'entityId': r[2],
-            'contentHash': r[3], 'bindingHash': r[4],
-            'changeReason': r[5], 'changedBy': r[6], 'changedAt': r[7],
+            'id': r.get('id'), 'revision': r.get('revision'),
+            'entityId': r.get('entity_id'),
+            'contentHash': r.get('content_hash'),
+            'bindingHash': r.get('binding_hash'),
+            'changeReason': r.get('change_reason'),
+            'changedBy': r.get('changed_by'),
+            'changedAt': r.get('changed_at'),
         } for r in rows]
     })
 
@@ -432,122 +509,125 @@ def register_existing_document(doc_type, doc_id):
     body = request.get_json(silent=True) or {}
     reason = str(body.get('change_reason') or '').strip()[:500]
 
-    import hashlib
+    # Ucitaj dokument iz Supabase
+    data = store.get_entity(table, doc_id)
+    if not data:
+        return jsonify({'error': 'not_found'}), 404
 
-    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-        conn.execute('PRAGMA busy_timeout=15000')
-        conn.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT)')
-        r = conn.execute(f"SELECT data FROM {table} WHERE id=?", (doc_id,)).fetchone()
-        if not r:
-            return jsonify({'error': 'not_found'}), 404
-        try:
-            data = json.loads(r[0]) if r[0] else {}
-        except Exception:
-            data = {}
+    current_doc_number = data.get('docNumber')
+    entity_id = (data.get('customerId') or data.get('partnerId') or
+                 data.get('buyerId') or None)
+    # Stable content hash — items + terms — ignorise timestamp-ove
+    _content_for_hash = {
+        'items': data.get('items') or [],
+        'services': data.get('services') or [],
+        'sellingPrice': data.get('sellingPrice'),
+        'quantity': data.get('quantity'),
+        'currency': data.get('currency'),
+        'incoterm': data.get('incoterm'),
+        'paymentTerms': data.get('paymentTerms'),
+        'validUntil': data.get('validUntil'),
+    }
+    content_hash = hashlib.sha256(json.dumps(_content_for_hash, sort_keys=True,
+                                              default=str).encode('utf-8')).hexdigest()[:32]
 
-        current_doc_number = data.get('docNumber')
-        entity_id = (data.get('customerId') or data.get('partnerId') or
-                     data.get('buyerId') or None)
-        # Stable content hash — items + terms — ignorise timestamp-ove
-        _content_for_hash = {
-            'items': data.get('items') or [],
-            'services': data.get('services') or [],
-            'sellingPrice': data.get('sellingPrice'),
-            'quantity': data.get('quantity'),
-            'currency': data.get('currency'),
-            'incoterm': data.get('incoterm'),
-            'paymentTerms': data.get('paymentTerms'),
-            'validUntil': data.get('validUntil'),
-        }
-        content_hash = hashlib.sha256(json.dumps(_content_for_hash, sort_keys=True,
-                                                 default=str).encode('utf-8')).hexdigest()[:32]
+    year = datetime.now(timezone.utc).year
 
-        year = datetime.now(timezone.utc).year
+    if current_doc_number:
+        # Vec je registrovan — proveri da li se sadrzaj promenio
+        last_rev, prev_hash = _latest_revision(current_doc_number)
 
-        if current_doc_number:
-            # Vec je registrovan — proveri da li se sadrzaj promenio
-            prev_hash = conn.execute(
-                "SELECT contentHash FROM document_revisions WHERE docNumber=? "
-                "ORDER BY revision DESC LIMIT 1",
-                (current_doc_number,)
-            ).fetchone()
-
-            if prev_hash and prev_hash[0] == content_hash:
-                # Nista se ne menja — vrati current bez bump-a
-                return jsonify({
-                    'docNumber': current_doc_number,
-                    'versionLabel': data.get('versionLabel') or 'V1',
-                    'revision': data.get('revision', 0),
-                    'changed': False,
-                })
-
-            # V23.1C bugfix: document_register ima UNIQUE (docNumber). Znaci
-            # register drži JEDAN red po broju dokumenta. Revizije žive u
-            # document_revisions (append-only). Ne insertujemo dupli register red.
-            last = conn.execute(
-                "SELECT MAX(revision) FROM document_revisions WHERE docNumber=?",
-                (current_doc_number,)
-            ).fetchone()
-            new_rev = (last[0] if last and last[0] is not None else 0) + 1
-            conn.execute(
-                "INSERT INTO document_revisions (id, docNumber, revision, entityId, "
-                "snapshot, contentHash, changeReason, changedBy, changedAt) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), current_doc_number, new_rev, entity_id,
-                 json.dumps(data), content_hash,
-                 reason or 'Edit via existing form',
-                 session.get('username'), _now())
-            )
-            # Update register row-a sa najnovijom revizijom (za lookup u Registeru)
-            conn.execute(
-                "UPDATE document_register SET revision=?, issuedAt=?, issuedBy=? "
-                "WHERE docNumber=?",
-                (new_rev, _now(), session.get('username'), current_doc_number)
-            )
-            data['revision'] = new_rev
-            data['versionLabel'] = f'V{new_rev + 1}'
-            conn.execute(f"UPDATE {table} SET data=? WHERE id=?", (json.dumps(data), doc_id))
-            log_audit('EDIT', table, f'Revision {data["versionLabel"]} of {current_doc_number}')
+        if prev_hash and prev_hash == content_hash:
+            # Nista se ne menja — vrati current bez bump-a
             return jsonify({
                 'docNumber': current_doc_number,
-                'versionLabel': data['versionLabel'],
+                'versionLabel': data.get('versionLabel') or 'V1',
+                'revision': data.get('revision', 0),
+                'changed': False,
+            })
+
+        # V23.1C bugfix: document_register ima UNIQUE (doc_number). Znaci
+        # register drži JEDAN red po broju dokumenta. Revizije žive u
+        # document_revisions (append-only). Ne insertujemo dupli register red.
+        new_rev = (int(last_rev) if last_rev is not None else 0) + 1
+        try:
+            _dl_insert('document_revisions', {
+                'id': str(uuid.uuid4()),
+                'doc_number': current_doc_number,
                 'revision': new_rev,
-                'changed': True,
+                'entity_id': entity_id,
+                'snapshot': data,  # JSONB — dict direktno
+                'content_hash': content_hash,
+                'change_reason': reason or 'Edit via existing form',
+                'changed_by': session.get('username'),
+                'changed_at': _now(),
             })
-        else:
-            # Prva registracija — dodeli broj
-            seq_row = conn.execute(
-                "SELECT COALESCE(MAX(seq),0)+1 FROM document_register WHERE docType=? AND year=?",
-                (doc_type_upper, year)
-            ).fetchone()
-            seq = seq_row[0]
-            doc_number = f"{doc_type_upper[:3]}-{year}-{seq:05d}"
-            data['docNumber'] = doc_number
-            data['issueDate'] = data.get('issueDate') or _now()[:10]
-            data['revision'] = 0
-            data['versionLabel'] = 'V1'
-            conn.execute(
-                "INSERT INTO document_register (docType, year, seq, docNumber, entityId, "
-                "revision, status, issuedAt, issuedBy) VALUES (?, ?, ?, ?, ?, 0, 'active', ?, ?)",
-                (doc_type_upper, year, seq, doc_number, entity_id,
-                 _now(), session.get('username'))
-            )
-            conn.execute(
-                "INSERT INTO document_revisions (id, docNumber, revision, entityId, "
-                "snapshot, contentHash, changeReason, changedBy, changedAt) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), doc_number, 0, entity_id,
-                 json.dumps(data), content_hash,
-                 reason or 'Initial issue', session.get('username'), _now())
-            )
-            conn.execute(f"UPDATE {table} SET data=? WHERE id=?", (json.dumps(data), doc_id))
-            log_audit('CREATE', table, f'Registered {doc_number} (V1)')
-            return jsonify({
-                'docNumber': doc_number,
-                'versionLabel': 'V1',
+            # Update register row-a sa najnovijom revizijom (za lookup u Registeru)
+            _dl_update('document_register',
+                       {'doc_number': current_doc_number},
+                       {'revision': new_rev, 'issued_at': _now(),
+                        'issued_by': session.get('username')})
+        except Exception as _e:
+            logger.error(f'register_existing_document(rev bump) failed: {_e}')
+            return jsonify({'error': 'revision_save_failed',
+                            'message': str(_e)}), 500
+
+        data['revision'] = new_rev
+        data['versionLabel'] = f'V{new_rev + 1}'
+        try:
+            store.upsert_entity(table, data)
+        except Exception as _e:
+            logger.error(f'register_existing_document(upsert {table}) failed: {_e}')
+        log_audit('EDIT', table, f'Revision {data["versionLabel"]} of {current_doc_number}')
+        return jsonify({
+            'docNumber': current_doc_number,
+            'versionLabel': data['versionLabel'],
+            'revision': new_rev,
+            'changed': True,
+        })
+    else:
+        # Prva registracija — dodeli broj
+        seq = _next_seq(doc_type_upper, year)
+        doc_number = f"{doc_type_upper[:3]}-{year}-{seq:05d}"
+        data['docNumber'] = doc_number
+        data['issueDate'] = data.get('issueDate') or _now()[:10]
+        data['revision'] = 0
+        data['versionLabel'] = 'V1'
+        try:
+            _dl_insert('document_register', {
+                'id': str(uuid.uuid4()),
+                'doc_type': doc_type_upper,
+                'year': year,
+                'seq': seq,
+                'doc_number': doc_number,
+                'entity_id': entity_id,
                 'revision': 0,
-                'changed': True,
+                'issued_at': _now(),
+                'issued_by': session.get('username'),
             })
+            _dl_insert('document_revisions', {
+                'id': str(uuid.uuid4()),
+                'doc_number': doc_number,
+                'revision': 0,
+                'entity_id': entity_id,
+                'snapshot': data,  # JSONB
+                'content_hash': content_hash,
+                'change_reason': reason or 'Initial issue',
+                'changed_by': session.get('username'),
+                'changed_at': _now(),
+            })
+            store.upsert_entity(table, data)
+        except Exception as _e:
+            logger.error(f'register_existing_document(initial) failed: {_e}')
+            return jsonify({'error': 'register_failed',
+                            'message': str(_e)}), 500
+        log_audit('CREATE', table, f'Registered {doc_number} (V1)')
+        return jsonify({
+            'docNumber': doc_number,
+            'versionLabel': 'V1',
+            'revision': 0,
+            'changed': True,
+        })
 
 
 @v23_admin_bp.route('/api/documents/convert', methods=['POST'])
@@ -571,66 +651,57 @@ def convert_document():
     if src_type != 'offer' or not src_id or target not in ('invoice', 'proforma'):
         return jsonify({'error': 'invalid_payload'}), 400
 
-    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-        conn.execute('PRAGMA busy_timeout=15000')
-        # Ucitaj ponudu
-        r = conn.execute("SELECT data FROM offers WHERE id=?", (src_id,)).fetchone()
-        if not r:
-            return jsonify({'error': 'offer_not_found'}), 404
-        try:
-            offer = json.loads(r[0]) if r[0] else {}
-        except Exception:
-            offer = {}
+    # Ucitaj ponudu
+    offer = store.get_entity('offers', src_id)
+    if not offer:
+        return jsonify({'error': 'offer_not_found'}), 404
 
-        # Kopiraj SVA polja 1/1
-        new_id = str(uuid.uuid4())
-        target_data = dict(offer)  # shallow copy
-        target_data['sourceOfferId'] = src_id
-        # V23.1C: offer schema uses either 'offerNo' (legacy 1/2026 format)
-        # or 'docNumber' (new OFF-YYYY-NNNNN format) or 'offerNumber'; support all.
-        target_data['sourceOfferNumber'] = (offer.get('offerNumber')
-                                            or offer.get('offerNo')
-                                            or offer.get('docNumber'))
-        target_data['createdAt'] = _now()
-        target_data['createdBy'] = session.get('username')
-        target_data['convertedFrom'] = 'offer'
-        target_data['status'] = 'draft'
-        target_data['id'] = new_id
-        if body.get('issue_date'):
-            target_data['issueDate'] = body['issue_date']
-        if body.get('due_date'):
-            target_data['dueDate'] = body['due_date']
+    # Kopiraj SVA polja 1/1
+    new_id = str(uuid.uuid4())
+    target_data = dict(offer)  # shallow copy
+    target_data['sourceOfferId'] = src_id
+    # V23.1C: offer schema uses either 'offerNo' (legacy 1/2026 format)
+    # or 'docNumber' (new OFF-YYYY-NNNNN format) or 'offerNumber'; support all.
+    target_data['sourceOfferNumber'] = (offer.get('offerNumber')
+                                        or offer.get('offerNo')
+                                        or offer.get('docNumber'))
+    target_data['createdAt'] = _now()
+    target_data['createdBy'] = session.get('username')
+    target_data['convertedFrom'] = 'offer'
+    target_data['status'] = 'draft'
+    target_data['id'] = new_id
+    if body.get('issue_date'):
+        target_data['issueDate'] = body['issue_date']
+    if body.get('due_date'):
+        target_data['dueDate'] = body['due_date']
 
-        # Numeracija — koristi document_register
-        doc_type = 'INVOICE' if target == 'invoice' else 'PROFORMA'
-        year = datetime.now(timezone.utc).year
-        # Sledeci seq
-        seq_row = conn.execute(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM document_register WHERE docType=? AND year=?",
-            (doc_type, year)
-        ).fetchone()
-        seq = seq_row[0] if seq_row else 1
-        doc_number = f"{doc_type[:3]}-{year}-{seq:05d}"
-        target_data['docNumber'] = doc_number
+    # Numeracija — koristi document_register
+    doc_type = 'INVOICE' if target == 'invoice' else 'PROFORMA'
+    year = datetime.now(timezone.utc).year
+    seq = _next_seq(doc_type, year)
+    doc_number = f"{doc_type[:3]}-{year}-{seq:05d}"
+    target_data['docNumber'] = doc_number
 
-        # Snimi u ciljnu tabelu (odgovarajuca — invoices ili proforma_docs?)
-        # Aplikacija koristi 'offers' generic tabelu; koristimo dedikovane ako postoje
-        # inace fallback na 'offers' sa type='invoice' / 'proforma'.
-        target_table = 'invoices' if target == 'invoice' else 'proformas'
-        # Napravi tabelu ako ne postoji (idempotent — vec u database.py, ali osiguranje)
-        conn.execute(f'CREATE TABLE IF NOT EXISTS {target_table} (id TEXT PRIMARY KEY, data TEXT)')
-        conn.execute(f"INSERT INTO {target_table} (id, data) VALUES (?, ?)",
-                     (new_id, json.dumps(target_data)))
-
+    # Snimi u ciljnu tabelu (invoices / proformas) — obe postoje u Supabase-u
+    target_table = 'invoices' if target == 'invoice' else 'proformas'
+    try:
+        store.upsert_entity(target_table, target_data)
         # Register u document_register
-        conn.execute(
-            "INSERT INTO document_register (docType, year, seq, docNumber, entityId, "
-            "revision, status, issuedAt, issuedBy) "
-            "VALUES (?, ?, ?, ?, ?, 0, 'active', ?, ?)",
-            (doc_type, year, seq, doc_number,
-             offer.get('partnerId') or offer.get('customerId'),
-             _now(), session.get('username'))
-        )
+        _dl_insert('document_register', {
+            'id': str(uuid.uuid4()),
+            'doc_type': doc_type,
+            'year': year,
+            'seq': seq,
+            'doc_number': doc_number,
+            'entity_id': offer.get('partnerId') or offer.get('customerId'),
+            'revision': 0,
+            'issued_at': _now(),
+            'issued_by': session.get('username'),
+        })
+    except Exception as _e:
+        logger.error(f'convert_document failed: {_e}')
+        return jsonify({'error': 'convert_failed',
+                        'message': str(_e)}), 500
 
     log_audit('CREATE', target_table,
               f'Converted offer {offer.get("offerNumber","?")} → {doc_number}')
@@ -678,15 +749,10 @@ def doc_get(doc_type, doc_id):
     table = {'offer': 'offers', 'invoice': 'invoices', 'proforma': 'proformas'}.get(doc_type)
     if not table:
         return jsonify({'error': 'invalid_type'}), 400
-    with sqlite3.connect(DB_FILE, timeout=10.0) as conn:
-        conn.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT)')
-        r = conn.execute(f"SELECT data FROM {table} WHERE id=?", (doc_id,)).fetchone()
-    if not r:
+    data = store.get_entity(table, doc_id)
+    if not data:
         return jsonify({'error': 'not_found'}), 404
-    try:
-        return jsonify({'doc': json.loads(r[0]) if r[0] else {}})
-    except Exception:
-        return jsonify({'doc': {}})
+    return jsonify({'doc': data})
 
 
 @v23_admin_bp.route('/api/documents/<doc_type>/<doc_id>', methods=['POST'])
@@ -714,67 +780,66 @@ def doc_save(doc_type, doc_id):
     payload['updatedAt'] = _now()
     payload['updatedBy'] = session.get('username')
 
-    with sqlite3.connect(DB_FILE, timeout=15.0) as conn:
-        conn.execute('PRAGMA busy_timeout=15000')
-        conn.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT)')
+    current_doc_number = payload.get('docNumber')
 
-        current_doc_number = payload.get('docNumber')
+    if finalize:
+        doc_type_upper = {'offer': 'OFFER', 'invoice': 'INVOICE', 'proforma': 'PROFORMA'}[doc_type]
+        year = datetime.now(timezone.utc).year
 
-        if finalize:
-            doc_type_upper = {'offer': 'OFFER', 'invoice': 'INVOICE', 'proforma': 'PROFORMA'}[doc_type]
-            year = datetime.now(timezone.utc).year
-
+        try:
             if current_doc_number:
                 # Vec je izdat — nova revizija (V+1)
-                r = conn.execute(
-                    "SELECT MAX(revision) FROM document_register WHERE docNumber=?",
-                    (current_doc_number,)
-                ).fetchone()
-                new_rev = (r[0] or 0) + 1
-                conn.execute(
-                    "INSERT INTO document_register (docType, year, seq, docNumber, entityId, "
-                    "revision, status, issuedAt, issuedBy) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
-                    (doc_type_upper, year,
-                     int(current_doc_number.split('-')[-1]) if '-' in current_doc_number else 0,
-                     current_doc_number,
-                     payload.get('partnerId') or payload.get('customerId'),
-                     new_rev, _now(), session.get('username'))
-                )
-                # Snapshot revizije
-                conn.execute(
-                    "INSERT INTO document_revisions (id, docNumber, revision, entityId, "
-                    "snapshot, changeReason, changedBy, changedAt) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (str(uuid.uuid4()), current_doc_number, new_rev,
-                     payload.get('partnerId') or payload.get('customerId'),
-                     json.dumps(payload), reason or 'Draft finalized',
-                     session.get('username'), _now())
-                )
+                last_max = _max_revision(current_doc_number)
+                new_rev = (int(last_max) if last_max is not None else 0) + 1
+                # Snapshot revizije — content_hash se ovde ne racuna u originalu
+                _dl_insert('document_revisions', {
+                    'id': str(uuid.uuid4()),
+                    'doc_number': current_doc_number,
+                    'revision': new_rev,
+                    'entity_id': payload.get('partnerId') or payload.get('customerId'),
+                    'snapshot': payload,  # JSONB
+                    'change_reason': reason or 'Draft finalized',
+                    'changed_by': session.get('username'),
+                    'changed_at': _now(),
+                })
+                # document_register ima UNIQUE(doc_number) — ne insertujemo novi
+                # red; samo apdejtujemo revision/issued_at/issued_by na postojećem.
+                _dl_update('document_register',
+                           {'doc_number': current_doc_number},
+                           {'revision': new_rev, 'issued_at': _now(),
+                            'issued_by': session.get('username')})
                 payload['revision'] = new_rev
                 payload['versionLabel'] = f'V{new_rev + 1}'
             else:
                 # Prva finalizacija — dodeli broj
-                seq_row = conn.execute(
-                    "SELECT COALESCE(MAX(seq),0)+1 FROM document_register WHERE docType=? AND year=?",
-                    (doc_type_upper, year)
-                ).fetchone()
-                seq = seq_row[0]
+                seq = _next_seq(doc_type_upper, year)
                 doc_number = f"{doc_type_upper[:3]}-{year}-{seq:05d}"
                 payload['docNumber'] = doc_number
                 payload['issueDate'] = payload.get('issueDate') or _now()[:10]
                 payload['revision'] = 0
                 payload['versionLabel'] = 'V1'
-                conn.execute(
-                    "INSERT INTO document_register (docType, year, seq, docNumber, entityId, "
-                    "revision, status, issuedAt, issuedBy) VALUES (?, ?, ?, ?, ?, 0, 'active', ?, ?)",
-                    (doc_type_upper, year, seq, doc_number,
-                     payload.get('partnerId') or payload.get('customerId'),
-                     _now(), session.get('username'))
-                )
+                _dl_insert('document_register', {
+                    'id': str(uuid.uuid4()),
+                    'doc_type': doc_type_upper,
+                    'year': year,
+                    'seq': seq,
+                    'doc_number': doc_number,
+                    'entity_id': payload.get('partnerId') or payload.get('customerId'),
+                    'revision': 0,
+                    'issued_at': _now(),
+                    'issued_by': session.get('username'),
+                })
             payload['status'] = 'final'
+        except Exception as _e:
+            logger.error(f'doc_save finalize failed: {_e}')
+            return jsonify({'error': 'finalize_failed',
+                            'message': str(_e)}), 500
 
-        conn.execute(f"INSERT OR REPLACE INTO {table} (id, data) VALUES (?, ?)",
-                     (doc_id, json.dumps(payload)))
+    try:
+        store.upsert_entity(table, payload)
+    except Exception as _e:
+        logger.error(f'doc_save upsert {table} failed: {_e}')
+        return jsonify({'error': 'save_failed', 'message': str(_e)}), 500
 
     log_audit('EDIT' if not finalize else 'CREATE', table,
               f'{"Draft saved" if not finalize else "Finalized"}: {payload.get("docNumber", doc_id[:8])}')

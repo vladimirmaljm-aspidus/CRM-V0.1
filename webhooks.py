@@ -27,11 +27,9 @@ via the Settings UI.
 """
 import json
 import logging
-import sqlite3
 import threading
 import urllib.request
 
-from config import DB_FILE
 from utils import decrypt_data
 
 logger = logging.getLogger(__name__)
@@ -42,24 +40,22 @@ _CFG_TTL_S = 60
 
 
 def _load_config():
-    """Čita chatWebhooks blob iz settings tabele. Dekriptuje ako je enkriptovan."""
+    """Čita chatWebhooks blob iz settings tabele (Supabase). Dekriptuje ako je enkriptovan."""
     import time
     now = time.time()
     if _CFG_CACHE['data'] is not None and (now - _CFG_CACHE['ts']) < _CFG_TTL_S:
         return _CFG_CACHE['data']
     cfg = {}
     try:
-        with sqlite3.connect(DB_FILE, timeout=5.0) as conn:
-            c = conn.cursor()
-            c.execute("SELECT value FROM settings WHERE key='chatWebhooks'")
-            row = c.fetchone()
-            if row and row[0]:
-                try:
-                    cfg = decrypt_data(row[0]) or {}
-                except Exception:
-                    try: cfg = json.loads(row[0])
-                    except Exception: cfg = {}
-                if not isinstance(cfg, dict): cfg = {}
+        import supabase_store as store
+        raw = store.get_setting('chatWebhooks')
+        if raw:
+            try:
+                cfg = decrypt_data(raw) or {}
+            except Exception:
+                try: cfg = json.loads(raw)
+                except Exception: cfg = {}
+            if not isinstance(cfg, dict): cfg = {}
     except Exception:
         pass
     _CFG_CACHE['data'] = cfg
